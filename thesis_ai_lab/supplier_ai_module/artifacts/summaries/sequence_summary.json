@@ -1,0 +1,46 @@
+{
+  "loaded_rows": 177515,
+  "skipped_rows": 0,
+  "task_name": "延迟交付风险时序预测",
+  "label_definition": "目标为 Late_delivery_risk；按订单时间顺序构造长度为8的滑窗，并引入产品历史延迟率特征。",
+  "sequence_length": 8,
+  "sample_count": 177491,
+  "train_size": 124252,
+  "val_size": 17744,
+  "test_size": 35495,
+  "positive_rate_train": 0.550076,
+  "positive_rate_val": 0.54317,
+  "positive_rate_test": 0.547626,
+  "sequence_metrics": [
+    {
+      "accuracy": 0.79383,
+      "precision": 0.802728,
+      "recall": 0.82668,
+      "f1": 0.814528,
+      "auc": 0.861192,
+      "logloss": 0.515057,
+      "model": "LSTM",
+      "decision_threshold": 0.5,
+      "val_accuracy": 0.850034,
+      "val_f1": 0.863279
+    },
+    {
+      "accuracy": 0.789661,
+      "precision": 0.797456,
+      "recall": 0.825599,
+      "f1": 0.811284,
+      "auc": 0.861231,
+      "logloss": 0.521309,
+      "model": "BiLSTM",
+      "decision_threshold": 0.5,
+      "val_accuracy": 0.846991,
+      "val_f1": 0.861076
+    }
+  ],
+  "benchmark_files": {
+    "sequence_metrics": "sequence_metrics.csv",
+    "lstm_history": "fig_5_5_lstm_history.png",
+    "bilstm_history": "fig_5_6_bilstm_history.png",
+    "sequence_roc": "fig_5_7_sequence_roc.png"
+  }
+}

@@ -1,0 +1,19 @@
+[0;1;32m●[0m nginx.service - The nginx HTTP and reverse proxy server
+   Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; vendor preset: disabled)
+   Active: [0;1;32mactive (running)[0m since Sun 2026-06-28 15:05:41 CST; 11min ago
+  Process: 112001 ExecReload=/usr/sbin/nginx -s reload (code=exited, status=0/SUCCESS)
+ Main PID: 111748 (nginx)
+    Tasks: 3 (limit: 22546)
+   Memory: 2.6M
+   CGroup: /system.slice/nginx.service
+           ├─111748 nginx: master process /usr/sbin/nginx
+           ├─112002 nginx: worker process
+           └─112003 nginx: worker process
+
+Jun 28 15:05:41 iZ2zeiakw30qsbkurwihk0Z systemd[1]: Starting The nginx HTTP and reverse proxy server...
+Jun 28 15:05:41 iZ2zeiakw30qsbkurwihk0Z nginx[111744]: nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+Jun 28 15:05:41 iZ2zeiakw30qsbkurwihk0Z nginx[111744]: nginx: configuration file /etc/nginx/nginx.conf test is successful
+Jun 28 15:05:41 iZ2zeiakw30qsbkurwihk0Z systemd[1]: nginx.service: Failed to parse PID from file /run/nginx.pid: Invalid argument
+Jun 28 15:05:41 iZ2zeiakw30qsbkurwihk0Z systemd[1]: Started The nginx HTTP and reverse proxy server.
+Jun 28 15:09:43 iZ2zeiakw30qsbkurwihk0Z systemd[1]: Reloading The nginx HTTP and reverse proxy server.
+Jun 28 15:09:43 iZ2zeiakw30qsbkurwihk0Z systemd[1]: Reloaded The nginx HTTP and reverse proxy server.

@@ -1,0 +1,687 @@
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
+
+from models import (
+    Inventory,
+    InventoryDispatchQueue,
+    InventoryOperationRequest,
+    PayableRecord,
+    ProductionMaterialUsage,
+    ProductionTask,
+    PurchaseOrder,
+    PurchaseOrderItem,
+    PurchaseReceipt,
+    PurchaseReturn,
+    QualityTask,
+    ReceivableRecord,
+    Role,
+    SalesOrder,
+    SalesReturn,
+    TodoItem,
+    User,
+    Warehouse,
+)
+from responses import api_response
+from schemas.inventory import InventoryOperationHandleRequest
+from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, write_operation_log
+from services.display import status_label
+from services.time_utils import now_local
+from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
+
+
+def _normalized_inventory_items(items: list[dict]) -> list[dict]:
+    normalized = []
+    for item in items or []:
+        normalized.append(
+            {
+                "product_id": item.get("product_id") or None,
+                "material_id": item.get("material_id") or None,
+                "batch_no": (item.get("batch_no") or None),
+                "quantity": str(Decimal(str(item.get("quantity") or 0)).normalize()),
+                "unit_cost": str(Decimal(str(item.get("unit_cost") or 0)).normalize()),
+            }
+        )
+    return normalized
+
+
+def _inventory_request_identity_items(items: list[dict]) -> list[dict]:
+    normalized = _normalized_inventory_items(items)
+    for index, item in enumerate(items or []):
+        if index >= len(normalized):
+            break
+        normalized[index]["purchase_receipt_item_id"] = item.get("purchase_receipt_item_id") or None
+        normalized[index]["usage_id"] = item.get("usage_id") or None
+    return normalized
+
+
+def _quantity_bucket(items: list[dict]) -> dict[tuple[int | None, int | None, str | None], Decimal]:
+    bucket: dict[tuple[int | None, int | None, str | None], Decimal] = {}
+    for item in items or []:
+        key = (
+            item.get("product_id") or None,
+            item.get("material_id") or None,
+            item.get("batch_no") or None,
+        )
+        bucket[key] = bucket.get(key, Decimal("0")) + Decimal(str(item.get("quantity") or 0))
+    return bucket
+
+
+def _has_quantity_difference(expected_items: list[dict], actual_items: list[dict]) -> bool:
+    return _quantity_bucket(expected_items) != _quantity_bucket(actual_items)
+
+
+def _operation_quantity_label(operation_type: str) -> tuple[str, str]:
+    return ("应到", "实到") if operation_type == "inbound" else ("应出", "实出")
+
+
+def role_user_ids(db: Session, *role_codes: str) -> list[int]:
+    if not role_codes:
+        return []
+    return [
+        row.id
+        for row in db.execute(
+            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
+        ).scalars().all()
+    ]
+
+
+def finished_warehouse_id(db: Session) -> int:
+    return get_finished_warehouse(db).id
+
+
+def raw_warehouse_id(db: Session) -> int:
+    return get_raw_warehouse(db).id
+
+
+def purchase_arrival_status(db: Session, order_id: int) -> str:
+    order = db.execute(
+        select(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.items))
+        .where(PurchaseOrder.id == order_id)
+    ).unique().scalar_one_or_none()
+    if order is None:
+        return "not_arrived"
+    receipts = db.execute(
+        select(PurchaseReceipt).where(PurchaseReceipt.purchase_order_id == order_id)
+    ).scalars().all()
+    if not receipts:
+        return "not_arrived"
+    fully_received = all(Decimal(item.received_quantity or 0) >= Decimal(item.quantity or 0) for item in order.items)
+    if not fully_received:
+        return "not_arrived"
+    for receipt in receipts:
+        if receipt.requires_quality and receipt.quality_status != "approved":
+            return "not_arrived"
+    return "arrived"
+
+
+def create_inventory_operation_request(
+    db: Session,
+    *,
+    operation_type: str,
+    request_category: str,
+    source_module: str,
+    source_type: str,
+    source_id: int,
+    source_no: str | None,
+    warehouse_id: int,
+    requested_by_id: int,
+    items: list[dict],
+    remark: str | None = None,
+    recipient_user_ids: list[int] | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> InventoryOperationRequest:
+    user_ids = list(dict.fromkeys(recipient_user_ids or role_user_ids(db, "inventory")))
+    request_title = title or f"待执行库存{'出库' if operation_type == 'outbound' else '入库'} {source_no or ''}".strip()
+    request_description = description or f"{source_module}来源单据 {source_no or source_id} 已生成库存作业请求。"
+    item_fingerprint = _inventory_request_identity_items(items)
+
+    existing_rows = db.execute(
+        select(InventoryOperationRequest).where(
+            InventoryOperationRequest.source_type == source_type,
+            InventoryOperationRequest.source_id == source_id,
+            InventoryOperationRequest.request_category == request_category,
+            InventoryOperationRequest.status.in_(["pending", "processing"]),
+        )
+    ).scalars().all()
+    existing = next(
+        (row for row in existing_rows if _inventory_request_identity_items(row.original_items_json or []) == item_fingerprint),
+        None,
+    )
+    if existing is None and len(existing_rows) == 1 and request_category != "purchase_quality_inbound":
+        existing = existing_rows[0]
+
+    if existing is not None:
+        existing.operation_type = operation_type
+        existing.source_module = source_module
+        existing.source_no = source_no
+        existing.warehouse_id = warehouse_id
+        existing.requested_by_id = requested_by_id
+        existing.remark = remark
+        existing.original_items_json = items
+        existing.handled_items_json = existing.handled_items_json or []
+        current_todos = db.execute(
+            select(TodoItem).where(
+                TodoItem.business_type == "inventory_operation_request",
+                TodoItem.business_id == existing.id,
+                TodoItem.status != "completed",
+            )
+        ).scalars().all()
+        current_user_ids = {row.assigned_user_id for row in current_todos}
+        for user_id in user_ids:
+            if user_id in current_user_ids:
+                continue
+            create_todo(
+                db,
+                title=request_title,
+                description=request_description,
+                module="inventory",
+                assigned_user_id=user_id,
+                business_type="inventory_operation_request",
+                business_id=existing.id,
+                priority="high",
+            )
+        return existing
+
+    request = InventoryOperationRequest(
+        request_no=next_business_no(db, "CK" if operation_type == "outbound" else "RK"),
+        operation_type=operation_type,
+        request_category=request_category,
+        source_module=source_module,
+        source_type=source_type,
+        source_id=source_id,
+        source_no=source_no,
+        warehouse_id=warehouse_id,
+        requested_by_id=requested_by_id,
+        status="pending",
+        remark=remark,
+        original_items_json=items,
+        handled_items_json=[],
+    )
+    db.add(request)
+    db.flush()
+
+    request_title = title or f"待执行库存{'出库' if operation_type == 'outbound' else '入库'} {source_no or request.request_no}"
+    for user_id in user_ids:
+        create_todo(
+            db,
+            title=request_title,
+            description=request_description,
+            module="inventory",
+            assigned_user_id=user_id,
+            business_type="inventory_operation_request",
+            business_id=request.id,
+            priority="high",
+        )
+    if user_ids:
+        create_notification(
+            db,
+            title=request_title,
+            content=request_description,
+            module="inventory",
+            recipient_user_ids=user_ids,
+            created_by_id=requested_by_id,
+            category="info",
+        )
+    return request
+
+def _sync_inventory_request_source(
+    db: Session,
+    *,
+    request: InventoryOperationRequest,
+    current_user: User,
+) -> None:
+    category = request.request_category
+    source_id = request.source_id
+    if category == "production_material_issue":
+        if request.source_type == "production_task":
+            task = db.execute(
+                select(ProductionTask)
+                .options(joinedload(ProductionTask.usages).joinedload(ProductionMaterialUsage.material))
+                .where(ProductionTask.id == source_id)
+            ).unique().scalar_one_or_none()
+            if task is None:
+                return
+            usage_map = {usage.material_id: usage for usage in task.usages}
+            handled_items = request.handled_items_json or []
+            for item in handled_items:
+                usage = usage_map.get(item.get("material_id"))
+                if usage is None:
+                    continue
+                quantity = Decimal(str(item.get("quantity") or 0))
+                usage.issued_quantity = quantity
+                usage.actual_quantity = quantity
+                usage.inventory_approval_status = "approved"
+                usage.inventory_approved_by_id = current_user.id
+                usage.inventory_approved_at = now_local()
+                usage.inventory_remark = request.handled_remark
+            all_issued = all(Decimal(item.issued_quantity or 0) >= Decimal(item.approved_quantity or item.requested_quantity or 0) for item in task.usages)
+            if all_issued:
+                task.status = "material_issued"
+            create_notification(
+                db,
+                title="领料出库已完成",
+                content=f"生产任务 {task.task_no} 的领料申请已完成出库。{f' 库管调整原因：{request.adjust_reason}。' if request.adjust_reason else ''}",
+                module="production",
+                recipient_user_ids=[task.created_by_id],
+                created_by_id=current_user.id,
+                category="success",
+            )
+            return
+        usage = db.execute(
+            select(ProductionMaterialUsage)
+            .options(joinedload(ProductionMaterialUsage.production_task).joinedload(ProductionTask.product), joinedload(ProductionMaterialUsage.material))
+            .where(ProductionMaterialUsage.id == source_id)
+        ).unique().scalar_one_or_none()
+        if usage is None:
+            return
+        total_issued = sum(Decimal(str(item.get("quantity") or 0)) for item in (request.handled_items_json or []))
+        usage.issued_quantity = total_issued
+        usage.actual_quantity = total_issued
+        usage.inventory_approval_status = "approved"
+        usage.inventory_approved_by_id = current_user.id
+        usage.inventory_approved_at = now_local()
+        usage.inventory_remark = request.handled_remark
+        task = usage.production_task
+        all_issued = all(Decimal(item.issued_quantity or 0) >= Decimal(item.approved_quantity or item.requested_quantity or 0) for item in task.usages)
+        if all_issued:
+            task.status = "material_issued"
+        create_notification(
+            db,
+            title="领料出库已完成",
+            content=(
+                f"生产任务 {task.task_no} 的原料 {usage.material.name if usage.material else usage.material_id} 已完成出库。"
+                f"{f' 库管调整原因：{request.adjust_reason}。' if request.adjust_reason else ''}"
+            ),
+            module="production",
+            recipient_user_ids=[task.created_by_id],
+            created_by_id=current_user.id,
+            category="success",
+        )
+    elif category in {"production_finished_inbound", "production_quality_inbound"}:
+        task = db.execute(select(ProductionTask).where(ProductionTask.id == source_id)).scalar_one_or_none()
+        if task is None:
+            return
+        task.status = "completed"
+        create_notification(
+            db,
+            title="生产入库已完成",
+            content=f"生产任务 {task.task_no} 已完成成品入库。{f' 库管调整原因：{request.adjust_reason}。' if request.adjust_reason else ''}",
+            module="production",
+            recipient_user_ids=[task.created_by_id],
+            created_by_id=current_user.id,
+            category="success",
+        )
+    elif category in {"purchase_receipt_inbound", "purchase_quality_inbound"}:
+        receipt = db.execute(select(PurchaseReceipt).where(PurchaseReceipt.id == source_id)).scalar_one_or_none()
+        if receipt is None:
+            return
+        receipt.status = "completed"
+        if receipt.requires_quality:
+            receipt.quality_status = "approved"
+        order = db.execute(
+            select(PurchaseOrder)
+            .options(joinedload(PurchaseOrder.items))
+            .where(PurchaseOrder.id == receipt.purchase_order_id)
+        ).unique().scalar_one_or_none()
+        purchaser_id = order.purchaser_user_id if order else None
+        if order:
+            full = purchase_arrival_status(db, order.id)
+            if full == "arrived":
+                fully_received = all(Decimal(item.received_quantity or 0) >= Decimal(item.quantity or 0) for item in order.items)
+                order.status = "fully_received" if fully_received else "partial_received"
+        if purchaser_id:
+            create_notification(
+                db,
+                title="采购入库已完成",
+                content=f"采购到货单 {receipt.receipt_no} 已完成库存入库。{f' 库管调整原因：{request.adjust_reason}。' if request.adjust_reason else ''}",
+                module="purchase",
+                recipient_user_ids=[purchaser_id],
+                created_by_id=current_user.id,
+                category="success",
+            )
+    elif category == "purchase_return_outbound":
+        purchase_return = db.execute(select(PurchaseReturn).where(PurchaseReturn.id == source_id)).scalar_one_or_none()
+        if purchase_return is None:
+            return
+        purchase_return.status = "refunded" if Decimal(purchase_return.refund_amount or 0) > 0 else "returned"
+        order = db.execute(select(PurchaseOrder).where(PurchaseOrder.id == purchase_return.purchase_order_id)).scalar_one_or_none()
+        recipient_user_ids = []
+        if order and order.purchaser_user_id:
+            recipient_user_ids.append(order.purchaser_user_id)
+        create_notification(
+            db,
+            title="退货处理出库已完成",
+            content=f"退货处理单 {purchase_return.return_no} 已完成仓库出库。{f' 库管调整原因：{request.adjust_reason}。' if request.adjust_reason else ''}",
+            module="purchase",
+            recipient_user_ids=recipient_user_ids,
+            created_by_id=current_user.id,
+            category="success",
+        )
+    elif category == "sales_shipment":
+        order = db.execute(select(SalesOrder).where(SalesOrder.id == source_id)).scalar_one_or_none()
+        if order is None:
+            return
+        queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)).scalar_one_or_none()
+        order.status = "shipped"
+        order.shipped_at = now_local()
+        if queue is not None:
+            queue.shipment_status = "completed"
+            queue.shipment_marked_by_id = current_user.id
+            queue.shipment_marked_at = now_local()
+            queue.placement_status = "hidden"
+        create_notification(
+            db,
+            title="客户订单已发货",
+            content=f"客户订单 {order.order_no} 已完成出库发货。{f' 库管调整原因：{request.adjust_reason}。' if request.adjust_reason else ''}",
+            module="sales",
+            recipient_user_ids=[user_id for user_id in [order.sales_user_id] if user_id],
+            created_by_id=current_user.id,
+            category="success",
+        )
+    elif category == "sales_return_inbound":
+        sales_return = db.execute(select(SalesReturn).where(SalesReturn.id == source_id)).scalar_one_or_none()
+        if sales_return is None:
+            return
+        sales_return.status = "approved"
+        create_notification(
+            db,
+            title="销售退货已回库",
+            content=f"销售退货单 {sales_return.return_no} 已完成回库。{f' 库管调整原因：{request.adjust_reason}。' if request.adjust_reason else ''}",
+            module="sales",
+            recipient_user_ids=[sales_return.requested_by_id],
+            created_by_id=current_user.id,
+            category="success",
+        )
+
+
+def complete_inventory_operation_request(
+    request_id: int,
+    payload: InventoryOperationHandleRequest,
+    current_user: User,
+    db: Session,
+):
+    request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id)).scalar_one_or_none()
+    if request is None:
+        raise HTTPException(status_code=404, detail="库存作业请求不存在")
+    if request.status not in {"pending", "processing"}:
+        raise HTTPException(status_code=409, detail="当前库存作业已处理")
+    if not payload.items:
+        raise HTTPException(status_code=409, detail="请至少填写一条库存作业明细")
+
+    original_items = request.original_items_json or []
+    handled_items = [
+        {
+            "product_id": item.product_id,
+            "material_id": item.material_id,
+            "batch_no": item.batch_no,
+            "quantity": float(item.quantity),
+            "unit_cost": float(item.unit_cost or 0),
+        }
+        for item in payload.items
+    ]
+    changed = _normalized_inventory_items(handled_items) != _normalized_inventory_items(original_items)
+    quantity_changed = _has_quantity_difference(original_items, handled_items)
+    if changed and not (payload.adjust_reason or "").strip():
+        raise HTTPException(status_code=409, detail="库存作业修改了系统预填明细，请填写调整原因")
+    if quantity_changed and not (payload.quantity_difference_remark or "").strip():
+        expected_label, actual_label = _operation_quantity_label(request.operation_type)
+        raise HTTPException(status_code=409, detail=f"{expected_label}与{actual_label}不一致时必须填写差异备注")
+
+    sign = Decimal("1") if request.operation_type == "inbound" else Decimal("-1")
+    transaction_type = "manual_inbound" if request.operation_type == "inbound" else "manual_outbound"
+    for item in payload.items:
+        try:
+            apply_inventory_change(
+                db,
+                warehouse_id=request.warehouse_id,
+                product_id=item.product_id,
+                material_id=item.material_id,
+                quantity=Decimal(item.quantity) * sign,
+                unit_cost=Decimal(item.unit_cost or 0),
+                batch_no=item.batch_no,
+                transaction_type=transaction_type,
+                related_type="inventory_operation_request",
+                related_id=request.id,
+                created_by_id=current_user.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    request.status = "completed"
+    request.handled_by_id = current_user.id
+    request.completed_at = now_local()
+    request.handled_remark = (payload.handled_remark or "").strip() or None
+    request.adjust_reason = (payload.adjust_reason or "").strip() or None
+    request.quantity_difference_remark = (payload.quantity_difference_remark or "").strip() or None
+    if quantity_changed:
+        request.difference_notified_at = now_local()
+    request.handled_items_json = handled_items
+    complete_todos(db, business_type="inventory_operation_request", business_id=request.id)
+
+    _sync_inventory_request_source(db, request=request, current_user=current_user)
+
+    if request.requested_by_id:
+        difference_text = (
+            f" 差异备注：{request.quantity_difference_remark}"
+            if request.quantity_difference_remark
+            else ""
+        )
+        create_notification(
+            db,
+            title="库存作业已完成",
+            content=f"库存作业 {request.request_no} 已完成，当前状态：{status_label(request.status)}。{difference_text}",
+            module=request.source_module,
+            recipient_user_ids=[request.requested_by_id],
+            created_by_id=current_user.id,
+            category="warning" if request.quantity_difference_remark else "success",
+        )
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="inventory",
+        action="complete_inventory_operation",
+        content=f"完成库存作业 {request.request_no}",
+        after_data={
+            "request_no": request.request_no,
+            "request_category": request.request_category,
+            "status": request.status,
+            "changed": changed,
+            "quantity_changed": quantity_changed,
+            "adjust_reason": request.adjust_reason,
+            "quantity_difference_remark": request.quantity_difference_remark,
+        },
+    )
+    db.commit()
+    return api_response(data={"id": request.id, "status": request.status})
+
+
+def _build_flow_tooltip(step: dict, next_step: dict | None) -> str:
+    status = step.get("status")
+    actor = step.get("actor") or "相关责任人"
+    action = step.get("action") or "处理当前步骤"
+
+    if status == "done":
+        current_line = step.get("done_text") or f"本步骤已由{actor}{action}。"
+    elif status == "current":
+        current_line = step.get("current_text") or f"当前正在由{actor}{action}。"
+    else:
+        current_line = step.get("pending_text") or f"到达本步骤后，将由{actor}{action}。"
+
+    if next_step is None:
+        next_line = "下一步：完成本步骤后，当前流程闭环。"
+    else:
+        next_actor = next_step.get("actor") or "相关责任人"
+        next_action = next_step.get("action") or "继续处理后续步骤"
+        next_line = f"下一步需要由{next_actor}{next_action}。"
+    return f"{current_line}\n{next_line}"
+
+
+def _finalize_flow_steps(steps: list[dict]) -> list[dict]:
+    first_pending = next((index for index, step in enumerate(steps) if not step["done"]), None)
+    for index, step in enumerate(steps):
+        step["status"] = "done" if step["done"] else "current" if first_pending == index else "pending"
+    for index, step in enumerate(steps):
+        next_step = steps[index + 1] if index + 1 < len(steps) else None
+        step["tooltip"] = _build_flow_tooltip(step, next_step)
+    return steps
+
+
+def purchase_flow_steps(order: PurchaseOrder, *, arrival_status: str, settlement_status: str) -> list[dict]:
+    steps = [
+        {
+            "key": "created",
+            "label": "采购建单",
+            "done": True,
+            "actor": "采购人员",
+            "action": "创建采购订单并维护供应商、采购明细和付款方式",
+        },
+        {
+            "key": "approved",
+            "label": "采购审批",
+            "done": order.status not in {"pending_approval", "rejected", "draft"},
+            "actor": "经理或有审批权限人员",
+            "action": "完成采购审批并确认订单进入执行阶段",
+        },
+        {
+            "key": "arrival",
+            "label": "到货/质检",
+            "done": arrival_status == "arrived"},
+        {
+            "key": "inbound",
+            "label": "仓库入库",
+            "done": order.status == "fully_received",
+            "actor": "库管人员",
+            "action": "根据到货或质检结果执行入库",
+        },
+        {
+            "key": "payment",
+            "label": "付款结算",
+            "done": settlement_status == "settled",
+            "actor": "采购人员、经理与财务相关人员",
+            "action": "提交付款申请并完成出账结算",
+        },
+        {
+            "key": "completed",
+            "label": "采购闭环",
+            "done": order.status == "fully_received" and settlement_status == "settled",
+            "actor": "采购人员",
+            "action": "确认采购订单已全部到货且已结算完成",
+        },
+    ]
+    steps[2]["actor"] = "采购人员、库管人员或质检人员"
+    steps[2]["action"] = "登记到货、处理质检并确认订单到货状态"
+    return _finalize_flow_steps(steps)
+
+
+def sales_flow_steps(order: SalesOrder, *, settlement_status: str) -> list[dict]:
+    steps = [
+        {
+            "key": "created",
+            "label": "客户订单创建",
+            "done": True,
+            "actor": "销售人员",
+            "action": "创建客户订单并录入客户、商品和收货信息",
+        },
+        {
+            "key": "payment_check",
+            "label": "到账确认",
+            "done": order.status not in {"pending_confirmation", "rejected"},
+            "actor": "销售人员与董事长/财务相关人员",
+            "action": "提交并确认首笔到账或放行条件",
+        },
+        {
+            "key": "prepare",
+            "label": "置货备货",
+            "done": order.status in {"shipped", "completed"},
+            "actor": "库管人员",
+            "action": "根据客户订单执行置货与备货",
+        },
+        {
+            "key": "shipment",
+            "label": "仓储出库",
+            "done": order.status in {"shipped", "completed"},
+            "actor": "库管人员",
+            "action": "执行出库发货并登记本次发货数量",
+        },
+        {
+            "key": "receipt",
+            "label": "收款结算",
+            "done": settlement_status == "settled",
+            "actor": "销售人员与董事长/财务相关人员",
+            "action": "处理尾款、到货款或分期回款确认",
+        },
+        {
+            "key": "completed",
+            "label": "客户订单闭环",
+            "done": order.status == "completed",
+            "actor": "销售人员",
+            "action": "确认客户订单已发货且已收款完成",
+        },
+    ]
+    return _finalize_flow_steps(steps)
+
+
+def production_flow_steps(task: ProductionTask) -> list[dict]:
+    steps = [
+        {
+            "key": "planned",
+            "label": "任务创建",
+            "done": True,
+            "actor": "生产人员",
+            "action": "创建生产任务并确认产品、数量和原料需求",
+        },
+        {
+            "key": "material_apply",
+            "label": "领料申请",
+            "done": task.status not in {"pending_material"},
+            "actor": "生产人员",
+            "action": "提交领料申请并等待原料库处理",
+        },
+        {
+            "key": "material",
+            "label": "原料出库",
+            "done": task.status not in {"pending_material", "pending_material_approval", "pending_special_approval"},
+            "actor": "原料库库管",
+            "action": "审核领料申请并执行原料出库",
+        },
+        {
+            "key": "produce",
+            "label": "生产完工",
+            "done": task.status in {"waiting_quality", "ready_for_inbound", "completed"},
+            "actor": "生产人员",
+            "action": "录入产出、报废并提交入库申请",
+        },
+        {
+            "key": "quality",
+            "label": "质检处理",
+            "done": task.status in {"ready_for_inbound", "completed"} or not bool(task.requires_quality),
+            "actor": "质检人员",
+            "action": "完成质检并决定是否准许入库",
+        },
+        {
+            "key": "inbound",
+            "label": "成品入库",
+            "done": task.status == "completed",
+            "actor": "库管人员",
+            "action": "核对成品信息后执行入库",
+        },
+    ]
+    steps = _finalize_flow_steps(steps)
+    if not bool(task.requires_quality):
+        for index, step in enumerate(steps):
+            if step["key"] == "quality":
+                next_step = steps[index + 1] if index + 1 < len(steps) else None
+                next_line = "下一步：完成本步骤后，当前流程闭环。"
+                if next_step is not None:
+                    next_line = f"下一步需要由{next_step.get('actor') or '相关责任人'}{next_step.get('action') or '继续处理后续步骤'}。"
+                step["tooltip"] = f"当前任务无需质检，该步骤自动跳过。\n{next_line}"
+                break
+    return steps

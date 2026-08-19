@@ -1,0 +1,810 @@
+<template>
+  <PageSection title="采购订单" description="支持采购建单、编辑作废、阈值审批与合同附件维护。新建时付款方式仅区分先到货后付款和先付款后到货。">
+    <template #actions>
+      <el-button @click="load">刷新</el-button>
+      <el-button @click="exportTable">导出</el-button>
+      <el-button v-if="canManageSettings" plain @click="thresholdVisible = true">采购金额阈值：{{ formatNumber(purchaseApprovalThreshold) }}</el-button>
+      <el-button v-if="canManageOrders" type="primary" @click="openCreate">新增采购单</el-button>
+    </template>
+
+    <el-tabs v-model="activeStatusTab" class="status-tabs">
+      <el-tab-pane :label="`执行中/待付款 (${activeOrderRows.length})`" name="active" />
+      <el-tab-pane :label="`已完成 (${completedOrderRows.length})`" name="completed" />
+    </el-tabs>
+
+    <el-table :data="pagedRows" stripe :row-class-name="rowClassName">
+      <el-table-column prop="order_no" label="采购单号" width="150" />
+      <el-table-column prop="supplier_name" label="供应商" min-width="180" />
+      <el-table-column prop="operator_name" label="经办人" width="120" />
+      <el-table-column prop="payment_type_label" label="付款方式" min-width="160" />
+      <el-table-column prop="status_label" label="状态" width="140">
+        <template #default="scope">
+          <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="fund_status_label" label="结算状态" width="140" />
+      <el-table-column prop="total_amount" label="总金额" width="120" />
+      <el-table-column label="操作" width="260" fixed="right">
+        <template #default="scope">
+          <div class="row-actions">
+            <el-button size="small" text type="primary" @click="viewOrder(scope.row.id)">查看</el-button>
+            <el-button v-if="canConfirmPurchase(scope.row)" size="small" text type="success" @click="openPurchaseConfirm(scope.row)">确认采购</el-button>
+            <el-button v-if="canManageOrders" size="small" text type="primary" @click="editOrder(scope.row)" :disabled="!canEdit(scope.row)">编辑</el-button>
+            <el-button v-if="canManageOrders" size="small" text type="danger" @click="cancelOrder(scope.row)" :disabled="!canCancel(scope.row)">作废</el-button>
+            <el-button v-if="canManageOrders" size="small" text type="success" @click="openAttachments(scope.row)">合同/发票</el-button>
+          </div>
+        </template>
+      </el-table-column>
+    </el-table>
+    <AppPagination
+      v-model:page="pagination.page"
+      v-model:page-size="pagination.pageSize"
+      :total="total"
+      :page-sizes="pageSizes"
+    />
+
+    <PageSection v-if="canManageOrders" title="待采购补货需求" description="贸易型产品库存不足、生产领料原料库存不足时，会在此生成待采购需求。">
+      <el-table :data="fulfillmentDemands" stripe>
+        <el-table-column prop="demand_no" label="需求号" width="150" />
+        <el-table-column prop="source_type" label="来源" width="140">
+          <template #default="scope">{{ demandSourceLabel(scope.row) }}</template>
+        </el-table-column>
+        <el-table-column prop="sales_order_no" label="来源单号" width="160">
+          <template #default="scope">{{ scope.row.sales_order_no || scope.row.production_task_no || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="item_name" label="产品/原料" min-width="180">
+          <template #default="scope">{{ scope.row.item_name || scope.row.product_name || scope.row.material_name || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="shortage_quantity" label="缺口数量" width="120">
+          <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
+        </el-table-column>
+        <el-table-column prop="status_label" label="状态" width="120">
+          <template #default="scope">
+            <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="process_note" label="处理说明" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="220" fixed="right">
+          <template #default="scope">
+            <el-button size="small" text type="info" @click="viewDemand(scope.row)">详情</el-button>
+            <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建采购单</el-button>
+            <el-button v-if="scope.row.demand_type !== 'raw_material'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消创建</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </PageSection>
+
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑采购单' : '新增采购单'" width="980px">
+      <el-alert v-if="activeDemand" type="warning" :closable="false" show-icon class="mb-12">
+        <template #title>
+          补货需求：{{ activeDemand.item_name || activeDemand.product_name || activeDemand.material_name || '-' }}，缺口 {{ formatNumber(activeDemand.shortage_quantity) }}；
+          安全库存 {{ formatNumber(activeDemand.safety_stock_qty) }}；
+          预计可用库存 {{ formatNumber(activeDemand.expected_available_quantity) }}
+        </template>
+      </el-alert>
+      <el-form :model="form" label-width="90px">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="供应商">
+              <el-select v-model="form.supplier_id" filterable style="width: 100%" @change="handleSupplierChange">
+                <el-option v-for="item in supplierOptionsForCurrentItems" :key="item.id" :label="supplierOptionLabel(item)" :value="item.id" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="付款方式">
+              <el-select v-model="form.payment_type" style="width: 100%">
+                <el-option label="先到货后付款" value="先到货后付款" />
+                <el-option label="先付款后到货" value="先付款后到货" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="经办人">
+              <el-select v-model="form.operator_user_id" filterable style="width: 100%">
+                <el-option v-for="item in purchaseUsers" :key="item.id" :label="`${item.full_name} / ${item.username}`" :value="item.id" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12" />
+        </el-row>
+
+        <el-alert
+          v-if="supplierAiTip"
+          :type="supplierAiTip.type"
+          :closable="false"
+          show-icon
+          class="mb-12"
+        >
+          <template #title>{{ supplierAiTip.title }}</template>
+          <div v-if="supplierAi" class="ai-summary">
+            <div class="ai-summary-head">
+              <span>供应商评级</span>
+              <el-tag :type="supplierAi.analysis.grade_type">{{ supplierAi.analysis.predicted_grade }}级</el-tag>
+              <span>当前风险</span>
+              <el-tag :type="supplierAi.analysis.risk_type">{{ supplierAi.analysis.risk_label }}</el-tag>
+              <span>BiLSTM时序风险</span>
+              <el-tag :type="supplierAi.analysis.sequence_risk_type">{{ supplierAi.analysis.sequence_risk_label }}</el-tag>
+              <span>趋势：{{ supplierAi.analysis.risk_trend || '平稳' }}</span>
+            </div>
+            <div class="ai-summary-body">
+              <span>风险指数 {{ percent(supplierAi.analysis.risk_score) }}</span>
+              <span>时序风险 {{ percent(supplierAi.analysis.sequence_risk_score) }}</span>
+              <span>主要原因：{{ (supplierAi.analysis.risk_reasons || [])[0] || '当前履约表现整体稳定' }}</span>
+            </div>
+            <div class="ai-summary-body" v-if="supplierAi.analysis.action_suggestions?.length">
+              <span>建议：{{ supplierAi.analysis.action_suggestions[0] }}</span>
+            </div>
+          </div>
+        </el-alert>
+
+        <div class="detail-toolbar">
+          <span>采购明细</span>
+          <el-button v-if="canManageOrders" size="small" @click="addItem">新增明细</el-button>
+        </div>
+        <el-table :data="form.items" border>
+          <el-table-column label="产品/原料" min-width="220">
+            <template #default="scope">
+              <el-select v-model="scope.row.type" style="width: 110px; margin-right: 8px" :disabled="!canManageOrders" @change="handlePurchaseItemTypeChange(scope.row)">
+                <el-option label="产品" value="product" />
+                <el-option label="原料" value="material" />
+              </el-select>
+              <el-select v-model="scope.row.target_id" filterable style="width: calc(100% - 118px)" :disabled="!canManageOrders" @change="() => handlePurchaseItemSelect(scope.row)">
+                <el-option
+                  v-for="item in itemOptions(scope.row)"
+                  :key="item.id"
+                  :label="item.name"
+                  :value="item.id"
+                />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="规格" width="130">
+            <template #default="scope">{{ itemSpec(scope.row) }}</template>
+          </el-table-column>
+          <el-table-column label="数量" width="140">
+            <template #default="scope">
+              <el-input-number v-model="scope.row.quantity" :min="0.01" style="width: 100%" :disabled="!canManageOrders" />
+            </template>
+          </el-table-column>
+          <el-table-column label="袋数" width="120">
+            <template #default="scope">{{ bagCount(scope.row) }}</template>
+          </el-table-column>
+          <el-table-column label="单价" width="140">
+            <template #default="scope">
+              <el-input-number v-model="scope.row.unit_price" :min="0.01" style="width: 100%" :disabled="!canManageOrders" />
+            </template>
+          </el-table-column>
+          <el-table-column label="最近供价" width="130">
+            <template #default="scope">{{ latestCatalogPriceText(scope.row) }}</template>
+          </el-table-column>
+          <el-table-column v-if="canManageOrders" label="操作" width="90">
+            <template #default="scope">
+              <el-button size="small" text type="danger" @click="removeItem(scope.$index)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button v-if="canManageOrders" type="primary" @click="submit">提交</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer v-model="detailVisible" title="采购单详情" size="50%">
+      <el-descriptions v-if="detail" :column="2" border>
+        <el-descriptions-item label="采购单号">{{ detail.order_no }}</el-descriptions-item>
+        <el-descriptions-item label="供应商">{{ detail.supplier_name }}</el-descriptions-item>
+        <el-descriptions-item label="经办人">{{ detail.operator_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="状态">{{ detail.status_label || statusLabel(detail.status) }}</el-descriptions-item>
+        <el-descriptions-item label="付款方式">{{ detail.payment_type_label || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
+        <el-descriptions-item label="结算状态">{{ detail.fund_status_label || statusLabel(detail.fund_status) }}</el-descriptions-item>
+        <el-descriptions-item label="流程进度" :span="2">
+          <div class="flow-steps">
+            <el-tooltip
+              v-for="step in detail.flow_steps || []"
+              :key="step.key"
+              effect="light"
+              placement="top"
+              :show-after="2000"
+            >
+              <template #content>
+                <div class="flow-tooltip-content">{{ step.tooltip }}</div>
+              </template>
+              <span class="flow-step" :class="`is-${step.status || 'pending'}`">{{ step.label }}</span>
+            </el-tooltip>
+          </div>
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-table :data="detail?.items || []" stripe class="mt-16">
+        <el-table-column prop="product_name" label="产品" />
+        <el-table-column prop="material_name" label="原料" />
+        <el-table-column prop="display_specification" label="规格" width="130" />
+        <el-table-column prop="quantity" label="数量" />
+        <el-table-column prop="bag_count" label="袋数" width="110" />
+        <el-table-column prop="unit_price" label="单价" />
+        <el-table-column prop="received_quantity" label="已收货" />
+      </el-table>
+    </el-drawer>
+
+    <el-drawer v-model="attachmentVisible" title="采购合同与发票附件" size="40%">
+      <el-alert title="合同、发票上传后会同步通知财务和经理，便于后续付款审核与对账。" type="info" :closable="false" show-icon class="mb-12" />
+      <AttachmentUploader v-if="attachmentOrder" business-type="purchase_order" :business-id="attachmentOrder.id" :preset-types="['合同', '发票', '付款凭证', '到货单']" />
+    </el-drawer>
+
+    <el-dialog v-model="purchaseConfirmVisible" title="采购订单确认" width="760px">
+      <el-alert type="success" :closable="false" show-icon class="mb-12">
+        <template #title>该采购订单已审批通过，请采购员确认后开始采购。</template>
+      </el-alert>
+      <el-descriptions v-if="confirmDetail" :column="2" border>
+        <el-descriptions-item label="采购单号">{{ confirmDetail.order_no }}</el-descriptions-item>
+        <el-descriptions-item label="供应商">{{ confirmDetail.supplier_name }}</el-descriptions-item>
+        <el-descriptions-item label="经办人">{{ confirmDetail.operator_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="付款方式">{{ confirmDetail.payment_type_label || paymentTypeLabel(confirmDetail.payment_type) }}</el-descriptions-item>
+        <el-descriptions-item label="订单金额">{{ formatNumber(confirmDetail.total_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="当前状态">{{ confirmDetail.status_label || statusLabel(confirmDetail.status) }}</el-descriptions-item>
+      </el-descriptions>
+      <el-table :data="confirmDetail?.items || []" stripe class="mt-16">
+        <el-table-column prop="product_name" label="产品" />
+        <el-table-column prop="material_name" label="原料" />
+        <el-table-column prop="quantity" label="数量" />
+        <el-table-column prop="unit_price" label="单价" />
+      </el-table>
+      <template #footer>
+        <el-button @click="purchaseConfirmVisible = false">稍后处理</el-button>
+        <el-button type="primary" @click="submitPurchaseConfirm">确认开始采购</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="thresholdVisible" title="采购审批金额阈值" width="520px">
+      <el-form label-width="130px">
+        <el-form-item label="当前金额阈值">
+          <el-input-number v-model="thresholdForm.amount" :min="0" :precision="2" style="width: 100%" :disabled="!canManageSettings" />
+        </el-form-item>
+        <el-alert title="采购订单总金额达到或超过该金额时，需要经理审批；审批通过后还需采购员确认才进入采购中。" type="info" :closable="false" show-icon />
+      </el-form>
+      <template #footer>
+        <el-button @click="thresholdVisible = false">关闭</el-button>
+        <el-button v-if="canManageSettings" type="primary" @click="saveThreshold">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="demandDetailVisible" title="补货需求详情" width="680px">
+      <el-descriptions v-if="activeDemand" :column="2" border>
+        <el-descriptions-item label="需求号">{{ activeDemand.demand_no }}</el-descriptions-item>
+        <el-descriptions-item label="需求类型">{{ activeDemand.demand_type === 'raw_material' ? '生产原料补货' : '贸易产品补货' }}</el-descriptions-item>
+        <el-descriptions-item label="来源单号">{{ activeDemand.sales_order_no || activeDemand.production_task_no || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="关联产品">{{ activeDemand.production_product_name || activeDemand.product_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="待采购物料">{{ activeDemand.item_name || activeDemand.material_name || activeDemand.product_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="缺口数量">{{ formatNumber(activeDemand.shortage_quantity) }}</el-descriptions-item>
+        <el-descriptions-item label="状态">{{ activeDemand.status_label || statusLabel(activeDemand.status) }}</el-descriptions-item>
+        <el-descriptions-item label="生成时间">{{ activeDemand.created_at || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="处理说明" :span="2">{{ activeDemand.process_note || '-' }}</el-descriptions-item>
+      </el-descriptions>
+      <template #footer>
+        <el-button @click="demandDetailVisible = false">关闭</el-button>
+        <el-button type="primary" @click="prefillDemand(activeDemand)">转建采购单</el-button>
+      </template>
+    </el-dialog>
+  </PageSection>
+</template>
+
+<script setup>
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/alert/style/css'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/col/style/css'
+import 'element-plus/es/components/descriptions/style/css'
+import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/drawer/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/input-number/style/css'
+import 'element-plus/es/components/row/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/tabs/style/css'
+import 'element-plus/es/components/tag/style/css'
+import 'element-plus/es/components/tooltip/style/css'
+
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
+
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCol from 'element-plus/es/components/col/index.mjs'
+import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
+import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
+import ElRow from 'element-plus/es/components/row/index.mjs'
+import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
+import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import ElTabs, { ElTabPane } from 'element-plus/es/components/tabs/index.mjs'
+import ElTag from 'element-plus/es/components/tag/index.mjs'
+import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
+
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useRouteFocus } from '../../composables/useRouteFocus'
+
+import { get, post, put, remove } from '../../api/client'
+import AttachmentUploader from '../../components/AttachmentUploader.vue'
+import AppPagination from '../../components/AppPagination.vue'
+import PageSection from '../../components/PageSection.vue'
+import { useLocalPagination } from '../../composables/useLocalPagination'
+import { useAuthStore } from '../../stores/auth'
+import { exportRowsToCsv } from '../../utils/export'
+import { formatNumber, paymentTypeLabel, statusLabel, statusType } from '../../utils/format'
+
+const auth = useAuthStore()
+const router = useRouter()
+const { route, focusedId: focusedOrderId, applyFocus: applyRouteFocus } = useRouteFocus()
+const rows = ref([])
+const fulfillmentDemands = ref([])
+const suppliers = ref([])
+const userOptions = ref([])
+const products = ref([])
+const materials = ref([])
+const supplierCatalogItems = ref([])
+const demandSupplierOptions = ref([])
+const supplierAi = ref(null)
+const supplierAiLoading = ref(false)
+const dialogVisible = ref(false)
+const detailVisible = ref(false)
+const attachmentVisible = ref(false)
+const demandDetailVisible = ref(false)
+const purchaseConfirmVisible = ref(false)
+const thresholdVisible = ref(false)
+const detail = ref(null)
+const confirmDetail = ref(null)
+const attachmentOrder = ref(null)
+const activeDemand = ref(null)
+const editingId = ref(null)
+const canManageOrders = computed(() => auth.user?.role_code === 'purchase')
+const canManageSettings = computed(() => ['purchase', 'manager', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
+const purchaseUsers = computed(() => {
+  const rows = userOptions.value.filter((item) => item.role_code === 'purchase')
+  return rows.length ? rows : userOptions.value.filter((item) => item.id === auth.user?.id)
+})
+const purchaseApprovalThreshold = ref(0)
+const activeStatusTab = ref('active')
+const activeOrderRows = computed(() => rows.value.filter((item) => !item.is_completed_order))
+const completedOrderRows = computed(() => rows.value.filter((item) => item.is_completed_order))
+const visibleRows = computed(() => (activeStatusTab.value === 'completed' ? completedOrderRows.value : activeOrderRows.value))
+const supplierAiTip = computed(() => {
+  if (supplierAiLoading.value) {
+    return { type: 'info', title: '正在读取供应商智能评价结果...' }
+  }
+  if (!supplierAi.value) return null
+  const analysis = supplierAi.value.analysis || {}
+  const supplierName = supplierAi.value.supplier?.name || '当前供应商'
+  return {
+    type: analysis.risk_type || analysis.grade_type || 'info',
+    title: `${supplierName}：${analysis.predicted_grade || '-'}级，${analysis.risk_label || '暂无风险判断'}，BiLSTM预测${analysis.sequence_risk_label || '暂无结果'}`
+  }
+})
+const supplierOptionsForCurrentItems = computed(() => activeDemand.value ? demandSupplierOptions.value : suppliers.value)
+const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(visibleRows)
+
+const emptyForm = () => ({
+  supplier_id: null,
+  operator_user_id: auth.user?.id || null,
+  payment_type: '先到货后付款',
+  fulfillment_demand_id: null,
+  items: [{ type: 'material', target_id: null, quantity: 1, unit_price: 0 }]
+})
+
+const form = reactive(emptyForm())
+const thresholdForm = reactive({ amount: 0 })
+
+function resetForm() {
+  Object.assign(form, emptyForm())
+  editingId.value = null
+  supplierCatalogItems.value = []
+  demandSupplierOptions.value = []
+  supplierAi.value = null
+  supplierAiLoading.value = false
+}
+
+function rowClassName({ row }) {
+  return focusedOrderId.value === row.id ? 'is-focused-row' : ''
+}
+
+function canEdit(row) {
+  return canManageOrders.value && (row.status === 'pending_approval' || row.status === 'rejected' || (row.status === 'purchasing' && !row.threshold_triggered))
+}
+
+function canCancel(row) {
+  return canManageOrders.value && ['pending_approval', 'rejected', 'purchasing'].includes(row.status)
+}
+
+function canConfirmPurchase(row) {
+  return canManageOrders.value && row.status === 'pending_purchase_confirm'
+}
+
+async function applyFocus() {
+  const focusType = String(route.query.focusType || '')
+  const focusId = Number(route.query.focusId || 0)
+  if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment')) {
+    const matchedDemand = fulfillmentDemands.value.find((item) => {
+      if (focusType === 'raw_material_replenishment') {
+        return Number(item.raw_todo_id) === focusId || Number(item.usage_id) === focusId || String(item.id) === String(route.query.focusId || '')
+      }
+      if (focusType === 'low_stock_replenishment') {
+        return Number(item.low_stock_todo_id) === focusId || String(item.id) === `low-${focusId}`
+      }
+      return Number(item.id) === focusId
+    })
+    if (matchedDemand && !dialogVisible.value) {
+      await prefillDemand(matchedDemand)
+    }
+    return
+  }
+  await applyRouteFocus(
+    (focusId) => rows.value.find((item) => item.id === focusId),
+    async (matched) => {
+      if (String(route.query.focusType || '') === 'purchase_order_confirm') {
+        if (canConfirmPurchase(matched)) {
+          await openPurchaseConfirm(matched)
+        }
+      } else {
+        await viewOrder(matched.id)
+      }
+    }
+  )
+}
+
+async function clearFocusQuery() {
+  const nextQuery = { ...route.query }
+  delete nextQuery.focusId
+  delete nextQuery.focusType
+  await router.replace({ query: nextQuery })
+}
+
+function openCreate() {
+  resetForm()
+  dialogVisible.value = true
+}
+
+function addItem() {
+  form.items.push({ type: 'material', target_id: null, quantity: 1, unit_price: 0 })
+}
+
+function removeItem(index) {
+  form.items.splice(index, 1)
+}
+
+function currentItemSource(row) {
+  return row.type === 'product'
+    ? products.value.find((item) => item.id === row.target_id)
+    : materials.value.find((item) => item.id === row.target_id)
+}
+
+function itemOptions(row) {
+  if (!form.supplier_id) {
+    return row.type === 'product' ? products.value : materials.value
+  }
+  if (!supplierCatalogItems.value.length) {
+    return []
+  }
+  const allowedIds = new Set(
+    supplierCatalogItems.value
+      .filter((item) => item.item_type === row.type)
+      .map((item) => row.type === 'product' ? item.product_id : item.material_id)
+      .filter(Boolean)
+  )
+  const source = row.type === 'product' ? products.value : materials.value
+  return source.filter((item) => allowedIds.has(item.id))
+}
+
+async function loadSupplierCatalog(supplierId) {
+  supplierCatalogItems.value = []
+  if (!supplierId) return
+  const data = await get(`/api/master-data/suppliers/${supplierId}/catalog`)
+  supplierCatalogItems.value = data.items || []
+}
+
+function resetInvalidItemsForSupplier() {
+  form.items.forEach((item) => {
+    if (item.target_id && !itemOptions(item).some((option) => option.id === item.target_id)) {
+      item.target_id = null
+      item.unit_price = 0
+    }
+  })
+}
+
+async function handleSupplierChange(supplierId) {
+  await loadSupplierCatalog(supplierId)
+  resetInvalidItemsForSupplier()
+  await loadSupplierAi(supplierId)
+}
+
+function percent(value) {
+  return `${(Number(value || 0) * 100).toFixed(1)}%`
+}
+
+async function loadSupplierAi(supplierId) {
+  supplierAi.value = null
+  if (!supplierId) return
+  supplierAiLoading.value = true
+  try {
+    supplierAi.value = await get(`/api/supplier-ai/suppliers/${supplierId}`, { force: true })
+  } catch {
+    supplierAi.value = null
+  } finally {
+    supplierAiLoading.value = false
+  }
+}
+
+function itemSpec(row) {
+  return currentItemSource(row)?.specification || '-'
+}
+
+function currentCatalogItem(row) {
+  return supplierCatalogItems.value.find((item) => {
+    if (item.item_type !== row.type) return false
+    return row.type === 'product' ? item.product_id === row.target_id : item.material_id === row.target_id
+  })
+}
+
+function latestCatalogPriceText(row) {
+  const price = currentCatalogItem(row)?.latest_price
+  if (!price) return '-'
+  return Number(price).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function supplierOptionLabel(item) {
+  const price = item.latest_price == null ? '暂无历史供价' : `最新供价 ${formatNumber(item.latest_price)}`
+  return item.latest_order_no ? `${item.name}（${price}，${item.latest_order_no}）` : `${item.name}（${price}）`
+}
+
+function handlePurchaseItemTypeChange(row) {
+  row.target_id = null
+  row.unit_price = 0
+}
+
+function handlePurchaseItemSelect(row) {
+  const latestPrice = currentCatalogItem(row)?.latest_price
+  row.unit_price = latestPrice ? Number(latestPrice) : 0
+}
+
+function bagCount(row) {
+  const kgPerBag = Number(currentItemSource(row)?.packaging?.kg_per_bag || 0)
+  if (!kgPerBag || !row.quantity) return '-'
+  return Math.ceil(Number(row.quantity) / kgPerBag)
+}
+
+async function load() {
+  rows.value = await get('/api/purchases/orders')
+  if (canManageOrders.value) {
+    fulfillmentDemands.value = await get('/api/purchases/fulfillment-demands')
+  } else {
+    fulfillmentDemands.value = []
+  }
+  await applyFocus()
+}
+
+function demandSourceLabel(row) {
+  if (row?.source_type === 'low_stock_replenishment') return '安全库存补货'
+  return row?.demand_type === 'raw_material' ? '生产领料缺料' : '客户订单缺货'
+}
+
+async function loadSettings() {
+  const settings = await get('/api/master-data/settings')
+  purchaseApprovalThreshold.value = Number(settings.purchase_approval_amount_threshold || 0)
+  thresholdForm.amount = purchaseApprovalThreshold.value
+}
+
+async function loadSupplierOptionsForDemand(row) {
+  demandSupplierOptions.value = []
+  if (!row) return
+  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
+  const query = isRawDemand ? `material_id=${row.material_id}` : `product_id=${row.product_id}`
+  if ((!isRawDemand && !row.product_id) || (isRawDemand && !row.material_id)) return
+  const options = await get(`/api/purchases/supplier-options?${query}`)
+  demandSupplierOptions.value = (options || []).map((item) => ({
+    id: item.supplier_id,
+    name: item.supplier_name,
+    latest_price: item.latest_price,
+    latest_order_no: item.latest_order_no
+  }))
+  if (demandSupplierOptions.value.length) {
+    form.supplier_id = demandSupplierOptions.value[0].id
+    await loadSupplierCatalog(form.supplier_id)
+    await loadSupplierAi(form.supplier_id)
+    form.items.forEach((item) => handlePurchaseItemSelect(item))
+  } else {
+    form.supplier_id = null
+    supplierCatalogItems.value = []
+    supplierAi.value = null
+    ElMessage.warning('当前补货商品未维护可供货供应商名录，请先在供应商名录中维护后再转建采购单')
+  }
+}
+
+async function prefillDemand(row) {
+  if (!row) return
+  resetForm()
+  activeDemand.value = row
+  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
+  const isLowStockDemand = row.demand_type === 'low_stock_product' || row.demand_type === 'low_stock_material'
+  form.items = [{
+    type: isRawDemand ? 'material' : 'product',
+    target_id: isRawDemand ? row.material_id : row.product_id,
+    quantity: Number(row.shortage_quantity || 1),
+    unit_price: 0
+  }]
+  form.fulfillment_demand_id = (isRawDemand || isLowStockDemand) ? null : row.id
+  await loadSupplierOptionsForDemand(row)
+  demandDetailVisible.value = false
+  dialogVisible.value = true
+}
+
+function viewDemand(row) {
+  activeDemand.value = row
+  demandDetailVisible.value = true
+}
+
+async function cancelDemand(row) {
+  const reason = window.prompt('请输入取消原因')
+  if (!reason || reason.trim().length < 2) {
+    ElMessage.warning('请填写有效的取消原因')
+    return
+  }
+  await post(`/api/purchases/fulfillment-demands/${row.id}/cancel`, { reason: reason.trim() })
+  ElMessage.success('补货需求已取消')
+  await load()
+}
+
+async function submit() {
+  if (activeDemand.value && !demandSupplierOptions.value.length) {
+    ElMessage.warning('当前补货商品未维护可供货供应商名录，不能直接从补货需求转建采购单')
+    return
+  }
+  if (form.supplier_id) {
+    await loadSupplierCatalog(form.supplier_id)
+    if (form.items.some((item) => !item.target_id || !itemOptions(item).some((option) => option.id === item.target_id))) {
+      ElMessage.warning('采购明细只能选择当前供应商可供货名录中的产品或原料')
+      return
+    }
+  }
+  const payload = {
+    supplier_id: form.supplier_id,
+    operator_user_id: form.operator_user_id || auth.user?.id,
+    payment_type: form.payment_type,
+    items: form.items.map((item) => ({
+      product_id: item.type === 'product' ? item.target_id : null,
+      material_id: item.type === 'material' ? item.target_id : null,
+      quantity: item.quantity,
+      unit_price: item.unit_price
+    }))
+  }
+
+  if (editingId.value) {
+    const result = await put(`/api/purchases/orders/${editingId.value}`, payload)
+    ElMessage.success(`采购单已更新：${result.order_no}`)
+  } else {
+    const result = await post('/api/purchases/orders', payload)
+    if (activeDemand.value?.demand_type === 'raw_material' && activeDemand.value?.raw_todo_id) {
+      await post(`/api/purchases/raw-material-replenishments/${activeDemand.value.raw_todo_id}/link-order/${result.id}`)
+    } else if (activeDemand.value?.low_stock_todo_id) {
+      await post(`/api/dashboard/todos/${activeDemand.value.low_stock_todo_id}/done`)
+    } else if (form.fulfillment_demand_id) {
+      await post(`/api/purchases/fulfillment-demands/${form.fulfillment_demand_id}/link-order/${result.id}`)
+    }
+    ElMessage.success(`采购单已创建：${result.order_no}`)
+  }
+  dialogVisible.value = false
+  resetForm()
+  if (route.query.focusId || route.query.focusType) {
+    await router.replace({ path: '/purchases/orders', query: {} })
+  }
+  await load()
+}
+
+async function viewOrder(id) {
+  detail.value = await get(`/api/purchases/orders/${id}`)
+  detailVisible.value = true
+}
+
+async function openPurchaseConfirm(row) {
+  confirmDetail.value = await get(`/api/purchases/orders/${row.id}`)
+  purchaseConfirmVisible.value = true
+}
+
+async function submitPurchaseConfirm() {
+  if (!confirmDetail.value?.id) return
+  await post(`/api/purchases/orders/${confirmDetail.value.id}/confirm`, {})
+  ElMessage.success('采购订单已确认，状态转为采购中')
+  purchaseConfirmVisible.value = false
+  confirmDetail.value = null
+  await clearFocusQuery()
+  await load()
+}
+
+async function saveThreshold() {
+  const result = await put('/api/master-data/settings/purchase-approval-threshold', { amount: thresholdForm.amount })
+  purchaseApprovalThreshold.value = Number(result.purchase_approval_amount_threshold || thresholdForm.amount || 0)
+  ElMessage.success('采购审批金额阈值已更新')
+  thresholdVisible.value = false
+}
+
+async function editOrder(row) {
+  const order = await get(`/api/purchases/orders/${row.id}`)
+  resetForm()
+  editingId.value = row.id
+  form.supplier_id = order.supplier_id
+  form.operator_user_id = order.operator_user_id || auth.user?.id
+  await loadSupplierCatalog(order.supplier_id)
+  await loadSupplierAi(order.supplier_id)
+  form.payment_type = order.payment_type
+  form.items = (order.items || []).map((item) => ({
+    type: item.product_id ? 'product' : 'material',
+    target_id: item.product_id || item.material_id,
+    quantity: item.quantity,
+    unit_price: item.unit_price
+  }))
+  dialogVisible.value = true
+}
+
+async function cancelOrder(row) {
+  await ElMessageBox.confirm(`确认作废采购单 ${row.order_no} 吗？`, '提示', { type: 'warning' })
+  await remove(`/api/purchases/orders/${row.id}`)
+  ElMessage.success('采购单已作废')
+  await load()
+}
+
+function openAttachments(row) {
+  attachmentOrder.value = row
+  attachmentVisible.value = true
+}
+
+function exportTable() {
+  exportRowsToCsv('purchase_orders', rows.value)
+}
+
+onMounted(async () => {
+  await loadSettings()
+  userOptions.value = await get('/api/admin/users/options')
+  suppliers.value = await get('/api/master-data/suppliers')
+  products.value = await get('/api/master-data/products')
+  materials.value = await get('/api/master-data/materials')
+  await load()
+})
+
+watch(
+  () => form.supplier_id,
+  async (supplierId, oldSupplierId) => {
+    if (supplierId === oldSupplierId) return
+    await loadSupplierCatalog(supplierId)
+    resetInvalidItemsForSupplier()
+  }
+)
+
+watch(
+  () => [route.query.focusId, route.query.focusType],
+  async () => {
+    if (rows.value.length) {
+      await applyFocus()
+    }
+  }
+)
+</script>
+
+<style scoped>
+.status-tabs { margin-bottom: 12px; }
+.detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
+.mt-16 { margin-top: 16px; }
+.mb-12 { margin-bottom: 12px; }
+.ai-summary { margin-top: 6px; line-height: 1.7; }
+.ai-summary-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-weight: 600; }
+.ai-summary-body { display: flex; flex-wrap: wrap; gap: 8px 16px; color: #526579; }
+:deep(.is-focused-row) > td { background: #fff8e1 !important; }
+.flow-steps { display: flex; flex-wrap: wrap; gap: 8px; }
+.flow-step { padding: 4px 10px; border-radius: 999px; background: #f4f4f5; color: #909399; font-size: 12px; }
+.flow-step.is-done { background: #f0f9eb; color: #67c23a; }
+.flow-step.is-current { background: #ecf5ff; color: #409eff; font-weight: 600; }
+.flow-tooltip-content { max-width: 280px; white-space: pre-line; line-height: 1.6; }
+</style>

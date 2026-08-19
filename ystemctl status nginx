@@ -1,0 +1,13 @@
+[0;1;32m●[0m yecai-backend.service - Yecai Backend Service
+   Loaded: loaded (/etc/systemd/system/yecai-backend.service; enabled; vendor preset: disabled)
+   Active: [0;1;32mactive (running)[0m since Sun 2026-06-28 15:41:11 CST; 3min 37s ago
+ Main PID: 113488 (gunicorn)
+    Tasks: 5 (limit: 22546)
+   Memory: 156.8M
+   CGroup: /system.slice/yecai-backend.service
+           ├─113488 /opt/yecai/yecai-new/venv/bin/python3 /opt/yecai/yecai-new/venv/bin/gunicorn -w 1 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8000 --pid /var/run/yecai-backend.pid --access-logfile /var/log/yecai-access.log --error-logfile /var/log/yecai-error.log
+           └─113489 /opt/yecai/yecai-new/venv/bin/python3 /opt/yecai/yecai-new/venv/bin/gunicorn -w 1 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8000 --pid /var/run/yecai-backend.pid --access-logfile /var/log/yecai-access.log --error-logfile /var/log/yecai-error.log
+
+Jun 28 15:41:11 iZ2zeiakw30qsbkurwihk0Z systemd[1]: Started Yecai Backend Service.
+Jun 28 15:41:13 iZ2zeiakw30qsbkurwihk0Z start_backend.sh[113489]: INFO  [alembic.runtime.migration] Context impl MySQLImpl.
+Jun 28 15:41:13 iZ2zeiakw30qsbkurwihk0Z start_backend.sh[113489]: INFO  [alembic.runtime.migration] Will assume non-transactional DDL.

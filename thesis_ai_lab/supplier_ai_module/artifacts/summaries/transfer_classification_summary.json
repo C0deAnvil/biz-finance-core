@@ -1,0 +1,90 @@
+{
+  "mode": "transfer_refit",
+  "说明": "树模型采用保持原特征口径的增量再训练方式实现迁移适配，不覆盖论文原始模型产物。",
+  "include_history": false,
+  "system_weekly_rows": 288,
+  "training_weekly_rows": 288,
+  "best_classifier": "RandomForest",
+  "selected_features": [
+    "total_sales_lag1",
+    "total_sales_lag2",
+    "late_delivery_rate_lag1",
+    "late_delivery_rate_lag2",
+    "quality_fail_rate_lag1",
+    "quality_fail_rate_lag2",
+    "unique_products_lag2",
+    "avg_positive_shipping_gap_lag1",
+    "avg_positive_shipping_gap_lag2",
+    "risk_index_lag1",
+    "risk_index_lag2",
+    "total_sales_roll4_lag1",
+    "month",
+    "week_sin"
+  ],
+  "metrics": [
+    {
+      "accuracy": 0.675,
+      "precision_macro": 0.666667,
+      "recall_macro": 0.671875,
+      "f1_macro": 0.667519,
+      "auc_ovr": 0.774089,
+      "logloss": 0.546423,
+      "model": "RandomForest"
+    },
+    {
+      "accuracy": 0.7,
+      "precision_macro": 0.694357,
+      "recall_macro": 0.661458,
+      "f1_macro": 0.66457,
+      "auc_ovr": 0.754557,
+      "logloss": 0.615484,
+      "model": "LightGBM"
+    },
+    {
+      "accuracy": 0.65,
+      "precision_macro": 0.631054,
+      "recall_macro": 0.619792,
+      "f1_macro": 0.621366,
+      "auc_ovr": 0.750651,
+      "logloss": 0.569656,
+      "model": "SoftVoting"
+    },
+    {
+      "accuracy": 0.6125,
+      "precision_macro": 0.589448,
+      "recall_macro": 0.583333,
+      "f1_macro": 0.583823,
+      "auc_ovr": 0.69401,
+      "logloss": 0.654672,
+      "model": "XGBoost"
+    },
+    {
+      "accuracy": 0.625,
+      "precision_macro": 0.625,
+      "recall_macro": 0.546875,
+      "f1_macro": 0.5,
+      "auc_ovr": 0.725911,
+      "logloss": 0.614806,
+      "model": "StackingMLP"
+    }
+  ],
+  "artifact_path": "C:\\Users\\13674\\Desktop\\yecai-new\\新建文件夹\\论文输出\\模型\\supplier_classification_transfer_artifact.joblib",
+  "adapter_report": {
+    "source": "system_database",
+    "raw_rows": 864,
+    "补齐说明": [
+      "系统当前未维护计划运输天数，late_delivery_rate 暂按实际到货耗时超过3天计算；后续接入计划到货日期后可改为真实计划差异。",
+      "系统采购事实缺少销售利润字段，profit_per_order 与 avg_profit_ratio 按0补齐，不改变模型字段名称。"
+    ],
+    "字段对齐策略": {
+      "供应商": "suppliers.name -> supplier_name",
+      "订单数": "purchase_orders.id -> order_count",
+      "销售额口径": "采购订单金额代理模型 total_sales",
+      "利润口径": "系统采购数据未记录销售利润时按0补齐",
+      "交付口径": "到货时间与下单时间差代理实际运输天数；系统暂无计划运输天数时，按超过3天作为延迟风险代理",
+      "质量口径": "采购到货 quality_status 或质检记录代理 quality_fail_rate"
+    },
+    "weekly_rows": 288,
+    "supplier_count": 8
+  }
+}

@@ -1,0 +1,1298 @@
+"""统一 ORM 模型定义。
+
+领域分区索引：
+1. 系统与权限
+2. 通知、待办、附件
+3. 主数据
+4. 库存与批次
+5. 销售
+6. 采购
+7. 生产与质检
+8. 财务
+9. 盘点与报表
+"""
+
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    text,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import declarative_base, relationship
+
+from services.time_utils import now_local
+
+
+Base = declarative_base()
+
+
+class TimestampMixin:
+    created_at = Column(DateTime, default=now_local, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=now_local,
+        onupdate=now_local,
+        nullable=False,
+    )
+
+
+# ===== 系统与权限 =====
+class Department(TimestampMixin, Base):
+    __tablename__ = "departments"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), nullable=False, unique=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(String(255), nullable=True)
+    parent_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
+    unit_type = Column(String(30), nullable=False, default="department")
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    warehouse_scope = Column(String(30), nullable=True)
+
+    parent = relationship("Department", remote_side=[id], back_populates="children")
+    children = relationship("Department", back_populates="parent")
+    users = relationship("User", back_populates="department")
+
+
+class Role(TimestampMixin, Base):
+    __tablename__ = "roles"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), nullable=False, unique=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(String(255), nullable=True)
+    home_route = Column(String(150), nullable=False)
+    navigation_json = Column(JSON, nullable=False, default=list)
+    scope_json = Column(JSON, nullable=False, default=list)
+    is_admin = Column(Boolean, nullable=False, default=False)
+
+    users = relationship("User", back_populates="role")
+
+
+class User(TimestampMixin, Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(50), nullable=False, unique=True)
+    full_name = Column(String(100), nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    phone = Column(String(30), nullable=True)
+    email = Column(String(120), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
+    role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
+    job_title = Column(String(100), nullable=True)
+    data_scope = Column(String(30), nullable=False, default="self")
+    inherited_from_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    data_successor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
+
+    department = relationship("Department", back_populates="users")
+    role = relationship("Role", back_populates="users")
+    inherited_from_user = relationship("User", foreign_keys=[inherited_from_user_id], remote_side=[id])
+    data_successor_user = relationship("User", foreign_keys=[data_successor_user_id], remote_side=[id])
+    sessions = relationship("UserSession", back_populates="user")
+
+
+class UserModulePermission(TimestampMixin, Base):
+    __tablename__ = "user_module_permissions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "route_path", name="uq_user_module_permission"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    route_path = Column(String(150), nullable=False)
+    assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    assigned_by = relationship("User", foreign_keys=[assigned_by_id])
+
+
+class UserSession(TimestampMixin, Base):
+    __tablename__ = "user_sessions"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    session_token = Column(String(255), nullable=False, unique=True)
+    refresh_token = Column(String(255), nullable=False, unique=True)
+    device_name = Column(String(100), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    expires_at = Column(DateTime, nullable=False)
+    refresh_expires_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False, default=now_local)
+
+    user = relationship("User", back_populates="sessions")
+
+
+class SequenceCounter(TimestampMixin, Base):
+    __tablename__ = "sequence_counters"
+    __table_args__ = (UniqueConstraint("sequence_key", "business_date", name="uq_sequence_key_date"),)
+
+    id = Column(Integer, primary_key=True)
+    sequence_key = Column(String(50), nullable=False)
+    business_date = Column(String(20), nullable=False)
+    current_value = Column(Integer, nullable=False, default=0)
+
+
+class AppSetting(TimestampMixin, Base):
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True)
+    setting_key = Column(String(100), nullable=False, unique=True)
+    setting_value = Column(Text, nullable=False)
+    description = Column(String(255), nullable=True)
+
+
+class TodoItem(TimestampMixin, Base):
+    __tablename__ = "todo_items"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    module = Column(String(50), nullable=False)
+    business_type = Column(String(50), nullable=True)
+    business_id = Column(Integer, nullable=True)
+    assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    assigned_role_id = Column(Integer, ForeignKey("roles.id"), nullable=True)
+    status = Column(String(30), nullable=False, default="pending")
+    priority = Column(String(30), nullable=False, default="normal")
+    due_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    assigned_user = relationship("User")
+    assigned_role = relationship("Role")
+
+
+class Notification(TimestampMixin, Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String(50), nullable=False, default="info")
+    module = Column(String(50), nullable=False)
+    is_popup = Column(Boolean, nullable=False, default=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class NotificationRecipient(TimestampMixin, Base):
+    __tablename__ = "notification_recipients"
+    __table_args__ = (
+        UniqueConstraint("notification_id", "user_id", name="uq_notification_user"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    notification_id = Column(Integer, ForeignKey("notifications.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    is_read = Column(Boolean, nullable=False, default=False)
+    read_at = Column(DateTime, nullable=True)
+
+    notification = relationship("Notification")
+    user = relationship("User")
+
+
+class OperationLog(Base):
+    __tablename__ = "operation_logs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    module = Column(String(50), nullable=False)
+    action = Column(String(100), nullable=False)
+    content = Column(Text, nullable=False)
+    before_data = Column(JSON, nullable=True)
+    after_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=now_local, nullable=False)
+
+    user = relationship("User")
+
+
+class Attachment(TimestampMixin, Base):
+    __tablename__ = "attachments"
+
+    id = Column(Integer, primary_key=True)
+    business_type = Column(String(50), nullable=False)
+    business_id = Column(Integer, nullable=False)
+    attachment_type = Column(String(50), nullable=False)
+    original_name = Column(String(255), nullable=False)
+    stored_name = Column(String(255), nullable=False, unique=True)
+    relative_path = Column(String(500), nullable=False)
+    mime_type = Column(String(120), nullable=True)
+    uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    uploaded_by = relationship("User")
+
+
+# ===== 主数据 =====
+class Customer(TimestampMixin, Base):
+    __tablename__ = "customers"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), nullable=False, unique=True)
+    name = Column(String(150), nullable=False, unique=True)
+    contact_name = Column(String(100), nullable=False)
+    phone = Column(String(30), nullable=False)
+    address = Column(String(255), nullable=False)
+    star_level = Column(String(30), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    unified_social_credit_code = Column(String(60), nullable=True, unique=True)
+    source_type = Column(String(30), nullable=False, default="personal_development")
+    archived_at = Column(DateTime, nullable=True)
+
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    owner_user = relationship("User", foreign_keys=[owner_user_id])
+
+
+class CustomerTransferRecord(TimestampMixin, Base):
+    __tablename__ = "customer_transfer_records"
+
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    from_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    to_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    transferred_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reason = Column(Text, nullable=True)
+    transferred_at = Column(DateTime, default=now_local, nullable=False)
+
+    customer = relationship("Customer")
+    from_user = relationship("User", foreign_keys=[from_user_id])
+    to_user = relationship("User", foreign_keys=[to_user_id])
+    transferred_by = relationship("User", foreign_keys=[transferred_by_id])
+
+
+class CustomerComplaint(TimestampMixin, Base):
+    __tablename__ = "customer_complaints"
+
+    id = Column(Integer, primary_key=True)
+    complaint_no = Column(String(60), nullable=False, unique=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    complainant_name = Column(String(100), nullable=False)
+    complainant_phone = Column(String(30), nullable=False)
+    complainant_address = Column(String(255), nullable=True)
+    complaint_reason = Column(String(255), nullable=False)
+    complaint_detail = Column(Text, nullable=True)
+    status = Column(String(30), nullable=False, default="pending")
+    handled_result = Column(Text, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    handled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    handled_at = Column(DateTime, nullable=True)
+
+    customer = relationship("Customer")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    handled_by = relationship("User", foreign_keys=[handled_by_id])
+
+
+class CustomerInquiry(TimestampMixin, Base):
+    __tablename__ = "customer_inquiries"
+
+    id = Column(Integer, primary_key=True)
+    inquiry_no = Column(String(60), nullable=False, unique=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    inquiry_text = Column(Text, nullable=False)
+    source_channel = Column(String(50), nullable=True)
+    product_hint = Column(String(150), nullable=True)
+    intent_score = Column(Numeric(10, 4), nullable=False, default=0)
+    intent_label = Column(String(30), nullable=False, default="unknown")
+    model_version = Column(String(80), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    customer = relationship("Customer")
+    created_by = relationship("User")
+
+
+class CustomerAIResult(TimestampMixin, Base):
+    __tablename__ = "customer_ai_results"
+    __table_args__ = (
+        UniqueConstraint("customer_id", name="uq_customer_ai_result_customer"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    segment_label = Column(String(50), nullable=False)
+    segment_reason = Column(Text, nullable=True)
+    lead_score = Column(Numeric(10, 4), nullable=False, default=0)
+    lead_label = Column(String(30), nullable=False, default="待观察")
+    rfm_json = Column(JSON, nullable=False, default=dict)
+    recommendations_json = Column(JSON, nullable=False, default=list)
+    model_version = Column(String(80), nullable=False, default="customer-ai-v1")
+    generated_at = Column(DateTime, default=now_local, nullable=False)
+
+    customer = relationship("Customer")
+
+
+class Supplier(TimestampMixin, Base):
+    __tablename__ = "suppliers"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), nullable=False, unique=True)
+    name = Column(String(150), nullable=False, unique=True)
+    contact_name = Column(String(100), nullable=False)
+    phone = Column(String(30), nullable=False)
+    address = Column(String(255), nullable=False)
+    status = Column(String(30), nullable=False, default="enabled")
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class SupplierAIResult(TimestampMixin, Base):
+    __tablename__ = "supplier_ai_results"
+    __table_args__ = (
+        UniqueConstraint("supplier_id", name="uq_supplier_ai_result_supplier"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
+    predicted_grade = Column(String(30), nullable=False, default="unknown")
+    risk_score = Column(Numeric(10, 4), nullable=False, default=0)
+    risk_label = Column(String(30), nullable=False, default="unknown")
+    confidence = Column(Numeric(10, 4), nullable=False, default=0)
+    features_json = Column(JSON, nullable=False, default=dict)
+    probabilities_json = Column(JSON, nullable=False, default=dict)
+    model_name = Column(String(80), nullable=False, default="supplier-ai")
+    model_version = Column(String(80), nullable=False, default="supplier-ai-v1")
+    generated_at = Column(DateTime, default=now_local, nullable=False)
+
+    supplier = relationship("Supplier")
+
+
+class SupplierCatalogItem(TimestampMixin, Base):
+    __tablename__ = "supplier_catalog_items"
+
+    id = Column(Integer, primary_key=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    remark = Column(String(255), nullable=True)
+
+    supplier = relationship("Supplier")
+    product = relationship("Product")
+    material = relationship("Material")
+
+
+class StandardPriceChangeLog(TimestampMixin, Base):
+    __tablename__ = "standard_price_change_logs"
+
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    old_price = Column(Numeric(18, 2), nullable=False, default=0)
+    new_price = Column(Numeric(18, 2), nullable=False)
+    remark = Column(String(255), nullable=False)
+    changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    product = relationship("Product")
+    changed_by = relationship("User", foreign_keys=[changed_by_id])
+
+
+class SalesOrderPriceChangeLog(TimestampMixin, Base):
+    __tablename__ = "sales_order_price_change_logs"
+
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    sales_order_item_id = Column(Integer, ForeignKey("sales_order_items.id"), nullable=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    standard_price = Column(Numeric(18, 2), nullable=False, default=0)
+    actual_price = Column(Numeric(18, 2), nullable=False)
+    remark = Column(String(255), nullable=False)
+    changed_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+
+    sales_order = relationship("SalesOrder")
+    sales_order_item = relationship("SalesOrderItem")
+    product = relationship("Product")
+    changed_by = relationship("User", foreign_keys=[changed_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+
+
+class Warehouse(TimestampMixin, Base):
+    __tablename__ = "warehouses"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), nullable=False, unique=True)
+    name = Column(String(100), nullable=False, unique=True)
+    location = Column(String(255), nullable=True)
+    warehouse_type = Column(String(30), nullable=False)
+
+
+class Product(TimestampMixin, Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True)
+    product_code = Column(String(50), nullable=False, unique=True)
+    name = Column(String(200), nullable=False)
+    price = Column(Numeric(10, 2), nullable=False, default=0)
+    specification = Column(String(255), nullable=True)
+    unit = Column(String(20), nullable=False, default="kg")
+    safety_stock_qty = Column(Numeric(18, 4), nullable=False, default=0)
+    purchase_threshold_qty = Column(Numeric(18, 4), nullable=False, default=0)
+    fulfillment_mode = Column(String(30), nullable=False, default="production")
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    def __repr__(self):
+        return f"<Product(name='{self.name}')>"
+
+
+class Material(TimestampMixin, Base):
+    __tablename__ = "materials"
+
+    id = Column(Integer, primary_key=True)
+    material_code = Column(String(50), nullable=False, unique=True)
+    name = Column(String(200), nullable=False)
+    price = Column(Numeric(10, 2), nullable=False, default=0)
+    specification = Column(String(255), nullable=True)
+    unit = Column(String(20), nullable=False, default="kg")
+    safety_stock_qty = Column(Numeric(18, 4), nullable=False, default=0)
+    purchase_threshold_qty = Column(Numeric(18, 4), nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+
+class PackagingConfig(TimestampMixin, Base):
+    __tablename__ = "packaging_configs"
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", "packaging_name", name="uq_packaging_entity_name"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    entity_type = Column(String(30), nullable=False)
+    entity_id = Column(Integer, nullable=False)
+    packaging_name = Column(String(100), nullable=False)
+    kg_per_bag = Column(Numeric(18, 4), nullable=False)
+    unit_price = Column(Numeric(18, 2), nullable=False, default=0)
+    is_default = Column(Boolean, nullable=False, default=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+
+# ===== 库存与批次 =====
+class Inventory(TimestampMixin, Base):
+    __tablename__ = "inventories"
+    __table_args__ = (
+        UniqueConstraint("warehouse_id", "product_id", "material_id", name="uq_inventory_item"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    avg_unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
+
+    warehouse = relationship("Warehouse")
+    product = relationship("Product")
+    material = relationship("Material")
+
+
+class InventoryBatch(TimestampMixin, Base):
+    __tablename__ = "inventory_batches"
+    __table_args__ = (
+        UniqueConstraint("warehouse_id", "batch_no", "product_id", "material_id", name="uq_batch_item"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    batch_no = Column(String(80), nullable=False)
+    quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
+    quality_grade = Column(String(30), nullable=True)
+    source_type = Column(String(50), nullable=True)
+    source_id = Column(Integer, nullable=True)
+
+
+class InventoryTransaction(TimestampMixin, Base):
+    __tablename__ = "inventory_transactions"
+
+    id = Column(Integer, primary_key=True)
+    transaction_no = Column(String(60), nullable=False, unique=True)
+    transaction_type = Column(String(50), nullable=False)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    batch_no = Column(String(80), nullable=True)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
+    total_cost = Column(Numeric(18, 4), nullable=False, default=0)
+    related_type = Column(String(50), nullable=True)
+    related_id = Column(Integer, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class InventoryOperationRequest(TimestampMixin, Base):
+    __tablename__ = "inventory_operation_requests"
+
+    id = Column(Integer, primary_key=True)
+    request_no = Column(String(60), nullable=False, unique=True)
+    operation_type = Column(String(20), nullable=False)
+    request_category = Column(String(50), nullable=False)
+    source_module = Column(String(50), nullable=False)
+    source_type = Column(String(50), nullable=False)
+    source_id = Column(Integer, nullable=False)
+    source_no = Column(String(60), nullable=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    handled_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status = Column(String(30), nullable=False, default="pending")
+    remark = Column(Text, nullable=True)
+    handled_remark = Column(Text, nullable=True)
+    adjust_reason = Column(Text, nullable=True)
+    quantity_difference_remark = Column(Text, nullable=True)
+    difference_notified_at = Column(DateTime, nullable=True)
+    original_items_json = Column(JSON, nullable=False, default=list)
+    handled_items_json = Column(JSON, nullable=False, default=list)
+    completed_at = Column(DateTime, nullable=True)
+
+    warehouse = relationship("Warehouse")
+    requested_by = relationship("User", foreign_keys=[requested_by_id])
+    handled_by = relationship("User", foreign_keys=[handled_by_id])
+
+
+# ===== 销售 =====
+class SalesOrder(TimestampMixin, Base):
+    __tablename__ = "sales_orders"
+
+    id = Column(Integer, primary_key=True)
+    order_no = Column(String(60), nullable=False, unique=True)
+    parent_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
+    split_group_no = Column(String(60), nullable=True)
+    split_phase = Column(Integer, nullable=False, default=1)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    sales_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    consignee = Column(String(100), nullable=False)
+    consignee_phone = Column(String(30), nullable=False)
+    delivery_address = Column(String(255), nullable=False)
+    payment_type = Column(String(50), nullable=False)
+    status = Column(String(30), nullable=False, default="draft")
+    total_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    deposit_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    transport_fee = Column(Numeric(18, 2), nullable=False, default=0)
+    packaging_fee = Column(Numeric(18, 2), nullable=False, default=0)
+    cost_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    profit_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    order_remark = Column(Text, nullable=True)
+    finance_edit_pending = Column(Boolean, nullable=False, default=False)
+    price_approval_status = Column(String(30), nullable=False, default="not_required")
+    price_approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    price_approved_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    shipped_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+
+    customer = relationship("Customer")
+    sales_user = relationship("User", foreign_keys=[sales_user_id])
+    operator_user = relationship("User", foreign_keys=[operator_user_id])
+    price_approved_by = relationship("User", foreign_keys=[price_approved_by_id])
+    parent_order = relationship("SalesOrder", remote_side=[id])
+    items = relationship("SalesOrderItem", back_populates="sales_order", cascade="all, delete-orphan")
+
+
+class SalesOrderItem(TimestampMixin, Base):
+    __tablename__ = "sales_order_items"
+
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    unit_price = Column(Numeric(18, 2), nullable=False)
+    total_amount = Column(Numeric(18, 2), nullable=False)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
+    kg_per_bag = Column(Numeric(18, 4), nullable=True)
+    bag_count = Column(Numeric(18, 4), nullable=True)
+    packaging_unit_price = Column(Numeric(18, 2), nullable=False, default=0)
+    packaging_fee = Column(Numeric(18, 2), nullable=False, default=0)
+    display_specification = Column(String(120), nullable=True)
+    remark = Column(String(255), nullable=True)
+    shipped_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+
+    sales_order = relationship("SalesOrder", back_populates="items")
+    product = relationship("Product")
+    packaging_config = relationship("PackagingConfig")
+
+
+class SalesOrderApproval(TimestampMixin, Base):
+    __tablename__ = "sales_order_approvals"
+
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    approver_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    decision = Column(String(30), nullable=False)
+    voucher_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    note = Column(Text, nullable=True)
+    approved_at = Column(DateTime, default=now_local, nullable=False)
+
+
+class InventoryDispatchQueue(TimestampMixin, Base):
+    __tablename__ = "inventory_dispatch_queues"
+
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False, unique=True)
+    placement_status = Column(String(30), nullable=False, default="pending")
+    shipment_status = Column(String(30), nullable=False, default="waiting_approval")
+    placement_marked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    placement_marked_at = Column(DateTime, nullable=True)
+    shipment_marked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    shipment_marked_at = Column(DateTime, nullable=True)
+
+    sales_order = relationship("SalesOrder")
+
+
+class SalesReturn(TimestampMixin, Base):
+    __tablename__ = "sales_returns"
+
+    id = Column(Integer, primary_key=True)
+    return_no = Column(String(60), nullable=False, unique=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    return_type = Column(String(30), nullable=False, default="return")
+    reason = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    refund_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    review_note = Column(Text, nullable=True)
+    requires_reinspection = Column(Boolean, nullable=False, default=False)
+    reinspection_status = Column(String(30), nullable=False, default="not_required")
+    approved_at = Column(DateTime, nullable=True)
+
+
+class SalesReturnItem(TimestampMixin, Base):
+    __tablename__ = "sales_return_items"
+
+    id = Column(Integer, primary_key=True)
+    sales_return_id = Column(Integer, ForeignKey("sales_returns.id"), nullable=False)
+    sales_order_item_id = Column(Integer, ForeignKey("sales_order_items.id"), nullable=False)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    batch_suffix = Column(String(30), nullable=True)
+
+
+class FulfillmentDemand(TimestampMixin, Base):
+    __tablename__ = "fulfillment_demands"
+
+    id = Column(Integer, primary_key=True)
+    demand_no = Column(String(60), nullable=False, unique=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    sales_order_item_id = Column(Integer, ForeignKey("sales_order_items.id"), nullable=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    fulfillment_mode = Column(String(30), nullable=False)
+    shortage_quantity = Column(Numeric(18, 4), nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    processed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    cancel_reason = Column(Text, nullable=True)
+    process_note = Column(Text, nullable=True)
+    source_order_no = Column(String(60), nullable=True)
+
+    sales_order = relationship("SalesOrder")
+    sales_order_item = relationship("SalesOrderItem")
+    product = relationship("Product")
+    assigned_user = relationship("User", foreign_keys=[assigned_user_id])
+    processed_by = relationship("User", foreign_keys=[processed_by_id])
+
+
+# ===== 采购 =====
+class PurchaseOrder(TimestampMixin, Base):
+    __tablename__ = "purchase_orders"
+
+    id = Column(Integer, primary_key=True)
+    order_no = Column(String(60), nullable=False, unique=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
+    purchaser_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    payment_type = Column(String(50), nullable=False)
+    status = Column(String(30), nullable=False, default="draft")
+    total_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    threshold_triggered = Column(Boolean, nullable=False, default=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    contract_received = Column(Boolean, nullable=False, default=False)
+
+    supplier = relationship("Supplier")
+    purchaser = relationship("User", foreign_keys=[purchaser_user_id])
+    operator_user = relationship("User", foreign_keys=[operator_user_id])
+    items = relationship("PurchaseOrderItem", back_populates="purchase_order", cascade="all, delete-orphan")
+
+
+class PurchaseOrderItem(TimestampMixin, Base):
+    __tablename__ = "purchase_order_items"
+
+    id = Column(Integer, primary_key=True)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    unit_price = Column(Numeric(18, 2), nullable=False)
+    total_amount = Column(Numeric(18, 2), nullable=False)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
+    kg_per_bag = Column(Numeric(18, 4), nullable=True)
+    bag_count = Column(Numeric(18, 4), nullable=True)
+    display_specification = Column(String(120), nullable=True)
+    received_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+    returned_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+
+    purchase_order = relationship("PurchaseOrder", back_populates="items")
+    product = relationship("Product")
+    material = relationship("Material")
+    packaging_config = relationship("PackagingConfig")
+
+
+class PurchaseOrderApproval(TimestampMixin, Base):
+    __tablename__ = "purchase_order_approvals"
+
+    id = Column(Integer, primary_key=True)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
+    approver_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    decision = Column(String(30), nullable=False)
+    note = Column(Text, nullable=True)
+    approved_at = Column(DateTime, default=now_local, nullable=False)
+
+
+class PurchaseReceipt(TimestampMixin, Base):
+    __tablename__ = "purchase_receipts"
+
+    id = Column(Integer, primary_key=True)
+    receipt_no = Column(String(60), nullable=False, unique=True)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    received_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    requires_quality = Column(Boolean, nullable=False, default=False)
+    quality_status = Column(String(30), nullable=False, default="not_required")
+    status = Column(String(30), nullable=False, default="received")
+    remark = Column(String(255), nullable=True)
+    preliminary_acceptance_note = Column(Text, nullable=True)
+    recorded_at = Column(DateTime, nullable=True)
+
+
+class PurchaseReceiptItem(TimestampMixin, Base):
+    __tablename__ = "purchase_receipt_items"
+
+    id = Column(Integer, primary_key=True)
+    purchase_receipt_id = Column(Integer, ForeignKey("purchase_receipts.id"), nullable=False)
+    purchase_order_item_id = Column(Integer, ForeignKey("purchase_order_items.id"), nullable=False)
+    expected_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    received_quantity = Column(Numeric(18, 4), nullable=False)
+    batch_no = Column(String(80), nullable=False)
+    unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
+    difference_remark = Column(Text, nullable=True)
+
+
+class PurchaseReturn(TimestampMixin, Base):
+    __tablename__ = "purchase_returns"
+
+    id = Column(Integer, primary_key=True)
+    return_no = Column(String(60), nullable=False, unique=True)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    returned_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    return_type = Column(String(30), nullable=False, default="return")
+    reason = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    refund_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    requires_reinspection = Column(Boolean, nullable=False, default=False)
+    reinspection_status = Column(String(30), nullable=False, default="not_required")
+
+
+class PurchasePaymentRequest(TimestampMixin, Base):
+    __tablename__ = "purchase_payment_requests"
+
+    id = Column(Integer, primary_key=True)
+    request_no = Column(String(60), nullable=False, unique=True)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
+    merge_no = Column(String(60), nullable=True)
+    requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    completed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    requested_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    order_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    other_fee_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    actual_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    arrival_status = Column(String(30), nullable=False, default="not_arrived")
+    status = Column(String(30), nullable=False, default="pending")
+    payment_detail_remark = Column(Text, nullable=True)
+    manager_remark = Column(Text, nullable=True)
+    completion_remark = Column(Text, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    bank_receipt_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+    payment_method = Column(String(80), nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+
+    purchase_order = relationship("PurchaseOrder")
+    requested_by = relationship("User", foreign_keys=[requested_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+    completed_by = relationship("User", foreign_keys=[completed_by_id])
+    bank_receipt_attachment = relationship("Attachment", foreign_keys=[bank_receipt_attachment_id])
+
+
+# ===== 生产与质检 =====
+class BOM(TimestampMixin, Base):
+    __tablename__ = "boms"
+
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, unique=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
+    version_no = Column(String(30), nullable=False, default="v1")
+    is_active = Column(Boolean, nullable=False, default=True)
+    notes = Column(Text, nullable=True)
+
+    product = relationship("Product")
+    packaging_config = relationship("PackagingConfig")
+    items = relationship("BOMItem", back_populates="bom", cascade="all, delete-orphan")
+
+
+class BOMItem(TimestampMixin, Base):
+    __tablename__ = "bom_items"
+
+    id = Column(Integer, primary_key=True)
+    bom_id = Column(Integer, ForeignKey("boms.id"), nullable=False)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    standard_quantity = Column(Numeric(18, 4), nullable=False)
+
+    bom = relationship("BOM", back_populates="items")
+    material = relationship("Material")
+
+
+class ProductionTask(TimestampMixin, Base):
+    __tablename__ = "production_tasks"
+
+    id = Column(Integer, primary_key=True)
+    task_no = Column(String(60), nullable=False, unique=True)
+    source_type = Column(String(30), nullable=False, default="manual")
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    parent_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=True)
+    planned_quantity = Column(Numeric(18, 4), nullable=False)
+    produced_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    scrap_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    fluctuation_ratio = Column(Numeric(8, 4), nullable=False, default=0)
+    requires_quality = Column(Boolean, nullable=False, default=True)
+    status = Column(String(30), nullable=False, default="pending_material")
+    batch_no = Column(String(80), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+    preliminary_acceptance_note = Column(Text, nullable=True)
+    completion_recorded_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    product = relationship("Product")
+    completion_recorded_by = relationship("User", foreign_keys=[completion_recorded_by_id])
+    usages = relationship(
+        "ProductionMaterialUsage",
+        back_populates="production_task",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProductionMaterialUsage(TimestampMixin, Base):
+    __tablename__ = "production_material_usages"
+
+    id = Column(Integer, primary_key=True)
+    production_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=False)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=False)
+    planned_quantity = Column(Numeric(18, 4), nullable=False)
+    requested_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    approved_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    issued_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    actual_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    reason = Column(Text, nullable=True)
+    special_request_status = Column(String(30), nullable=False, default="not_required")
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    inventory_approval_status = Column(String(30), nullable=False, default="not_required")
+    inventory_approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    inventory_approved_at = Column(DateTime, nullable=True)
+    inventory_remark = Column(Text, nullable=True)
+    manager_approval_status = Column(String(30), nullable=False, default="not_required")
+    manager_approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    manager_approved_at = Column(DateTime, nullable=True)
+    manager_remark = Column(Text, nullable=True)
+
+    production_task = relationship("ProductionTask", back_populates="usages")
+    material = relationship("Material")
+
+
+class ProductionPlan(TimestampMixin, Base):
+    __tablename__ = "production_plans"
+
+    id = Column(Integer, primary_key=True)
+    plan_no = Column(String(60), nullable=False, unique=True)
+    plan_name = Column(String(120), nullable=True)
+    period_type = Column(String(30), nullable=False, default="custom")
+    period_start = Column(DateTime, nullable=True)
+    period_end = Column(DateTime, nullable=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
+    assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    planned_quantity = Column(Numeric(18, 4), nullable=False)
+    scheduled_start_at = Column(DateTime, nullable=True)
+    scheduled_end_at = Column(DateTime, nullable=True)
+    priority = Column(String(30), nullable=False, default="normal")
+    line_name = Column(String(100), nullable=True)
+    scheduling_note = Column(Text, nullable=True)
+    detail_json = Column(JSON, nullable=False, default=dict)
+    converted_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    status = Column(String(30), nullable=False, default="planned")
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    product = relationship("Product")
+    sales_order = relationship("SalesOrder")
+    assigned_user = relationship("User", foreign_keys=[assigned_user_id])
+    converted_task = relationship("ProductionTask", foreign_keys=[converted_task_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+
+class QualityTask(TimestampMixin, Base):
+    __tablename__ = "quality_tasks"
+
+    id = Column(Integer, primary_key=True)
+    quality_no = Column(String(60), nullable=False, unique=True)
+    production_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=False)
+    batch_no = Column(String(80), nullable=False)
+    source_category = Column(String(30), nullable=False, default="production")
+    required_tests = Column(Integer, nullable=False, default=1)
+    status = Column(String(30), nullable=False, default="pending")
+    submitted_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    inspections = relationship(
+        "QualityInspection",
+        back_populates="quality_task",
+        cascade="all, delete-orphan",
+    )
+
+
+class QualityInspection(TimestampMixin, Base):
+    __tablename__ = "quality_inspections"
+
+    id = Column(Integer, primary_key=True)
+    quality_task_id = Column(Integer, ForeignKey("quality_tasks.id"), nullable=False)
+    inspector_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    sequence_no = Column(Integer, nullable=False)
+    result_text = Column(Text, nullable=False)
+    grade = Column(String(30), nullable=False)
+    is_passed = Column(Boolean, nullable=False, default=True)
+    inspected_quantity = Column(Numeric(18, 4), nullable=False)
+    sample_consumption_qty = Column(Numeric(18, 4), nullable=False, default=0)
+    report_summary = Column(Text, nullable=True)
+    inspected_at = Column(DateTime, default=now_local, nullable=False)
+
+    quality_task = relationship("QualityTask", back_populates="inspections")
+
+
+class QualityInboundApplication(TimestampMixin, Base):
+    __tablename__ = "quality_inbound_applications"
+
+    id = Column(Integer, primary_key=True)
+    quality_task_id = Column(Integer, ForeignKey("quality_tasks.id"), nullable=False, unique=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status = Column(String(30), nullable=False, default="pending")
+    approved_at = Column(DateTime, nullable=True)
+    remark = Column(Text, nullable=True)
+
+
+class QualityDisposition(TimestampMixin, Base):
+    __tablename__ = "quality_dispositions"
+    __table_args__ = (UniqueConstraint("quality_task_id", name="uq_quality_disposition_task"),)
+
+    id = Column(Integer, primary_key=True)
+    quality_task_id = Column(Integer, ForeignKey("quality_tasks.id"), nullable=False)
+    disposition_type = Column(String(30), nullable=False)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    reason = Column(Text, nullable=False)
+    related_production_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    quality_task = relationship("QualityTask")
+    related_production_task = relationship("ProductionTask", foreign_keys=[related_production_task_id])
+
+
+class QualityCostRecord(TimestampMixin, Base):
+    __tablename__ = "quality_cost_records"
+    __table_args__ = (UniqueConstraint("quality_disposition_id", name="uq_quality_cost_record_disposition"),)
+
+    id = Column(Integer, primary_key=True)
+    quality_disposition_id = Column(Integer, ForeignKey("quality_dispositions.id"), nullable=False)
+    estimated_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    recognized_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    status = Column(String(30), nullable=False, default="pending")
+    remark = Column(String(255), nullable=True)
+    recognized_at = Column(DateTime, nullable=True)
+    recognized_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    disposition = relationship("QualityDisposition")
+    recognized_by = relationship("User", foreign_keys=[recognized_by_id])
+
+
+# ===== 财务 =====
+class SalesReceiptRequest(TimestampMixin, Base):
+    __tablename__ = "sales_receipt_requests"
+
+    id = Column(Integer, primary_key=True)
+    request_no = Column(String(60), nullable=False, unique=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    requested_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    actual_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    payment_stage = Column(String(30), nullable=False)
+    installment_total = Column(Integer, nullable=True)
+    installment_index = Column(Integer, nullable=True)
+    status = Column(String(30), nullable=False, default="pending")
+    is_abnormal = Column(Boolean, nullable=False, default=False)
+    remark = Column(Text, nullable=True)
+    approval_remark = Column(Text, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    finance_status = Column(String(30), nullable=False, default="pending")
+    finance_checked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    finance_checked_at = Column(DateTime, nullable=True)
+    receipt_method = Column(String(80), nullable=True)
+    receipt_at = Column(DateTime, nullable=True)
+    bank_receipt_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+
+    sales_order = relationship("SalesOrder")
+    requested_by = relationship("User", foreign_keys=[requested_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+    finance_checked_by = relationship("User", foreign_keys=[finance_checked_by_id])
+    bank_receipt_attachment = relationship("Attachment", foreign_keys=[bank_receipt_attachment_id])
+
+
+class ReceivablePlan(TimestampMixin, Base):
+    __tablename__ = "receivable_plans"
+
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    due_date = Column(Date, nullable=False)
+    planned_amount = Column(Numeric(18, 2), nullable=False)
+    received_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    status = Column(String(30), nullable=False, default="pending")
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+
+class ReceivableRecord(TimestampMixin, Base):
+    __tablename__ = "receivable_records"
+
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    receivable_plan_id = Column(Integer, ForeignKey("receivable_plans.id"), nullable=True)
+    sales_receipt_request_id = Column(Integer, ForeignKey("sales_receipt_requests.id"), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    payment_stage = Column(String(30), nullable=True)
+    installment_total = Column(Integer, nullable=True)
+    installment_index = Column(Integer, nullable=True)
+    received_at = Column(DateTime, nullable=False)
+    received_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    remark = Column(String(255), nullable=True)
+    receipt_method = Column(String(80), nullable=True)
+    bank_receipt_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+
+
+class PayableRecord(TimestampMixin, Base):
+    __tablename__ = "payable_records"
+
+    id = Column(Integer, primary_key=True)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
+    purchase_receipt_id = Column(Integer, ForeignKey("purchase_receipts.id"), nullable=True)
+    purchase_payment_request_id = Column(Integer, ForeignKey("purchase_payment_requests.id"), nullable=True)
+    merge_no = Column(String(60), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    order_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    other_fee_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    paid_at = Column(DateTime, nullable=False)
+    paid_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String(30), nullable=False, default="paid")
+    remark = Column(String(255), nullable=True)
+    payment_method = Column(String(80), nullable=True)
+    bank_receipt_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+
+
+class PaymentMethodOption(TimestampMixin, Base):
+    __tablename__ = "payment_method_options"
+
+    id = Column(Integer, primary_key=True)
+    method_type = Column(String(30), nullable=False)
+    name = Column(String(80), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_by = relationship("User")
+
+
+class Reimbursement(TimestampMixin, Base):
+    __tablename__ = "reimbursements"
+
+    id = Column(Integer, primary_key=True)
+    reimbursement_no = Column(String(60), nullable=False, unique=True)
+    applicant_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expense_category = Column(String(30), nullable=False)
+    expense_subcategory = Column(String(80), nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
+    occurred_at = Column(DateTime, nullable=False)
+    reason = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="pending")
+    finance_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    finance_remark = Column(Text, nullable=True)
+    chairman_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    chairman_remark = Column(Text, nullable=True)
+    business_matter_id = Column(Integer, ForeignKey("business_matters.id"), nullable=True)
+    bank_receipt_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+    payment_method = Column(String(80), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+
+    applicant = relationship("User", foreign_keys=[applicant_user_id])
+    finance_user = relationship("User", foreign_keys=[finance_user_id])
+    chairman_user = relationship("User", foreign_keys=[chairman_user_id])
+    attachment = relationship("Attachment", foreign_keys=[attachment_id])
+    bank_receipt_attachment = relationship("Attachment", foreign_keys=[bank_receipt_attachment_id])
+
+
+class BusinessMatter(TimestampMixin, Base):
+    __tablename__ = "business_matters"
+
+    id = Column(Integer, primary_key=True)
+    matter_no = Column(String(60), nullable=False, unique=True)
+    applicant_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expense_category = Column(String(30), nullable=False)
+    expense_subcategory = Column(String(80), nullable=False)
+    estimated_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    actual_amount = Column(Numeric(18, 2), nullable=False, default=0)
+    occurred_at = Column(DateTime, nullable=False)
+    detail = Column(Text, nullable=False)
+    status = Column(String(30), nullable=False, default="pending_manager_approval")
+    manager_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    manager_remark = Column(Text, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    converted_reimbursement_id = Column(Integer, ForeignKey("reimbursements.id"), nullable=True)
+    attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+
+    applicant = relationship("User", foreign_keys=[applicant_user_id])
+    manager_user = relationship("User", foreign_keys=[manager_user_id])
+    attachment = relationship("Attachment", foreign_keys=[attachment_id])
+    converted_reimbursement = relationship("Reimbursement", foreign_keys=[converted_reimbursement_id])
+
+
+class RefundRecord(TimestampMixin, Base):
+    __tablename__ = "refund_records"
+
+    id = Column(Integer, primary_key=True)
+    business_type = Column(String(30), nullable=False)
+    sales_return_id = Column(Integer, ForeignKey("sales_returns.id"), nullable=True)
+    purchase_return_id = Column(Integer, ForeignKey("purchase_returns.id"), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    refunded_at = Column(DateTime, nullable=False)
+    processed_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    remark = Column(String(255), nullable=True)
+
+
+class CashFlowRecord(TimestampMixin, Base):
+    __tablename__ = "cash_flow_records"
+
+    id = Column(Integer, primary_key=True)
+    record_no = Column(String(60), nullable=False, unique=True)
+    flow_type = Column(String(30), nullable=False)
+    business_type = Column(String(50), nullable=False)
+    business_id = Column(Integer, nullable=False)
+    related_no = Column(String(60), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    happened_at = Column(DateTime, nullable=False)
+    remark = Column(String(255), nullable=True)
+
+
+class LogisticsRecord(TimestampMixin, Base):
+    __tablename__ = "logistics_records"
+
+    id = Column(Integer, primary_key=True)
+    logistics_no = Column(String(60), nullable=False, unique=True)
+    module = Column(String(30), nullable=False)
+    business_type = Column(String(30), nullable=False)
+    business_id = Column(Integer, nullable=False)
+    related_no = Column(String(60), nullable=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
+    logistics_mode = Column(String(30), nullable=False, default="road")
+    carrier_name = Column(String(120), nullable=False)
+    driver_name = Column(String(80), nullable=True)
+    driver_phone = Column(String(30), nullable=True)
+    vehicle_no = Column(String(60), nullable=True)
+    tracking_no = Column(String(80), nullable=True)
+    bill_date = Column(Date, nullable=True)
+    origin_station = Column(String(120), nullable=True)
+    destination_station = Column(String(120), nullable=True)
+    transfer_station = Column(String(120), nullable=True)
+    consignor_name = Column(String(100), nullable=True)
+    consignor_phone = Column(String(30), nullable=True)
+    consignor_address = Column(String(255), nullable=True)
+    consignee_name = Column(String(100), nullable=True)
+    consignee_phone = Column(String(30), nullable=True)
+    consignee_address = Column(String(255), nullable=True)
+    goods_info_json = Column(JSON, nullable=False, default=list)
+    delivery_fee = Column(Numeric(18, 2), nullable=False, default=0)
+    freight_payment_type = Column(String(30), nullable=True)
+    handover_type = Column(String(30), nullable=True)
+    document_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+    dispatched_at = Column(DateTime, nullable=True)
+    arrived_at = Column(DateTime, nullable=True)
+    remark = Column(String(255), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    warehouse = relationship("Warehouse")
+    created_by = relationship("User")
+    document_attachment = relationship("Attachment", foreign_keys=[document_attachment_id])
+
+
+# ===== 盘点与报表 =====
+class StockTakeTask(TimestampMixin, Base):
+    __tablename__ = "stock_take_tasks"
+
+    id = Column(Integer, primary_key=True)
+    task_no = Column(String(60), nullable=False, unique=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    submitted_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status = Column(String(30), nullable=False, default="pending")
+    difference_note = Column(Text, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+
+
+class StockTakeItem(TimestampMixin, Base):
+    __tablename__ = "stock_take_items"
+
+    id = Column(Integer, primary_key=True)
+    stock_take_task_id = Column(Integer, ForeignKey("stock_take_tasks.id"), nullable=False)
+    inventory_id = Column(Integer, ForeignKey("inventories.id"), nullable=False)
+    system_quantity = Column(Numeric(18, 4), nullable=False)
+    counted_quantity = Column(Numeric(18, 4), nullable=False)
+    difference_quantity = Column(Numeric(18, 4), nullable=False)
+    reason = Column(String(255), nullable=True)
+
+    inventory = relationship("Inventory")
+
+
+class ReportSnapshot(TimestampMixin, Base):
+    __tablename__ = "report_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    report_type = Column(String(50), nullable=False)
+    period_start = Column(Date, nullable=False)
+    period_end = Column(Date, nullable=False)
+    payload_json = Column(JSON, nullable=False, default=dict)
+    generated_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)

@@ -1,0 +1,269 @@
+{
+  "loaded_rows": 177515,
+  "skipped_rows": 0,
+  "business_rule_cleaning": {
+    "订单日期缺失": 0,
+    "发货日期缺失": 0,
+    "发货早于下单": 0,
+    "实际运输天数异常": 0,
+    "计划运输天数异常": 0,
+    "商品数量非正": 0,
+    "商品单价非正": 0,
+    "销售额非正": 0,
+    "客户销售额非正": 0,
+    "订单项总额非正": 0,
+    "利润率绝对值大于1": 6194,
+    "清洗前记录数": 177515,
+    "清洗后记录数": 171321,
+    "剔除记录数": 6194
+  },
+  "selected_algorithm": "kmeans",
+  "selected_k": 2,
+  "cluster_distribution": {
+    "C": 758,
+    "A": 161
+  },
+  "classification_metrics": [
+    {
+      "accuracy": 0.869732,
+      "precision_macro": 0.835863,
+      "recall_macro": 0.846728,
+      "f1_macro": 0.840968,
+      "auc_ovr": 0.923929,
+      "logloss": 0.883355,
+      "model": "RandomForest"
+    },
+    {
+      "accuracy": 0.854406,
+      "precision_macro": 0.825942,
+      "recall_macro": 0.802572,
+      "f1_macro": 0.81284,
+      "auc_ovr": 0.923419,
+      "logloss": 0.362317,
+      "model": "SoftVoting"
+    },
+    {
+      "accuracy": 0.854406,
+      "precision_macro": 0.830943,
+      "recall_macro": 0.794193,
+      "f1_macro": 0.80924,
+      "auc_ovr": 0.925896,
+      "logloss": 0.506164,
+      "model": "StackingMLP"
+    },
+    {
+      "accuracy": 0.850575,
+      "precision_macro": 0.821899,
+      "recall_macro": 0.795723,
+      "f1_macro": 0.807015,
+      "auc_ovr": 0.92524,
+      "logloss": 0.386855,
+      "model": "XGBoost"
+    },
+    {
+      "accuracy": 0.846743,
+      "precision_macro": 0.812274,
+      "recall_macro": 0.801443,
+      "f1_macro": 0.806523,
+      "auc_ovr": 0.929029,
+      "logloss": 0.772462,
+      "model": "LightGBM"
+    }
+  ],
+  "best_classifier": "RandomForest",
+  "selected_features": [
+    "order_count_lag1",
+    "total_sales_lag1",
+    "avg_order_value_lag1",
+    "profit_per_order_lag1",
+    "profit_per_order_lag2",
+    "avg_profit_ratio_lag1",
+    "avg_profit_ratio_lag2",
+    "late_delivery_rate_lag1",
+    "late_delivery_rate_lag2",
+    "quality_fail_rate_lag1",
+    "quality_fail_rate_lag2",
+    "unique_products_lag1",
+    "avg_positive_shipping_gap_lag1",
+    "avg_positive_shipping_gap_lag2"
+  ],
+  "top_suppliers": [
+    {
+      "supplier_name": "Fan Shop",
+      "avg_grade_score": 2.932886,
+      "avg_risk_index": 0.368526,
+      "avg_quality_pass_rate": 0.870241,
+      "avg_on_time_delivery_rate": 0.456629,
+      "avg_sales": 108936.89476,
+      "final_grade": "A"
+    },
+    {
+      "supplier_name": "Technology",
+      "avg_grade_score": 2.666667,
+      "avg_risk_index": 0.368979,
+      "avg_quality_pass_rate": 0.859913,
+      "avg_on_time_delivery_rate": 0.465074,
+      "avg_sales": 166287.12782,
+      "final_grade": "A"
+    },
+    {
+      "supplier_name": "Apparel",
+      "avg_grade_score": 1.064103,
+      "avg_risk_index": 0.372412,
+      "avg_quality_pass_rate": 0.868542,
+      "avg_on_time_delivery_rate": 0.451602,
+      "avg_sales": 48555.227935,
+      "final_grade": "C"
+    },
+    {
+      "supplier_name": "Outdoors",
+      "avg_grade_score": 1.040816,
+      "avg_risk_index": 0.377444,
+      "avg_quality_pass_rate": 0.872443,
+      "avg_on_time_delivery_rate": 0.440388,
+      "avg_sales": 8133.088433,
+      "final_grade": "C"
+    },
+    {
+      "supplier_name": "Footwear",
+      "avg_grade_score": 1.027586,
+      "avg_risk_index": 0.373125,
+      "avg_quality_pass_rate": 0.866436,
+      "avg_on_time_delivery_rate": 0.451152,
+      "avg_sales": 26102.181915,
+      "final_grade": "C"
+    },
+    {
+      "supplier_name": "Fitness",
+      "avg_grade_score": 1.026846,
+      "avg_risk_index": 0.375053,
+      "avg_quality_pass_rate": 0.872223,
+      "avg_on_time_delivery_rate": 0.446578,
+      "avg_sales": 2549.591824,
+      "final_grade": "C"
+    },
+    {
+      "supplier_name": "Golf",
+      "avg_grade_score": 1.0,
+      "avg_risk_index": 0.371172,
+      "avg_quality_pass_rate": 0.871294,
+      "avg_on_time_delivery_rate": 0.452135,
+      "avg_sales": 30150.039593,
+      "final_grade": "C"
+    },
+    {
+      "supplier_name": "Health and Beauty ",
+      "avg_grade_score": 1.0,
+      "avg_risk_index": 0.37732,
+      "avg_quality_pass_rate": 0.865822,
+      "avg_on_time_delivery_rate": 0.436045,
+      "avg_sales": 34285.680994,
+      "final_grade": "C"
+    },
+    {
+      "supplier_name": "Pet Shop",
+      "avg_grade_score": 1.0,
+      "avg_risk_index": 0.392765,
+      "avg_quality_pass_rate": 0.858725,
+      "avg_on_time_delivery_rate": 0.41755,
+      "avg_sales": 13278.933574,
+      "final_grade": "C"
+    },
+    {
+      "supplier_name": "Book Shop",
+      "avg_grade_score": 1.0,
+      "avg_risk_index": 0.389678,
+      "avg_quality_pass_rate": 0.834708,
+      "avg_on_time_delivery_rate": 0.435281,
+      "avg_sales": 5920.739985,
+      "final_grade": "C"
+    }
+  ],
+  "benchmark_files": {
+    "cluster_algorithm_benchmark": "cluster_algorithm_benchmark.csv",
+    "classification_metrics": "classification_metrics.csv",
+    "classification_reports": "classification_reports.csv",
+    "supplier_ranking": "supplier_final_ranking.csv"
+  },
+  "kmeans_diagnostics": {
+    "k_2_inertia": 7257.544769,
+    "k_3_inertia": 6081.374438,
+    "k_4_inertia": 5228.956924,
+    "k_5_inertia": 4588.789538,
+    "k_6_inertia": 4174.674396,
+    "k_2_silhouette": 0.298351,
+    "k_3_silhouette": 0.284924,
+    "k_4_silhouette": 0.315853,
+    "k_5_silhouette": 0.337065,
+    "k_6_silhouette": 0.336397,
+    "k_2_calinski_harabasz": 244.168173,
+    "k_3_calinski_harabasz": 234.116567,
+    "k_4_calinski_harabasz": 231.043812,
+    "k_5_calinski_harabasz": 229.118503,
+    "k_6_calinski_harabasz": 219.370032,
+    "k_2_davies_bouldin": 1.018628,
+    "k_3_davies_bouldin": 1.487527,
+    "k_4_davies_bouldin": 1.350369,
+    "k_5_davies_bouldin": 1.255941,
+    "k_6_davies_bouldin": 1.158105
+  },
+  "benchmark_top3": [
+    {
+      "algorithm": "kmeans",
+      "algorithm_label": "KMeans",
+      "k": 2,
+      "candidate_id": "kmeans_k2",
+      "silhouette": 0.298351,
+      "calinski_harabasz": 244.168173,
+      "davies_bouldin": 1.018628,
+      "min_cluster_size": 161,
+      "max_cluster_size": 758,
+      "balance_score": 0.669442,
+      "cluster_sizes": "[758, 161]",
+      "silhouette_norm": 0.78344,
+      "calinski_harabasz_norm": 1.0,
+      "davies_bouldin_norm": 0.947222,
+      "balance_score_norm": 0.500584,
+      "selection_pool": true,
+      "composite_score": 0.825269
+    },
+    {
+      "algorithm": "agglomerative",
+      "algorithm_label": "Agglomerative",
+      "k": 2,
+      "candidate_id": "agglomerative_k2",
+      "silhouette": 0.294901,
+      "calinski_harabasz": 237.776642,
+      "davies_bouldin": 0.977177,
+      "min_cluster_size": 152,
+      "max_cluster_size": 767,
+      "balance_score": 0.647066,
+      "cluster_sizes": "[767, 152]",
+      "silhouette_norm": 0.758905,
+      "calinski_harabasz_norm": 0.952196,
+      "davies_bouldin_norm": 1.0,
+      "balance_score_norm": 0.459573,
+      "selection_pool": true,
+      "composite_score": 0.812937
+    },
+    {
+      "algorithm": "kmeans",
+      "algorithm_label": "KMeans",
+      "k": 3,
+      "candidate_id": "kmeans_k3",
+      "silhouette": 0.284924,
+      "calinski_harabasz": 234.116567,
+      "davies_bouldin": 1.487527,
+      "min_cluster_size": 160,
+      "max_cluster_size": 533,
+      "balance_score": 0.878623,
+      "cluster_sizes": "[226, 533, 160]",
+      "silhouette_norm": 0.687954,
+      "calinski_harabasz_norm": 0.924821,
+      "davies_bouldin_norm": 0.35018,
+      "balance_score_norm": 0.883982,
+      "selection_pool": true,
+      "composite_score": 0.680288
+    }
+  ]
+}
