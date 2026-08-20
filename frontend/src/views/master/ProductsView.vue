@@ -41,6 +41,7 @@
       v-model:page-size="pagination.pageSize"
       :total="total"
       :page-sizes="pageSizes"
+      @change="handleProductPaginationChange"
     />
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑产品' : '新增产品'" width="720px">
@@ -130,7 +131,10 @@ const packagingOptions = ref([])
 const dialogVisible = ref(false)
 const editingId = ref(null)
 const canManage = computed(() => ['production', 'inventory', 'purchase', 'manager', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
-const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(rows)
+const pagination = reactive({ page: 1, pageSize: 10 })
+const total = ref(0)
+const pageSizes = [10, 20, 50, 100]
+const pagedRows = rows
 const form = reactive({
   product_code: '',
   name: '',
@@ -186,11 +190,18 @@ function openEdit(row) {
 
 async function load() {
   const [productRows, packagingRows] = await Promise.all([
-    get('/api/master-data/products'),
+    get(`/api/master-data/products?page=${pagination.page}&page_size=${pagination.pageSize}`),
     get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
   ])
-  rows.value = productRows || []
+  rows.value = productRows?.items || []
+  total.value = Number(productRows?.pagination?.total || 0)
   packagingOptions.value = packagingRows || []
+}
+
+async function handleProductPaginationChange({ page, pageSize }) {
+  pagination.page = page
+  pagination.pageSize = pageSize
+  await load()
 }
 
 function findPackagingByName(packagingName) {

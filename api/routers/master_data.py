@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -219,10 +219,13 @@ def _serialize_packaging(row: PackagingConfig | None) -> dict | None:
     }
 
 
-def _load_packaging_map(db: Session, *, entity_type: str) -> dict[int, PackagingConfig]:
+def _load_packaging_map(db: Session, *, entity_type: str, entity_ids: list[int] | None = None) -> dict[int, PackagingConfig]:
+    filters = [PackagingConfig.entity_type == entity_type, PackagingConfig.is_active.is_(True)]
+    if entity_ids is not None:
+        filters.append(PackagingConfig.entity_id.in_(entity_ids or [-1]))
     rows = db.execute(
         select(PackagingConfig)
-        .where(PackagingConfig.entity_type == entity_type, PackagingConfig.is_active.is_(True))
+        .where(*filters)
         .order_by(PackagingConfig.is_default.desc(), PackagingConfig.id.asc())
     ).scalars().all()
     packaging_map: dict[int, PackagingConfig] = {}
@@ -231,9 +234,12 @@ def _load_packaging_map(db: Session, *, entity_type: str) -> dict[int, Packaging
     return packaging_map
 
 
-def _load_stock_map(db: Session, *, item_type: str) -> dict[int, dict]:
+def _load_stock_map(db: Session, *, item_type: str, item_ids: list[int] | None = None) -> dict[int, dict]:
     group_field = Inventory.product_id if item_type == "product" else Inventory.material_id
     warehouse_type = "finished" if item_type == "product" else "raw"
+    filters = [group_field.is_not(None), Warehouse.warehouse_type == warehouse_type]
+    if item_ids is not None:
+        filters.append(group_field.in_(item_ids or [-1]))
     rows = db.execute(
         select(
             group_field,
@@ -241,7 +247,7 @@ def _load_stock_map(db: Session, *, item_type: str) -> dict[int, dict]:
             func.coalesce(func.sum(Inventory.reserved_quantity), 0),
         )
         .join(Warehouse, Warehouse.id == Inventory.warehouse_id)
-        .where(group_field.is_not(None), Warehouse.warehouse_type == warehouse_type)
+        .where(*filters)
         .group_by(group_field)
     ).all()
     stock_map = {
@@ -767,12 +773,22 @@ def delete_supplier(
 
 
 @router.get("/products")
-def list_products(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rows = db.execute(select(Product).order_by(Product.created_at.desc())).scalars().all()
-    packaging_map = _load_packaging_map(db, entity_type="product")
-    stock_map = _load_stock_map(db, item_type="product")
-    return api_response(
-        data=[
+def list_products(
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = select(Product).order_by(Product.created_at.desc(), Product.id.desc())
+    total = None
+    if page is not None:
+        total = db.execute(select(func.count(Product.id))).scalar_one()
+        query = query.offset((page - 1) * page_size).limit(page_size)
+    rows = db.execute(query).scalars().all()
+    product_ids = [row.id for row in rows]
+    packaging_map = _load_packaging_map(db, entity_type="product", entity_ids=product_ids)
+    stock_map = _load_stock_map(db, item_type="product", item_ids=product_ids)
+    items = [
             {
                 "id": row.id,
                 "product_code": row.product_code,
@@ -796,7 +812,9 @@ def list_products(current_user: User = Depends(get_current_user), db: Session = 
             }
             for row in rows
         ]
-    )
+    if page is None:
+        return api_response(data=items)
+    return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}})
 
 
 @router.get("/standard-prices")
@@ -977,12 +995,22 @@ def delete_product(
 
 
 @router.get("/materials")
-def list_materials(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rows = db.execute(select(Material).order_by(Material.created_at.desc())).scalars().all()
-    packaging_map = _load_packaging_map(db, entity_type="material")
-    stock_map = _load_stock_map(db, item_type="material")
-    return api_response(
-        data=[
+def list_materials(
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = select(Material).order_by(Material.created_at.desc(), Material.id.desc())
+    total = None
+    if page is not None:
+        total = db.execute(select(func.count(Material.id))).scalar_one()
+        query = query.offset((page - 1) * page_size).limit(page_size)
+    rows = db.execute(query).scalars().all()
+    material_ids = [row.id for row in rows]
+    packaging_map = _load_packaging_map(db, entity_type="material", entity_ids=material_ids)
+    stock_map = _load_stock_map(db, item_type="material", item_ids=material_ids)
+    items = [
             {
                 "id": row.id,
                 "material_code": row.material_code,
@@ -1004,7 +1032,9 @@ def list_materials(current_user: User = Depends(get_current_user), db: Session =
             }
             for row in rows
         ]
-    )
+    if page is None:
+        return api_response(data=items)
+    return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}})
 
 
 @router.post("/materials")
