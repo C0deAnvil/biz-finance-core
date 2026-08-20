@@ -57,6 +57,7 @@
         v-model:page-size="pagination.pageSize"
         :total="total"
         :page-sizes="pageSizes"
+        @change="handleStockPaginationChange"
       />
     </PageSection>
 
@@ -296,7 +297,6 @@ import { get, post } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import DelayedActionButton from '../../components/DelayedActionButton.vue'
 import PageSection from '../../components/PageSection.vue'
-import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
 import { exportRowsToCsv } from '../../utils/export'
 import { formatDateTime, formatNumber, transactionTypeLabel } from '../../utils/format'
@@ -325,17 +325,11 @@ const manualForm = reactive({ warehouse_id: null, source_no: '', remark: '', ite
 const rejectForm = reactive({ reject_reason: '' })
 const canManualOperate = computed(() => auth.user?.role_code === 'inventory')
 
-const filteredRows = computed(() => {
-  const keyword = filters.keyword.trim().toLowerCase()
-  return rows.value.filter((item) => {
-    if (filters.warehouseId && item.warehouse_id !== filters.warehouseId) return false
-    if (filters.itemType && item.item_type !== filters.itemType) return false
-    if (filters.alertOnly && !item.below_safety_stock) return false
-    if (!keyword) return true
-    return [item.item_code, item.item_name, item.warehouse_name].filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword))
-  })
-})
-const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(filteredRows)
+const pagination = reactive({ page: 1, pageSize: 20 })
+const total = ref(0)
+const pageSizes = [10, 20, 50, 100]
+const filteredRows = computed(() => rows.value)
+const pagedRows = rows
 
 const summary = computed(() => ({
   inventoryAmount: filteredRows.value.reduce((sum, item) => sum + Number(item.inventory_amount || 0), 0),
@@ -399,11 +393,17 @@ function sourceItemQuantity(row) {
 }
 
 async function load({ skipRouteFocus = false } = {}) {
+  const stockParams = new URLSearchParams({ page: String(pagination.page), page_size: String(pagination.pageSize) })
+  if (filters.warehouseId) stockParams.set('warehouse_id', String(filters.warehouseId))
+  if (filters.itemType) stockParams.set('item_type', filters.itemType)
+  if (filters.keyword) stockParams.set('keyword', filters.keyword)
+  if (filters.alertOnly) stockParams.set('alert_only', 'true')
   const [stocks, warehouseRows] = await Promise.all([
-    get('/api/inventory/stocks'),
+    get(`/api/inventory/stocks?${stockParams.toString()}`),
     get('/api/master-data/warehouses')
   ])
-  rows.value = stocks
+  rows.value = stocks.items || stocks
+  total.value = Number(stocks.pagination?.total || rows.value.length)
   warehouses.value = warehouseRows
   operationRequests.value = await get('/api/inventory/operation-requests')
   if (route.query.focusType === 'low_stock_alert') {
@@ -456,10 +456,18 @@ async function applyRouteFocus() {
 
 async function openTransactions(row) {
   activeStock.value = row
-  if (!transactions.value.length) {
-    transactions.value = await get('/api/inventory/transactions')
-  }
+  const params = new URLSearchParams({ page: '1', page_size: '100' })
+  params.set('warehouse_id', String(row.warehouse_id))
+  params.set(row.item_type === 'product' ? 'product_id' : 'material_id', String(row.item_id))
+  const data = await get(`/api/inventory/transactions?${params.toString()}`)
+  transactions.value = data.items || data
   drawerVisible.value = true
+}
+
+async function handleStockPaginationChange({ page, pageSize }) {
+  pagination.page = page
+  pagination.pageSize = pageSize
+  await load({ skipRouteFocus: true })
 }
 
 function buildOperationForm(row) {

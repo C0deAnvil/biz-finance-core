@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
@@ -318,7 +318,18 @@ def list_warehouses(current_user: User = Depends(get_current_user), db: Session 
 
 
 @router.get("/customers")
-def list_customers(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_customers(
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    keyword: str | None = None,
+    source_type: str | None = None,
+    owner_user_id: int | None = None,
+    star_level: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     query = (
         select(Customer)
         .options(joinedload(Customer.owner_user), joinedload(Customer.created_by))
@@ -328,14 +339,35 @@ def list_customers(current_user: User = Depends(get_current_user), db: Session =
     role_code = current_user.role.code if current_user.role else ""
     if role_code == "sales":
         query = query.where(Customer.owner_user_id == current_user.id)
+    if keyword:
+        pattern = f"%{keyword.strip()}%"
+        query = query.where(or_(Customer.name.ilike(pattern), Customer.contact_name.ilike(pattern), Customer.phone.ilike(pattern), Customer.code.ilike(pattern), Customer.unified_social_credit_code.ilike(pattern), Customer.address.ilike(pattern)))
+    if source_type:
+        query = query.where(Customer.source_type == source_type)
+    if owner_user_id:
+        query = query.where(Customer.owner_user_id == owner_user_id)
+    if star_level:
+        query = query.where(Customer.star_level.ilike(f"%{star_level}%"))
+    if start_date:
+        query = query.where(Customer.created_at >= datetime.combine(start_date, datetime.min.time()))
+    if end_date:
+        query = query.where(Customer.created_at < datetime.combine(end_date, datetime.max.time()))
+    total = None
+    if page is not None:
+        total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+        query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
+    customer_ids = [row.id for row in rows]
     order_counts = {
         customer_id: count
         for customer_id, count in db.execute(
-            select(SalesOrder.customer_id, func.count(SalesOrder.id)).group_by(SalesOrder.customer_id)
+            select(SalesOrder.customer_id, func.count(SalesOrder.id)).where(SalesOrder.customer_id.in_(customer_ids or [-1])).group_by(SalesOrder.customer_id)
         ).all()
     }
-    return api_response(data=[_serialize_customer(row, order_counts.get(row.id, 0)) for row in rows])
+    items = [_serialize_customer(row, order_counts.get(row.id, 0)) for row in rows]
+    if page is None:
+        return api_response(data=items)
+    return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}})
 
 
 @router.post("/customers")

@@ -40,6 +40,7 @@
         v-model:page-size="pagination.pageSize"
         :total="total"
         :page-sizes="pageSizes"
+        @change="handleCustomerPaginationChange"
       />
     </PageSection>
 
@@ -247,24 +248,11 @@ const complaintForm = reactive({
 const canManage = computed(() => ['sales', 'manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const canTransfer = computed(() => ['manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
 
-const filteredRows = computed(() => {
-  const keyword = filters.keyword.trim().toLowerCase()
-  const starLevel = filters.star_level.trim().toLowerCase()
-  const [startDate, endDate] = filters.created_range || []
-  return rows.value.filter((item) => {
-    if (keyword && ![item.name, item.contact_name, item.phone, item.code, item.unified_social_credit_code, item.address].filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword))) {
-      return false
-    }
-    if (filters.source_type && item.source_type !== filters.source_type) return false
-    if (filters.owner_user_id && item.owner_user_id !== filters.owner_user_id) return false
-    if (starLevel && !String(item.star_level || '').toLowerCase().includes(starLevel)) return false
-    const createdDate = item.created_at ? String(item.created_at).slice(0, 10) : ''
-    if (startDate && createdDate < startDate) return false
-    if (endDate && createdDate > endDate) return false
-    return true
-  })
-})
-const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(filteredRows)
+const filteredRows = computed(() => rows.value)
+const pagination = reactive({ page: 1, pageSize: 10 })
+const total = ref(0)
+const pageSizes = [10, 20, 50, 100]
+const pagedRows = rows
 const starCustomerCount = computed(() => filteredRows.value.filter((item) => item.star_level).length)
 const activeOrderCustomerCount = computed(() => filteredRows.value.filter((item) => Number(item.order_count || 0) > 0).length)
 
@@ -275,6 +263,8 @@ function resetForm() {
 
 function resetFilters() {
   Object.assign(filters, { keyword: '', source_type: '', owner_user_id: null, star_level: '', created_range: [] })
+  pagination.page = 1
+  load()
 }
 
 function resetComplaintForm() {
@@ -290,7 +280,23 @@ function resetComplaintForm() {
 }
 
 async function load() {
-  rows.value = await get('/api/master-data/customers')
+  const [startDate, endDate] = filters.created_range || []
+  const params = new URLSearchParams({ page: String(pagination.page), page_size: String(pagination.pageSize) })
+  if (filters.keyword) params.set('keyword', filters.keyword)
+  if (filters.source_type) params.set('source_type', filters.source_type)
+  if (filters.owner_user_id) params.set('owner_user_id', String(filters.owner_user_id))
+  if (filters.star_level) params.set('star_level', filters.star_level)
+  if (startDate) params.set('start_date', startDate)
+  if (endDate) params.set('end_date', endDate)
+  const data = await get(`/api/master-data/customers?${params.toString()}`)
+  rows.value = data.items || []
+  total.value = Number(data.pagination?.total || 0)
+}
+
+async function handleCustomerPaginationChange({ page, pageSize }) {
+  pagination.page = page
+  pagination.pageSize = pageSize
+  await load()
 }
 
 async function loadUsers() {

@@ -1052,63 +1052,89 @@ def mark_sales_order_shipment(
     return mark_shipment(queue.id, payload, current_user, db)
 
 @router.get("/stocks")
-def list_stocks(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_stocks(
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    warehouse_id: int | None = Query(default=None),
+    item_type: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    alert_only: bool = Query(default=False),
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     sync_low_stock_alerts(db)
     db.commit()
     query = (
         select(Inventory)
         .options(joinedload(Inventory.product), joinedload(Inventory.material), joinedload(Inventory.warehouse))
+        .outerjoin(Product, Inventory.product_id == Product.id)
+        .outerjoin(Material, Inventory.material_id == Material.id)
+        .join(Warehouse, Inventory.warehouse_id == Warehouse.id)
         .order_by(Inventory.updated_at.desc())
     )
     warehouse_ids = _scoped_warehouse_ids(db, current_user)
     if warehouse_ids is not None:
         query = query.where(Inventory.warehouse_id.in_(warehouse_ids or [-1]))
+    if warehouse_id:
+        query = query.where(Inventory.warehouse_id == warehouse_id)
+    if item_type == "product":
+        query = query.where(Inventory.product_id.is_not(None))
+    elif item_type == "material":
+        query = query.where(Inventory.material_id.is_not(None))
+    if keyword:
+        pattern = f"%{keyword.strip()}%"
+        query = query.where(or_(Product.name.ilike(pattern), Product.product_code.ilike(pattern), Material.name.ilike(pattern), Material.material_code.ilike(pattern), Warehouse.name.ilike(pattern), Warehouse.code.ilike(pattern)))
+    if alert_only:
+        query = query.where(
+            or_(
+                (Inventory.product_id.is_not(None)) & ((Inventory.quantity - Inventory.reserved_quantity) < Product.safety_stock_qty),
+                (Inventory.material_id.is_not(None)) & ((Inventory.quantity - Inventory.reserved_quantity) < Material.safety_stock_qty),
+            )
+        )
+    total = None
+    if page is not None:
+        total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+        query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
     pending_sales, purchase_in_transit = _expected_available_maps(db)
-    scoped_ids = warehouse_ids
-    if scoped_ids is None:
-        scoped_ids = [row[0] for row in db.execute(select(Warehouse.id)).all()]
-    existing_keys = {
-        (row.warehouse_id, "product", row.product_id) if row.product_id else (row.warehouse_id, "material", row.material_id)
-        for row in rows
-    }
     synthetic_rows = []
-    warehouses = db.execute(select(Warehouse).where(Warehouse.id.in_(scoped_ids or [-1]))).scalars().all()
-    products = db.execute(select(Product)).scalars().all()
-    materials = db.execute(select(Material)).scalars().all()
-    for warehouse in warehouses:
-        for product in products:
-            if (warehouse.id, "product", product.id) in existing_keys:
-                continue
-            synthetic_rows.append(
-                {
-                    "id": -(warehouse.id * 100000000 + product.id * 10 + 1),
-                    "warehouse_id": warehouse.id,
-                    "warehouse_code": warehouse.code,
-                    "warehouse_name": warehouse.name,
-                    "item_id": product.id,
-                    "item_type": "product",
-                    "item_code": product.product_code,
-                    "item_name": product.name,
-                    "quantity": 0,
-                    "reserved_quantity": 0,
-                    "available_quantity": 0,
-                    "expected_available_quantity": float(
-                        Decimal(purchase_in_transit.get(_stock_key(product_id=product.id), 0))
-                        - Decimal(pending_sales.get(_stock_key(product_id=product.id), 0))
-                    ),
-                    "avg_unit_cost": float(product.price or 0),
-                    "inventory_amount": 0,
-                    "safety_stock_qty": float(product.safety_stock_qty or 0),
-                    "below_safety_stock": Decimal(product.safety_stock_qty or 0) > 0,
-                    "updated_at": None,
-                }
-            )
-        for material in materials:
-            if (warehouse.id, "material", material.id) in existing_keys:
-                continue
-            synthetic_rows.append(
-                {
+    if page is None:
+        scoped_ids = warehouse_ids
+        if scoped_ids is None:
+            scoped_ids = [row[0] for row in db.execute(select(Warehouse.id)).all()]
+        existing_keys = {
+            (row.warehouse_id, "product", row.product_id) if row.product_id else (row.warehouse_id, "material", row.material_id)
+            for row in rows
+        }
+        warehouses = db.execute(select(Warehouse).where(Warehouse.id.in_(scoped_ids or [-1]))).scalars().all()
+        products = db.execute(select(Product)).scalars().all()
+        materials = db.execute(select(Material)).scalars().all()
+        for warehouse in warehouses:
+            for product in products:
+                if (warehouse.id, "product", product.id) in existing_keys:
+                    continue
+                synthetic_rows.append(
+                    {
+                        "id": -(warehouse.id * 100000000 + product.id * 10 + 1),
+                        "warehouse_id": warehouse.id,
+                        "warehouse_code": warehouse.code,
+                        "warehouse_name": warehouse.name,
+                        "item_id": product.id,
+                        "item_type": "product",
+                        "item_code": product.product_code,
+                        "item_name": product.name,
+                        "quantity": 0,
+                        "reserved_quantity": 0,
+                        "available_quantity": 0,
+                        "expected_available_quantity": float(Decimal(purchase_in_transit.get(_stock_key(product_id=product.id), 0)) - Decimal(pending_sales.get(_stock_key(product_id=product.id), 0))),
+                        "avg_unit_cost": float(product.price or 0), "inventory_amount": 0,
+                        "safety_stock_qty": float(product.safety_stock_qty or 0), "below_safety_stock": Decimal(product.safety_stock_qty or 0) > 0, "updated_at": None,
+                    }
+                )
+            for material in materials:
+                if (warehouse.id, "material", material.id) in existing_keys:
+                    continue
+                synthetic_rows.append(
+                    {
                     "id": -(warehouse.id * 100000000 + material.id * 10 + 2),
                     "warehouse_id": warehouse.id,
                     "warehouse_code": warehouse.code,
@@ -1129,22 +1155,38 @@ def list_stocks(current_user: User = Depends(get_current_user), db: Session = De
                     "safety_stock_qty": float(material.safety_stock_qty or 0),
                     "below_safety_stock": Decimal(material.safety_stock_qty or 0) > 0,
                     "updated_at": None,
-                }
-            )
-    return api_response(
-        data=[
+                    }
+                )
+    items = [
             _serialize_stock(row, pending_sales=pending_sales, purchase_in_transit=purchase_in_transit)
             for row in rows
         ] + synthetic_rows
-    )
+    if page is not None:
+        items = items[:page_size]
+        return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total or len(items)}})
+    return api_response(data=items)
 
 
 @router.get("/transactions")
-def list_transactions(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_transactions(
+    warehouse_id: int | None = Query(default=None), product_id: int | None = Query(default=None), material_id: int | None = Query(default=None),
+    page: int | None = Query(default=None, ge=1), page_size: int = Query(default=50, ge=1, le=100),
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     query = select(InventoryTransaction).order_by(InventoryTransaction.created_at.desc())
     warehouse_ids = _scoped_warehouse_ids(db, current_user)
     if warehouse_ids is not None:
         query = query.where(InventoryTransaction.warehouse_id.in_(warehouse_ids or [-1]))
+    if warehouse_id:
+        query = query.where(InventoryTransaction.warehouse_id == warehouse_id)
+    if product_id:
+        query = query.where(InventoryTransaction.product_id == product_id)
+    if material_id:
+        query = query.where(InventoryTransaction.material_id == material_id)
+    total = None
+    if page is not None:
+        total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+        query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
     warehouse_ids = {row.warehouse_id for row in rows if row.warehouse_id}
     product_ids = {row.product_id for row in rows if row.product_id}
@@ -1158,7 +1200,10 @@ def list_transactions(current_user: User = Depends(get_current_user), db: Sessio
     material_map = {
         row.id: row for row in db.execute(select(Material).where(Material.id.in_(material_ids))).scalars().all()
     } if material_ids else {}
-    return api_response(data=[_serialize_transaction(row, warehouse_map, product_map, material_map) for row in rows])
+    items = [_serialize_transaction(row, warehouse_map, product_map, material_map) for row in rows]
+    if page is not None:
+        return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total or 0}})
+    return api_response(data=items)
 
 
 @router.get("/operation-requests")
