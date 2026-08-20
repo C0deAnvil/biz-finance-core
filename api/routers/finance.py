@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
@@ -280,6 +280,27 @@ def _serialize_attachments(db: Session, business_type: str, business_id: int | N
     ]
 
 
+def _serialize_attachment_map(db: Session, business_type: str, business_ids: list[int]) -> dict[int, list[dict]]:
+    if not business_ids:
+        return {}
+    rows = db.execute(
+        select(Attachment)
+        .where(Attachment.business_type == business_type, Attachment.business_id.in_(business_ids))
+        .order_by(Attachment.business_id.asc(), Attachment.created_at.desc(), Attachment.id.desc())
+    ).scalars().all()
+    result: dict[int, list[dict]] = {}
+    for row in rows:
+        result.setdefault(row.business_id, []).append(
+            {
+                "id": row.id,
+                "attachment_type": row.attachment_type,
+                "original_name": row.original_name,
+                "relative_path": row.relative_path,
+            }
+        )
+    return result
+
+
 def _serialize_sales_items(order: SalesOrder | None) -> list[dict]:
     if order is None:
         return []
@@ -542,23 +563,35 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
             select(SalesOrder)
             .options(
                 joinedload(SalesOrder.customer),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
+                selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
+                selectinload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
             )
             .where(SalesOrder.id.in_(list({*record_order_ids, *request_order_ids})))
         ).unique().scalars().all()
     } if (record_order_ids or request_order_ids) else {}
     user_map = {row.id: row for row in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()} if user_ids else {}
 
+    received_totals = (
+        select(
+            ReceivableRecord.sales_order_id.label("sales_order_id"),
+            func.sum(ReceivableRecord.amount).label("received_amount"),
+        )
+        .group_by(ReceivableRecord.sales_order_id)
+        .subquery()
+    )
     orders = (
         db.execute(
             select(SalesOrder)
             .options(
                 joinedload(SalesOrder.customer),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
+                selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
+                selectinload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
             )
-            .where(SalesOrder.status.notin_(["cancelled"]))
+            .outerjoin(received_totals, received_totals.c.sales_order_id == SalesOrder.id)
+            .where(
+                SalesOrder.status != "cancelled",
+                func.coalesce(received_totals.c.received_amount, 0) < SalesOrder.total_amount,
+            )
             .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
         )
         .unique()
@@ -572,8 +605,6 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
         received_amount = received_amount_map.get(row.id, Decimal("0"))
         remaining_amount = max(total_amount - received_amount, Decimal("0"))
         settlement_status = _settlement_status(total_amount, received_amount)
-        if settlement_status == "settled":
-            continue
         pending_orders.append(
             {
                 "id": row.id,
@@ -596,6 +627,12 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
         )
+
+    attachment_map = _serialize_attachment_map(
+        db,
+        "sales_order",
+        list({row.sales_order_id for row in receipt_requests if row.sales_order_id}),
+    )
 
     return api_response(
         data={
@@ -637,7 +674,7 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
                     "requested_by_name": user_map[row.requested_by_id].full_name if row.requested_by_id in user_map else None,
                     "approved_by_name": user_map[row.approved_by_id].full_name if row.approved_by_id in user_map else None,
                     "items": _serialize_sales_items(order_map.get(row.sales_order_id)),
-                    "attachments": _serialize_attachments(db, "sales_order", row.sales_order_id),
+                    "attachments": attachment_map.get(row.sales_order_id, []),
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                     "approved_at": row.approved_at.isoformat() if row.approved_at else None,
                 }
