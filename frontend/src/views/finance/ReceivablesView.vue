@@ -71,6 +71,7 @@
         v-model:page-size="pendingOrderPagination.pageSize"
         :total="pendingOrderTotal"
         :page-sizes="pageSizes"
+        @change="handlePendingPaginationChange"
       />
     </PageSection>
 
@@ -557,6 +558,8 @@ const router = useRouter()
 const receiptRequestSectionRef = ref(null)
 const receivableSummary = reactive({})
 const pendingOrders = ref([])
+const pendingOrderPagination = reactive({ page: 1, pageSize: 50 })
+const pendingOrderTotal = ref(0)
 const receiptRequests = ref([])
 const records = ref([])
 const refunds = ref([])
@@ -613,7 +616,7 @@ const canCreateRefund = computed(() => auth.user?.role_code === 'finance')
 const canRegisterReceipt = computed(() => ['finance', 'system_admin'].includes(auth.user?.role_code))
 const purchaseRefunds = computed(() => refunds.value.filter((item) => item.business_type === 'purchase_return'))
 const pendingReceivableTotal = computed(() =>
-  pendingOrders.value.reduce((sum, item) => sum + Number(item.remaining_amount || 0), 0)
+  Number(receivableSummary.pending_amount_total || 0)
 )
 const receivedReceivableTotal = computed(() =>
   records.value.reduce((sum, item) => sum + Number(item.amount || 0), 0)
@@ -624,8 +627,9 @@ const mergedReceiptActualTotal = computed(() => mergedReceiptRegisterForm.items.
 const directRegisterCustomerName = computed(() => directRegisterForm.items[0]?.customer_name || '')
 const directRegisterTotal = computed(() => directRegisterForm.items.reduce((sum, item) => sum + Number(item.amount || 0), 0))
 
-const { pagination: pendingOrderPagination, total: pendingOrderTotal, pageSizes, pagedItems: pagedPendingOrders } = useLocalPagination(pendingOrders)
+const pagedPendingOrders = pendingOrders
 const { pagination: receiptRequestPagination, total: receiptRequestTotal, pagedItems: pagedReceiptRequests, ensureVisible: ensureReceiptRequestVisible } = useLocalPagination(receiptRequests)
+const pageSizes = [10, 20, 50, 100]
 const { pagination: recordPagination, total: recordTotal, pagedItems: pagedRecordRows } = useLocalPagination(records)
 const { pagination: refundPagination, total: refundTotal, pagedItems: pagedRefundRows } = useLocalPagination(purchaseRefunds)
 
@@ -676,14 +680,31 @@ async function applyFocus() {
   }
 }
 
+async function loadReceivables() {
+  const receivableData = await get(`/api/finance/receivables?pending_page=${pendingOrderPagination.page}&pending_page_size=${pendingOrderPagination.pageSize}`)
+  Object.assign(receivableSummary, receivableData.summary || {})
+  pendingOrders.value = receivableData.pending_orders || []
+  pendingOrderTotal.value = Number(receivableData.pending_orders_pagination?.total || receivableData.summary?.pending_order_count || 0)
+  receiptRequests.value = receivableData.receipt_requests || []
+  records.value = receivableData.records || []
+  await applyFocus()
+}
+
+async function handlePendingPaginationChange({ page, pageSize }) {
+  pendingOrderPagination.page = page
+  pendingOrderPagination.pageSize = pageSize
+  await loadReceivables()
+}
+
 async function load() {
   const [receivableData, refundData, methodData] = await Promise.all([
-    get('/api/finance/receivables'),
+    get(`/api/finance/receivables?pending_page=${pendingOrderPagination.page}&pending_page_size=${pendingOrderPagination.pageSize}`),
     get('/api/finance/refunds'),
     get('/api/finance/payment-method-options?method_type=receipt')
   ])
   Object.assign(receivableSummary, receivableData.summary || {})
   pendingOrders.value = receivableData.pending_orders || []
+  pendingOrderTotal.value = Number(receivableData.pending_orders_pagination?.total || receivableData.summary?.pending_order_count || 0)
   receiptRequests.value = receivableData.receipt_requests || []
   records.value = receivableData.records || []
   refunds.value = refundData || []

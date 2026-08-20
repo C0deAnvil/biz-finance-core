@@ -549,7 +549,12 @@ def _serialize_quality_cost_rows(rows: list[QualityCostRecord], db: Session) -> 
 
 
 @router.get("/receivables")
-def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)), db: Session = Depends(get_db)):
+def list_receivable_records(
+    pending_page: int = Query(default=1, ge=1),
+    pending_page_size: int = Query(default=50, ge=1, le=100),
+    current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)),
+    db: Session = Depends(get_db),
+):
     request_started_at = perf_counter()
     stage_started_at = perf_counter()
     records = db.execute(select(ReceivableRecord).order_by(ReceivableRecord.received_at.desc(), ReceivableRecord.id.desc())).scalars().all()
@@ -590,6 +595,30 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
         .group_by(ReceivableRecord.sales_order_id)
         .subquery()
     )
+    pending_order_filter = (
+        SalesOrder.status != "cancelled",
+        func.coalesce(received_totals.c.received_amount, 0) < SalesOrder.total_amount,
+    )
+    stage_started_at = perf_counter()
+    pending_order_summary = db.execute(
+        select(
+            func.count(SalesOrder.id),
+            func.coalesce(
+                func.sum(SalesOrder.total_amount - func.coalesce(received_totals.c.received_amount, 0)),
+                0,
+            ),
+        )
+        .outerjoin(received_totals, received_totals.c.sales_order_id == SalesOrder.id)
+        .where(*pending_order_filter)
+    ).one()
+    pending_order_count = int(pending_order_summary[0] or 0)
+    pending_amount_total = Decimal(pending_order_summary[1] or 0)
+    trace_stage(
+        "receivables_count_orders",
+        stage_started_at,
+        pending_order_count=pending_order_count,
+        pending_amount_total=float(pending_amount_total),
+    )
     stage_started_at = perf_counter()
     orders = (
         db.execute(
@@ -600,10 +629,9 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
                 selectinload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
             )
             .outerjoin(received_totals, received_totals.c.sales_order_id == SalesOrder.id)
-            .where(
-                SalesOrder.status != "cancelled",
-                func.coalesce(received_totals.c.received_amount, 0) < SalesOrder.total_amount,
-            )
+            .where(*pending_order_filter)
+            .offset((pending_page - 1) * pending_page_size)
+            .limit(pending_page_size)
             .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
         )
         .unique()
@@ -659,9 +687,15 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
     return api_response(
         data={
             "summary": {
-                "pending_order_count": len(pending_orders),
+                "pending_order_count": pending_order_count,
+                "pending_amount_total": float(pending_amount_total),
                 "record_count": len(records),
                 "receipt_request_count": len(receipt_requests),
+            },
+            "pending_orders_pagination": {
+                "page": pending_page,
+                "page_size": pending_page_size,
+                "total": pending_order_count,
             },
             "pending_orders": pending_orders,
             "receipt_requests": [
