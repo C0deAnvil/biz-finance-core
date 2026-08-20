@@ -19,13 +19,16 @@ operation_id_var: ContextVar[str | None] = ContextVar("operation_id", default=No
 trace_logger = logging.getLogger("yecai.trace")
 trace_logger.setLevel(logging.INFO)
 trace_logger.propagate = True
+trace_file_path: str | None = None
 
 
 def _configure_trace_file_handler() -> None:
+    global trace_file_path
     file_path = settings.trace_log_file
     if not file_path:
         return
     absolute_path = os.path.abspath(file_path)
+    trace_file_path = absolute_path
     if any(getattr(handler, "baseFilename", None) == absolute_path for handler in trace_logger.handlers):
         return
     try:
@@ -62,7 +65,15 @@ def emit(event: str, **fields: Any) -> None:
         **current_trace(),
         **fields,
     }
-    trace_logger.info(json.dumps(payload, ensure_ascii=False, default=str))
+    line = json.dumps(payload, ensure_ascii=False, default=str)
+    trace_logger.info(line)
+    if trace_file_path:
+        try:
+            with open(trace_file_path, "a", encoding="utf-8") as trace_file:
+                trace_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} INFO yecai.trace {line}\n")
+                trace_file.flush()
+        except OSError:
+            trace_logger.exception("Unable to append trace event to %s", trace_file_path)
 
 
 def elapsed_ms(started_at: float) -> float:
