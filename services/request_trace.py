@@ -16,6 +16,8 @@ request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 operation_id_var: ContextVar[str | None] = ContextVar("operation_id", default=None)
 
 trace_logger = logging.getLogger("yecai.trace")
+trace_logger.setLevel(logging.INFO)
+trace_logger.propagate = True
 
 
 def new_trace_id(prefix: str) -> str:

@@ -67,9 +67,23 @@ async def request_trace_middleware(request: Request, call_next):
     request_token = request_id_var.set(request_id)
     operation_token = operation_id_var.set(operation_id)
     started_at = time.perf_counter()
+    emit(
+        "request_started",
+        method=request.method,
+        path=request.url.path,
+        query=str(request.url.query)[:500],
+    )
     try:
         response = await call_next(request)
         elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        emit(
+            "request_finished",
+            method=request.method,
+            path=request.url.path,
+            query=str(request.url.query)[:500],
+            status_code=response.status_code,
+            duration_ms=elapsed_ms,
+        )
         if elapsed_ms >= settings.slow_request_ms:
             emit(
                 "slow_request",
