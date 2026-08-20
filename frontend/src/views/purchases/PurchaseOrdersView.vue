@@ -41,6 +41,7 @@
       v-model:page-size="pagination.pageSize"
       :total="total"
       :page-sizes="pageSizes"
+      @change="handleOrderPaginationChange"
     />
 
     <PageSection v-if="canManageOrders" title="待采购补货需求" description="贸易型产品库存不足、生产领料原料库存不足时，会在此生成待采购需求。">
@@ -371,9 +372,9 @@ const purchaseUsers = computed(() => {
 })
 const purchaseApprovalThreshold = ref(0)
 const activeStatusTab = ref('active')
-const activeOrderRows = computed(() => rows.value.filter((item) => !item.is_completed_order))
-const completedOrderRows = computed(() => rows.value.filter((item) => item.is_completed_order))
-const visibleRows = computed(() => (activeStatusTab.value === 'completed' ? completedOrderRows.value : activeOrderRows.value))
+const activeOrderRows = computed(() => activeStatusTab.value === 'active' ? rows.value : [])
+const completedOrderRows = computed(() => activeStatusTab.value === 'completed' ? rows.value : [])
+const visibleRows = computed(() => rows.value)
 const supplierAiTip = computed(() => {
   if (supplierAiLoading.value) {
     return { type: 'info', title: '正在读取供应商智能评价结果...' }
@@ -387,7 +388,10 @@ const supplierAiTip = computed(() => {
   }
 })
 const supplierOptionsForCurrentItems = computed(() => activeDemand.value ? demandSupplierOptions.value : suppliers.value)
-const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(visibleRows)
+const pagination = reactive({ page: 1, pageSize: 10 })
+const total = ref(0)
+const pageSizes = [10, 20, 50, 100]
+const pagedRows = rows
 
 const emptyForm = () => ({
   supplier_id: null,
@@ -578,13 +582,21 @@ function bagCount(row) {
 }
 
 async function load() {
-  rows.value = await get('/api/purchases/orders')
+  const data = await get(`/api/purchases/orders?tab=${activeStatusTab.value}&page=${pagination.page}&page_size=${pagination.pageSize}`)
+  rows.value = data.items || []
+  total.value = Number(data.pagination?.total || 0)
   if (canManageOrders.value) {
     fulfillmentDemands.value = await get('/api/purchases/fulfillment-demands')
   } else {
     fulfillmentDemands.value = []
   }
   await applyFocus()
+}
+
+async function handleOrderPaginationChange({ page, pageSize }) {
+  pagination.page = page
+  pagination.pageSize = pageSize
+  await load()
 }
 
 function demandSourceLabel(row) {
@@ -771,6 +783,11 @@ onMounted(async () => {
   suppliers.value = await get('/api/master-data/suppliers')
   products.value = await get('/api/master-data/products')
   materials.value = await get('/api/master-data/materials')
+  await load()
+})
+
+watch(activeStatusTab, async () => {
+  pagination.page = 1
   await load()
 })
 

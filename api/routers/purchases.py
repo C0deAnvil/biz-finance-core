@@ -2,7 +2,7 @@ import json
 from decimal import Decimal
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -136,7 +136,13 @@ def _expected_available_maps(db: Session) -> tuple[dict[tuple[str, int | None], 
 
 
 @router.get("/orders")
-def list_purchase_orders(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_purchase_orders(
+    tab: str = Query(default="active", pattern="^(active|completed|all)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     query = (
         select(PurchaseOrder)
         .options(joinedload(PurchaseOrder.supplier), joinedload(PurchaseOrder.purchaser), joinedload(PurchaseOrder.operator_user), joinedload(PurchaseOrder.items))
@@ -145,7 +151,10 @@ def list_purchase_orders(current_user: User = Depends(get_current_user), db: Ses
     scoped_user_ids = get_scoped_user_ids(db, current_user, "purchase")
     if scoped_user_ids is not None:
         query = query.where(PurchaseOrder.purchaser_user_id.in_(scoped_user_ids))
-    rows = db.execute(query).unique().scalars().all()
+    completed_filter = PurchaseOrder.status.in_(["fully_received", "completed", "cancelled"])
+    query = query.where(completed_filter if tab == "completed" else ~completed_filter if tab == "active" else True)
+    total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+    rows = db.execute(query.offset((page - 1) * page_size).limit(page_size)).unique().scalars().all()
     order_ids = [row.id for row in rows]
     payables = (
         db.execute(select(PayableRecord).where(PayableRecord.purchase_order_id.in_(order_ids)).order_by(PayableRecord.id.desc())).scalars().all()
@@ -155,7 +164,8 @@ def list_purchase_orders(current_user: User = Depends(get_current_user), db: Ses
     paid_amount_map = _paid_amount_map(payables)
     paid_order_amount_map = _paid_order_amount_map(payables)
     return api_response(
-        data=[
+        data={
+            "items": [
             {
                 "id": row.id,
                 "order_no": row.order_no,
@@ -182,7 +192,9 @@ def list_purchase_orders(current_user: User = Depends(get_current_user), db: Ses
                 ),
             }
             for row in rows
-        ]
+            ],
+            "pagination": {"page": page, "page_size": page_size, "total": total},
+        }
     )
 
 
