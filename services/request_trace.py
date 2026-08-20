@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -18,6 +19,26 @@ operation_id_var: ContextVar[str | None] = ContextVar("operation_id", default=No
 trace_logger = logging.getLogger("yecai.trace")
 trace_logger.setLevel(logging.INFO)
 trace_logger.propagate = True
+
+
+def _configure_trace_file_handler() -> None:
+    file_path = settings.trace_log_file
+    if not file_path:
+        return
+    absolute_path = os.path.abspath(file_path)
+    if any(getattr(handler, "baseFilename", None) == absolute_path for handler in trace_logger.handlers):
+        return
+    try:
+        os.makedirs(os.path.dirname(absolute_path), exist_ok=True)
+        handler = logging.FileHandler(absolute_path, encoding="utf-8")
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        trace_logger.addHandler(handler)
+    except OSError:
+        trace_logger.warning("Unable to open trace log file: %s", absolute_path)
+
+
+_configure_trace_file_handler()
 
 
 def new_trace_id(prefix: str) -> str:

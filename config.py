@@ -45,6 +45,7 @@ class Settings:
     slow_sql_ms: int = int(os.getenv("SLOW_SQL_MS", "200"))
     trace_stage_log_ms: int = int(os.getenv("TRACE_STAGE_LOG_MS", "50"))
     trace_sql_max_length: int = int(os.getenv("TRACE_SQL_MAX_LENGTH", "2000"))
+    trace_log_file: str = os.getenv("TRACE_LOG_FILE", str(BASE_DIR / "logs" / "yecai-trace.log"))
 
     @property
     def cors_origin_list(self) -> list[str]:
