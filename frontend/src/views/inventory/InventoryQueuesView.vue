@@ -31,6 +31,7 @@
             v-model:page-size="placementPagination.pageSize"
             :total="placementTotal"
             :page-sizes="pageSizes"
+            @change="handlePlacementPaginationChange"
           />
         </PageSection>
       </el-col>
@@ -65,6 +66,7 @@
             v-model:page-size="shipmentPagination.pageSize"
             :total="shipmentTotal"
             :page-sizes="pageSizes"
+            @change="handleShipmentPaginationChange"
           />
         </PageSection>
       </el-col>
@@ -101,6 +103,7 @@
         v-model:page-size="salesOrderPagination.pageSize"
         :total="salesOrderTotal"
         :page-sizes="pageSizes"
+        @change="handleSalesOrderPaginationChange"
       />
     </PageSection>
 
@@ -281,32 +284,52 @@ const activeShipment = ref(null)
 const detailVisible = ref(false)
 const orderDetail = ref(null)
 const shipmentForm = reactive({ items: [], remark: '' })
-const placementRows = computed(() => queues.placement)
-const shipmentRows = computed(() => queues.shipment)
-const {
-  pagination: placementPagination,
-  total: placementTotal,
-  pageSizes,
-  pagedItems: pagedPlacementRows
-} = useLocalPagination(placementRows)
-const {
-  pagination: shipmentPagination,
-  total: shipmentTotal,
-  pagedItems: pagedShipmentRows
-} = useLocalPagination(shipmentRows)
-const salesOrderRows = computed(() => queues.salesOrders)
-const {
-  pagination: salesOrderPagination,
-  total: salesOrderTotal,
-  pagedItems: pagedSalesOrderRows
-} = useLocalPagination(salesOrderRows)
+const placementPagination = reactive({ page: 1, pageSize: 10 })
+const shipmentPagination = reactive({ page: 1, pageSize: 10 })
+const salesOrderPagination = reactive({ page: 1, pageSize: 10 })
+const placementTotal = ref(0)
+const shipmentTotal = ref(0)
+const salesOrderTotal = ref(0)
+const pageSizes = [10, 20, 50, 100]
+const pagedPlacementRows = computed(() => queues.placement)
+const pagedShipmentRows = computed(() => queues.shipment)
+const pagedSalesOrderRows = computed(() => queues.salesOrders)
 
 async function load() {
-  const data = await get('/api/inventory/queues')
+  const query = new URLSearchParams({
+    placement_page: String(placementPagination.page),
+    placement_page_size: String(placementPagination.pageSize),
+    shipment_page: String(shipmentPagination.page),
+    shipment_page_size: String(shipmentPagination.pageSize),
+    sales_order_page: String(salesOrderPagination.page),
+    sales_order_page_size: String(salesOrderPagination.pageSize)
+  })
+  const data = await get(`/api/inventory/queues?${query.toString()}`)
   queues.placement = data.placement || []
   queues.shipment = data.shipment || []
   queues.salesOrders = data.sales_orders || []
+  placementTotal.value = Number(data.pagination?.placement?.total || 0)
+  shipmentTotal.value = Number(data.pagination?.shipment?.total || 0)
+  salesOrderTotal.value = Number(data.pagination?.sales_orders?.total || 0)
   applyFocus()
+}
+
+async function handlePlacementPaginationChange({ page, pageSize }) {
+  placementPagination.page = page
+  placementPagination.pageSize = pageSize
+  await load()
+}
+
+async function handleShipmentPaginationChange({ page, pageSize }) {
+  shipmentPagination.page = page
+  shipmentPagination.pageSize = pageSize
+  await load()
+}
+
+async function handleSalesOrderPaginationChange({ page, pageSize }) {
+  salesOrderPagination.page = page
+  salesOrderPagination.pageSize = pageSize
+  await load()
 }
 
 function resolveOrderId(row) {
@@ -381,9 +404,17 @@ function buildShipmentItems(row) {
     }))
 }
 
-function openShipmentDialog(row) {
+async function openShipmentDialog(row) {
   activeShipment.value = row
-  shipmentForm.items = buildShipmentItems(row)
+  const detail = await get(`/api/inventory/sales-orders/${resolveOrderId(row)}`)
+  shipmentForm.items = buildShipmentItems({
+    items: (detail.items || []).map((item) => ({
+      ...item,
+      ordered_quantity: item.quantity,
+      remaining_quantity: item.remaining_shipment_quantity,
+      ship_quantity: item.remaining_shipment_quantity
+    }))
+  })
   shipmentForm.remark = ''
   if (!shipmentForm.items.length) {
     ElMessage.warning('当前客户订单没有可发货明细，请刷新后重试')

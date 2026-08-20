@@ -55,6 +55,7 @@
         v-model:page-size="pagination.pageSize"
         :total="total"
         :page-sizes="pageSizes"
+        @change="handleTaskPaginationChange"
       />
     </PageSection>
 
@@ -363,17 +364,16 @@ const materialRequestForm = reactive({ material_usages: [] })
 const completeForm = reactive({ produced_quantity: 0, scrap_quantity: 0, requires_quality: true, preliminary_acceptance_note: '', actual_usages: [] })
 const cancelForm = reactive({ reason: '' })
 
-const baseRows = computed(() => {
-  if (auth.user?.role_code !== 'quality') return rows.value
-  return rows.value.filter((item) => !completedStatuses.includes(item.status) && item.source_type !== 'purchase_quality')
-})
-const ongoingRows = computed(() => baseRows.value.filter((item) => !completedStatuses.includes(item.status)))
-const closedRows = computed(() => baseRows.value.filter((item) => completedStatuses.includes(item.status)))
-const activeRows = computed(() => {
-  if (!showTaskTabs.value) return ongoingRows.value
-  return activeTaskTab.value === 'closed' ? closedRows.value : ongoingRows.value
-})
-const { pagination, total, pageSizes, pagedItems: pagedRows, ensureVisible } = useLocalPagination(activeRows)
+const baseRows = computed(() => rows.value)
+const ongoingRows = computed(() => rows.value)
+const closedRows = computed(() => rows.value)
+const pagination = reactive({ page: 1, pageSize: 10 })
+const total = ref(0)
+const pageSizes = [10, 20, 50, 100]
+const pagedRows = rows
+function ensureVisible(predicate) {
+  return rows.value.find(predicate) || null
+}
 const pendingSpecialCount = computed(() => baseRows.value.filter((item) => item.status === 'pending_special_approval').length)
 const waitingQualityCount = computed(() => baseRows.value.filter((item) => item.status === 'waiting_quality').length)
 const reworkCount = computed(() => baseRows.value.filter((item) => item.source_type === 'rework').length)
@@ -559,13 +559,22 @@ async function applyFocusFromRoute() {
 }
 
 async function load() {
-  rows.value = await get('/api/production/tasks')
+  const taskStatus = showTaskTabs.value && activeTaskTab.value === 'closed' ? 'closed' : 'ongoing'
+  const taskData = await get(`/api/production/tasks?task_status=${taskStatus}&page=${pagination.page}&page_size=${pagination.pageSize}`)
+  rows.value = taskData.items || []
+  total.value = Number(taskData.pagination?.total || 0)
   if (canManageTasks.value) {
     fulfillmentDemands.value = await get('/api/production/fulfillment-demands')
   } else {
     fulfillmentDemands.value = []
   }
   await applyFocusFromRoute()
+}
+
+async function handleTaskPaginationChange({ page, pageSize }) {
+  pagination.page = page
+  pagination.pageSize = pageSize
+  await load()
 }
 
 async function loadTaskDetail(id) {
@@ -782,6 +791,11 @@ watch(
     await applyFocusFromRoute()
   }
 )
+
+watch(activeTaskTab, async () => {
+  pagination.page = 1
+  await load()
+})
 
 watch(
   () => [createForm.product_id, createForm.planned_quantity, createForm.fluctuation_ratio],

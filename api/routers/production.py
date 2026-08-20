@@ -4,7 +4,7 @@ from decimal import Decimal
 from math import ceil
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -355,8 +355,35 @@ def delete_bom(
 
 
 @router.get("/tasks")
-def list_tasks(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rows = db.execute(select(ProductionTask).options(joinedload(ProductionTask.product)).order_by(ProductionTask.created_at.desc())).scalars().all()
+def list_tasks(
+    task_status: str = Query(default="ongoing", pattern="^(ongoing|closed|all)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    completed_statuses = ["completed", "cancelled", "scrapped", "partially_scrapped", "reworked"]
+    task_filters = []
+    if task_status == "closed":
+        task_filters.append(ProductionTask.status.in_(completed_statuses))
+    elif task_status == "ongoing":
+        task_filters.append(~ProductionTask.status.in_(completed_statuses))
+    if current_user.role.code == "quality":
+        task_filters.extend([~ProductionTask.status.in_(completed_statuses), ProductionTask.source_type != "purchase_quality"])
+    total = db.execute(select(func.count(ProductionTask.id)).where(*task_filters)).scalar_one()
+    task_ids_page = db.execute(
+        select(ProductionTask.id)
+        .where(*task_filters)
+        .order_by(ProductionTask.created_at.desc(), ProductionTask.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).scalars().all()
+    rows = db.execute(
+        select(ProductionTask)
+        .options(joinedload(ProductionTask.product))
+        .where(ProductionTask.id.in_(task_ids_page or [-1]))
+        .order_by(ProductionTask.created_at.desc(), ProductionTask.id.desc())
+    ).scalars().all()
     parent_ids = [row.parent_task_id for row in rows if row.parent_task_id]
     task_ids = [row.id for row in rows]
     sales_order_ids = [row.sales_order_id for row in rows if row.sales_order_id]
@@ -386,7 +413,8 @@ def list_tasks(current_user: User = Depends(get_current_user), db: Session = Dep
         ).scalars().all()
     } if task_ids else {}
     return api_response(
-        data=[
+        data={
+            "items": [
             {
                 "id": row.id,
                 "task_no": row.task_no,
@@ -420,7 +448,9 @@ def list_tasks(current_user: User = Depends(get_current_user), db: Session = Dep
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
             for row in rows
-        ]
+            ],
+            "pagination": {"page": page, "page_size": page_size, "total": total},
+        }
     )
 
 

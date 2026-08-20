@@ -1,9 +1,9 @@
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
@@ -736,57 +736,114 @@ def _apply_stock_take_submission(task: StockTakeTask, payload: StockTakeSubmit |
 
 
 @router.get("/queues")
-def list_dispatch_queues(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_dispatch_queues(
+    placement_page: int = Query(default=1, ge=1),
+    placement_page_size: int = Query(default=10, ge=1, le=100),
+    shipment_page: int = Query(default=1, ge=1),
+    shipment_page_size: int = Query(default=10, ge=1, le=100),
+    sales_order_page: int = Query(default=1, ge=1),
+    sales_order_page_size: int = Query(default=10, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     if current_user.role.code == "inventory":
         warehouse_ids = _scoped_warehouse_ids(db, current_user)
         if warehouse_ids is not None and _finished_warehouse_id(db) not in warehouse_ids:
             return api_response(data={"placement": [], "shipment": []})
+    placement_filter = (
+        SalesOrder.status.in_(["pending_confirmation", "pending_shipment"]),
+        InventoryDispatchQueue.placement_status == "pending",
+    )
+    placement_count = db.execute(
+        select(func.count(InventoryDispatchQueue.id))
+        .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
+        .where(*placement_filter)
+    ).scalar_one()
+    placement_ids = db.execute(
+        select(InventoryDispatchQueue.id)
+        .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
+        .where(*placement_filter)
+        .order_by(InventoryDispatchQueue.created_at.desc(), InventoryDispatchQueue.id.desc())
+        .offset((placement_page - 1) * placement_page_size)
+        .limit(placement_page_size)
+    ).scalars().all()
     rows = db.execute(
         select(InventoryDispatchQueue)
         .options(
             joinedload(InventoryDispatchQueue.sales_order).joinedload(SalesOrder.customer),
-            joinedload(InventoryDispatchQueue.sales_order).joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
-            joinedload(InventoryDispatchQueue.sales_order).joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
         )
-        .order_by(InventoryDispatchQueue.created_at.desc())
+        .where(InventoryDispatchQueue.id.in_(placement_ids or [-1]))
+        .order_by(InventoryDispatchQueue.created_at.desc(), InventoryDispatchQueue.id.desc())
     ).unique().scalars().all()
-    queue_order_ids = {row.sales_order_id for row in rows}
-    pending_order_rows = (
-        db.execute(
-            select(SalesOrder)
-            .options(
-                joinedload(SalesOrder.customer),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
-            )
-            .where(SalesOrder.status == "pending_shipment", ~SalesOrder.id.in_(queue_order_ids or [-1]))
-            .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
-        )
-        .unique()
-        .scalars()
-        .all()
+
+    shipment_filter = or_(
+        and_(
+            InventoryDispatchQueue.id.is_not(None),
+            SalesOrder.status == "pending_shipment",
+            InventoryDispatchQueue.shipment_status.in_(["pending", "waiting_approval"]),
+        ),
+        and_(
+            InventoryDispatchQueue.id.is_(None),
+            SalesOrder.status == "pending_shipment",
+        ),
+    )
+    shipment_base = (
+        select(SalesOrder.id)
+        .outerjoin(InventoryDispatchQueue, InventoryDispatchQueue.sales_order_id == SalesOrder.id)
+        .where(shipment_filter)
     )
     if current_user.role.code == "sales":
-        pending_order_rows = [
-            order
-            for order in pending_order_rows
-            if user_in_scope(db, current_user, business_role_code="sales", owner_user_id=order.sales_user_id)
+        scoped_user_ids = [
+            user.id for user in db.execute(select(User).where(User.is_active.is_(True))).scalars().all()
+            if user_in_scope(db, current_user, business_role_code="sales", owner_user_id=user.id)
         ]
+        shipment_base = shipment_base.where(SalesOrder.sales_user_id.in_(scoped_user_ids or [-1]))
+    shipment_count = db.execute(select(func.count()).select_from(shipment_base.subquery())).scalar_one()
+    shipment_ids = db.execute(
+        shipment_base.order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
+        .offset((shipment_page - 1) * shipment_page_size)
+        .limit(shipment_page_size)
+    ).scalars().all()
+    shipment_orders = db.execute(
+        select(SalesOrder)
+        .options(
+            joinedload(SalesOrder.customer),
+            selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
+            selectinload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
+        )
+        .where(SalesOrder.id.in_(shipment_ids or [-1]))
+    ).unique().scalars().all()
+    shipment_queue_map = {
+        row.sales_order_id: row
+        for row in db.execute(
+            select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id.in_(shipment_ids or [-1]))
+        ).scalars().all()
+    }
+
+    sales_order_filter = SalesOrder.status.in_(["pending_shipment", "shipped", "completed"])
+    sales_order_count = db.execute(select(func.count(SalesOrder.id)).where(sales_order_filter)).scalar_one()
+    sales_order_ids = db.execute(
+        select(SalesOrder.id)
+        .where(sales_order_filter)
+        .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
+        .offset((sales_order_page - 1) * sales_order_page_size)
+        .limit(sales_order_page_size)
+    ).scalars().all()
     shipment_rows = [
-        _serialize_shipment_queue(row, db, current_user)
-        for row in rows
-        if row.sales_order.status == "pending_shipment" and row.shipment_status in {"pending", "waiting_approval"}
+        _serialize_shipment_queue(shipment_queue_map[order.id], db, current_user)
+        if order.id in shipment_queue_map
+        else _serialize_sales_order_as_shipment_queue(order, db, current_user)
+        for order in shipment_orders
     ]
-    shipment_rows.extend(_serialize_sales_order_as_shipment_queue(order, db, current_user) for order in pending_order_rows)
     sales_order_rows = (
         db.execute(
             select(SalesOrder)
             .options(
                 joinedload(SalesOrder.customer),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
-                joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
+                selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
+                selectinload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
             )
-            .where(SalesOrder.status.in_(["pending_shipment", "shipped", "completed"]))
+            .where(SalesOrder.id.in_(sales_order_ids or [-1]))
             .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
         )
         .unique()
@@ -806,10 +863,14 @@ def list_dispatch_queues(current_user: User = Depends(get_current_user), db: Ses
                     "finance_edit_confirm_state": _finance_edit_confirm_state(db, row.sales_order_id, current_user),
                 }
                 for row in rows
-                if row.sales_order.status in {"pending_confirmation", "pending_shipment"} and row.placement_status == "pending"
             ],
             "shipment": shipment_rows,
             "sales_orders": [_serialize_inventory_sales_order_summary(order, db, current_user) for order in sales_order_rows],
+            "pagination": {
+                "placement": {"page": placement_page, "page_size": placement_page_size, "total": placement_count},
+                "shipment": {"page": shipment_page, "page_size": shipment_page_size, "total": shipment_count},
+                "sales_orders": {"page": sales_order_page, "page_size": sales_order_page_size, "total": sales_order_count},
+            },
         }
     )
 
