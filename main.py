@@ -1,5 +1,8 @@
 ﻿import os
 import asyncio
+import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -20,6 +23,13 @@ from seed import init_seed_data
 from services.core import sync_low_stock_alerts
 from services.production_service import repair_material_request_states
 from services.realtime import realtime_manager
+from services.request_trace import emit, request_id_var, operation_id_var
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 def run_database_migrations():
@@ -48,6 +58,41 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def request_trace_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:16]}"
+    operation_id = request.headers.get("X-Operation-ID") or request_id
+    request_token = request_id_var.set(request_id)
+    operation_token = operation_id_var.set(operation_id)
+    started_at = time.perf_counter()
+    try:
+        response = await call_next(request)
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        if elapsed_ms >= settings.slow_request_ms:
+            emit(
+                "slow_request",
+                method=request.method,
+                path=request.url.path,
+                query=str(request.url.query)[:500],
+                status_code=response.status_code,
+                duration_ms=elapsed_ms,
+            )
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Operation-ID"] = operation_id
+        return response
+    except Exception:
+        emit(
+            "request_error",
+            method=request.method,
+            path=request.url.path,
+            duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+        )
+        raise
+    finally:
+        request_id_var.reset(request_token)
+        operation_id_var.reset(operation_token)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

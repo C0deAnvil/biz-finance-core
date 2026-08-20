@@ -1,4 +1,5 @@
 import re
+from time import perf_counter
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -56,6 +57,7 @@ from services.purchase_service import (
 from schemas.purchases import PurchasePaymentApprovalRequest
 from services.display import format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.time_utils import now_local
+from services.request_trace import trace_stage
 
 
 router = APIRouter(prefix="/finance", tags=["finance"])
@@ -548,15 +550,21 @@ def _serialize_quality_cost_rows(rows: list[QualityCostRecord], db: Session) -> 
 
 @router.get("/receivables")
 def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)), db: Session = Depends(get_db)):
+    request_started_at = perf_counter()
+    stage_started_at = perf_counter()
     records = db.execute(select(ReceivableRecord).order_by(ReceivableRecord.received_at.desc(), ReceivableRecord.id.desc())).scalars().all()
+    trace_stage("receivables_load_records", stage_started_at, record_count=len(records))
+    stage_started_at = perf_counter()
     receipt_requests = db.execute(
         select(SalesReceiptRequest).order_by(SalesReceiptRequest.created_at.desc(), SalesReceiptRequest.id.desc())
     ).scalars().all()
+    trace_stage("receivables_load_requests", stage_started_at, request_count=len(receipt_requests))
     record_order_ids = [row.sales_order_id for row in records]
     request_order_ids = [row.sales_order_id for row in receipt_requests]
     user_ids = [row.received_by_id for row in records if row.received_by_id]
     user_ids.extend([row.requested_by_id for row in receipt_requests if row.requested_by_id])
     user_ids.extend([row.approved_by_id for row in receipt_requests if row.approved_by_id])
+    stage_started_at = perf_counter()
     order_map = {
         row.id: row
         for row in db.execute(
@@ -569,7 +577,10 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
             .where(SalesOrder.id.in_(list({*record_order_ids, *request_order_ids})))
         ).unique().scalars().all()
     } if (record_order_ids or request_order_ids) else {}
+    trace_stage("receivables_load_related_orders", stage_started_at, order_count=len(order_map))
+    stage_started_at = perf_counter()
     user_map = {row.id: row for row in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()} if user_ids else {}
+    trace_stage("receivables_load_users", stage_started_at, user_count=len(user_map))
 
     received_totals = (
         select(
@@ -579,6 +590,7 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
         .group_by(ReceivableRecord.sales_order_id)
         .subquery()
     )
+    stage_started_at = perf_counter()
     orders = (
         db.execute(
             select(SalesOrder)
@@ -598,6 +610,7 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
         .scalars()
         .all()
     )
+    trace_stage("receivables_load_orders", stage_started_at, order_count=len(orders))
     received_amount_map = _sales_received_amount_map(orders, db)
     pending_orders = []
     for row in orders:
@@ -628,10 +641,19 @@ def list_receivable_records(current_user: User = Depends(require_roles(*FINANCE_
             }
         )
 
+    stage_started_at = perf_counter()
     attachment_map = _serialize_attachment_map(
         db,
         "sales_order",
         list({row.sales_order_id for row in receipt_requests if row.sales_order_id}),
+    )
+    trace_stage("receivables_load_attachments", stage_started_at, attachment_count=sum(len(rows) for rows in attachment_map.values()))
+    trace_stage(
+        "receivables_prepare_response",
+        request_started_at,
+        pending_order_count=len(pending_orders),
+        receipt_request_count=len(receipt_requests),
+        record_count=len(records),
     )
 
     return api_response(

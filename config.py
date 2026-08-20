@@ -40,6 +40,11 @@ class Settings:
     port: int = int(os.getenv("APP_PORT", "8000"))
     cors_origins: str = os.getenv("CORS_ORIGINS", "*")
     default_user_password: str = os.getenv("DEFAULT_USER_PASSWORD", "ChangeMe123!")
+    trace_enabled: bool = os.getenv("TRACE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    slow_request_ms: int = int(os.getenv("SLOW_REQUEST_MS", "1000"))
+    slow_sql_ms: int = int(os.getenv("SLOW_SQL_MS", "200"))
+    trace_stage_log_ms: int = int(os.getenv("TRACE_STAGE_LOG_MS", "50"))
+    trace_sql_max_length: int = int(os.getenv("TRACE_SQL_MAX_LENGTH", "2000"))
 
     @property
     def cors_origin_list(self) -> list[str]:
