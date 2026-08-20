@@ -60,6 +60,7 @@
       v-model:page-size="pagination.pageSize"
       :total="total"
       :page-sizes="pageSizes"
+      @change="handleOrderPaginationChange"
     />
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑客户订单' : '新增客户订单'" width="980px">
@@ -518,9 +519,9 @@ function resolveStatusTab(row) {
   return 'reviewing'
 }
 
-const reviewingRows = computed(() => rows.value.filter((item) => resolveStatusTab(item) === 'reviewing'))
-const shippingRows = computed(() => rows.value.filter((item) => resolveStatusTab(item) === 'shipping'))
-const completedRows = computed(() => rows.value.filter((item) => resolveStatusTab(item) === 'completed'))
+const reviewingRows = computed(() => activeStatusTab.value === 'reviewing' ? rows.value : [])
+const shippingRows = computed(() => activeStatusTab.value === 'shipping' ? rows.value : [])
+const completedRows = computed(() => activeStatusTab.value === 'completed' ? rows.value : [])
 const orderGoodsAmount = computed(() =>
   form.items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0), 0)
 )
@@ -570,7 +571,11 @@ const activeRows = computed(() => {
   return reviewingRows.value
 })
 
-const { pagination, total, pageSizes, pagedItems: pagedRows, ensureVisible } = useLocalPagination(activeRows)
+const pagination = reactive({ page: 1, pageSize: 10 })
+const total = ref(0)
+const pageSizes = [10, 20, 50, 100]
+const pagedRows = rows
+function ensureVisible(predicate) { return rows.value.find(predicate) || null }
 
 function resetForm() {
   Object.assign(form, emptyForm())
@@ -659,8 +664,16 @@ async function applyFocus() {
 }
 
 async function load() {
-  rows.value = await get('/api/sales/orders')
+  const data = await get(`/api/sales/orders?tab=${activeStatusTab.value}&page=${pagination.page}&page_size=${pagination.pageSize}`)
+  rows.value = data.items || []
+  total.value = Number(data.pagination?.total || 0)
   await applyFocus()
+}
+
+async function handleOrderPaginationChange({ page, pageSize }) {
+  pagination.page = page
+  pagination.pageSize = pageSize
+  await load()
 }
 
 function openCreate() {
@@ -1092,6 +1105,11 @@ function exportTable() {
 
 onMounted(async () => {
   await loadBaseOptions()
+  await load()
+})
+
+watch(activeStatusTab, async () => {
+  pagination.page = 1
   await load()
 })
 

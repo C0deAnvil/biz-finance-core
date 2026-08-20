@@ -1,7 +1,7 @@
 import re
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -203,7 +203,13 @@ def _extract_receipt_merge_no(remark: str | None) -> str | None:
 
 
 @router.get("/orders")
-def list_orders(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_orders(
+    tab: str = Query(default="reviewing", pattern="^(reviewing|shipping|completed|all)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     query = (
         select(SalesOrder)
         .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user), joinedload(SalesOrder.parent_order))
@@ -212,8 +218,17 @@ def list_orders(current_user: User = Depends(get_current_user), db: Session = De
     scoped_user_ids = get_scoped_user_ids(db, current_user, "sales")
     if scoped_user_ids is not None:
         query = query.where(SalesOrder.sales_user_id.in_(scoped_user_ids))
-
-    rows = db.execute(query).scalars().all()
+    tab_filters = {
+        "reviewing": ~SalesOrder.status.in_(["pending_shipment", "shipped", "completed", "cancelled"]),
+        "shipping": SalesOrder.status.in_(["pending_shipment", "shipped"]),
+        "completed": SalesOrder.status.in_(["completed", "cancelled"]),
+        "all": True,
+    }
+    query = query.where(tab_filters[tab])
+    total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+    rows = db.execute(
+        query.offset((page - 1) * page_size).limit(page_size)
+    ).scalars().all()
     order_ids = [row.id for row in rows]
     receivables = (
         db.execute(select(ReceivableRecord).where(ReceivableRecord.sales_order_id.in_(order_ids)).order_by(ReceivableRecord.id.desc())).scalars().all()
@@ -222,7 +237,8 @@ def list_orders(current_user: User = Depends(get_current_user), db: Session = De
     )
     received_amount_map = _received_amount_map(receivables)
     return api_response(
-        data=[
+        data={
+            "items": [
             {
                 "id": row.id,
                 "order_no": row.order_no,
@@ -255,7 +271,9 @@ def list_orders(current_user: User = Depends(get_current_user), db: Session = De
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
             for row in rows
-        ]
+            ],
+            "pagination": {"page": page, "page_size": page_size, "total": total},
+        }
     )
 
 
