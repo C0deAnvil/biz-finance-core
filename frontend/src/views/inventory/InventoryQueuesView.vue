@@ -152,7 +152,7 @@
       </el-form>
       <template #footer>
         <el-button @click="shipmentDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitShipment">确认出库并发货</el-button>
+        <el-button type="primary" :loading="shipmentSubmitting" @click="submitShipment">确认出库并发货</el-button>
       </template>
     </el-dialog>
 
@@ -284,6 +284,7 @@ const activeShipment = ref(null)
 const detailVisible = ref(false)
 const orderDetail = ref(null)
 const shipmentForm = reactive({ items: [], remark: '' })
+const shipmentSubmitting = ref(false)
 const placementPagination = reactive({ page: 1, pageSize: 10 })
 const shipmentPagination = reactive({ page: 1, pageSize: 10 })
 const salesOrderPagination = reactive({ page: 1, pageSize: 10 })
@@ -405,25 +406,34 @@ function buildShipmentItems(row) {
 }
 
 async function openShipmentDialog(row) {
-  activeShipment.value = row
-  const detail = await get(`/api/inventory/sales-orders/${resolveOrderId(row)}`)
-  shipmentForm.items = buildShipmentItems({
-    items: (detail.items || []).map((item) => ({
-      ...item,
-      ordered_quantity: item.quantity,
-      remaining_quantity: item.remaining_shipment_quantity,
-      ship_quantity: item.remaining_shipment_quantity
-    }))
-  })
-  shipmentForm.remark = ''
-  if (!shipmentForm.items.length) {
-    ElMessage.warning('当前客户订单没有可发货明细，请刷新后重试')
+  const orderId = resolveOrderId(row)
+  if (!orderId) {
+    ElMessage.error('未找到客户订单，无法发货')
+    return
   }
-  shipmentDialogVisible.value = true
+  try {
+    const detail = await get(`/api/inventory/sales-orders/${orderId}`)
+    activeShipment.value = row
+    shipmentForm.items = buildShipmentItems({
+      items: (detail.items || []).map((item) => ({
+        ...item,
+        ordered_quantity: item.quantity,
+        remaining_quantity: item.remaining_shipment_quantity,
+        ship_quantity: item.remaining_shipment_quantity
+      }))
+    })
+    shipmentForm.remark = ''
+    if (!shipmentForm.items.length) {
+      ElMessage.warning('当前客户订单没有可发货明细，请刷新后重试')
+    }
+    shipmentDialogVisible.value = true
+  } catch (error) {
+    ElMessage.error(error.message || '获取待发货订单失败')
+  }
 }
 
 async function submitShipment() {
-  if (!activeShipment.value) return
+  if (!activeShipment.value || shipmentSubmitting.value) return
   const items = shipmentForm.items
     .filter((item) => Number(item.ship_quantity || 0) > 0)
     .map((item) => ({
@@ -434,16 +444,28 @@ async function submitShipment() {
     ElMessage.warning('请至少填写一项本次发货数量')
     return
   }
+  const orderId = resolveOrderId(activeShipment.value)
+  if (!orderId) {
+    ElMessage.error('未找到客户订单，无法发货')
+    return
+  }
   const targetUrl = activeShipment.value.queue_id
     ? `/api/inventory/queues/${activeShipment.value.queue_id}/shipment`
-    : `/api/inventory/sales-orders/${activeShipment.value.order_id}/shipment`
-  await post(targetUrl, {
-    items,
-    remark: shipmentForm.remark
-  })
-  ElMessage.success('客户订单发货出库已完成')
-  shipmentDialogVisible.value = false
-  await load()
+    : `/api/inventory/sales-orders/${orderId}/shipment`
+  shipmentSubmitting.value = true
+  try {
+    await post(targetUrl, {
+      items,
+      remark: shipmentForm.remark
+    })
+    ElMessage.success('客户订单发货出库已完成')
+    shipmentDialogVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || '客户订单发货出库失败')
+  } finally {
+    shipmentSubmitting.value = false
+  }
 }
 
 function financeEditConfirmText(row) {
