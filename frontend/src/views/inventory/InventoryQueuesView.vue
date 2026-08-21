@@ -417,6 +417,7 @@ async function openShipmentDialog(row) {
     shipmentForm.items = buildShipmentItems({
       items: (detail.items || []).map((item) => ({
         ...item,
+        sales_order_item_id: item.id,
         ordered_quantity: item.quantity,
         remaining_quantity: item.remaining_shipment_quantity,
         ship_quantity: item.remaining_shipment_quantity
