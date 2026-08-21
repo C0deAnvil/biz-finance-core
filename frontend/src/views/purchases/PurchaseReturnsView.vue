@@ -397,7 +397,9 @@ watch(
 
 onMounted(async () => {
   if (canCreate.value) {
-    purchaseOrders.value = await get('/api/purchases/orders')
+    const orderData = await get('/api/purchases/orders?tab=all&page=1&page_size=100')
+    const orders = Array.isArray(orderData) ? orderData : (orderData.items || [])
+    purchaseOrders.value = orders.filter((item) => ['partial_received', 'fully_received'].includes(item.status))
   }
   warehouses.value = await get('/api/master-data/warehouses')
   await load()

@@ -54,7 +54,13 @@
           <el-col :span="12">
             <el-form-item label="采购单">
               <el-select v-model="selectedOrderId" style="width: 100%" @change="loadOrderDetail">
-                <el-option v-for="item in candidateOrders" :key="item.id" :label="`${item.order_no} / ${item.supplier_name}`" :value="item.id" />
+                <el-option
+                  v-for="item in candidateOrders"
+                  :key="item.id"
+                  :label="orderOptionLabel(item)"
+                  :value="item.id"
+                  :disabled="!canReceiveOrder(item)"
+                />
               </el-select>
             </el-form-item>
           </el-col>
@@ -203,6 +209,8 @@ const form = reactive({ warehouse_id: null, requires_quality: false, remark: '',
 const canCreate = computed(() => ['purchase', 'inventory'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const selectedWarehouse = computed(() => warehouses.value.find((item) => item.id === form.warehouse_id) || null)
 const isInspectionWarehouse = computed(() => isInspectionWarehouseOption(selectedWarehouse.value))
+const receiptAllowedStatuses = ['purchasing', 'partial_received']
+const receiptVisibleStatuses = [...receiptAllowedStatuses, 'pending_approval', 'pending_purchase_confirm']
 
 const pendingQualityRows = computed(() =>
   rows.value.filter((item) => item.requires_quality && !['approved', 'not_required'].includes(item.quality_status))
@@ -231,6 +239,14 @@ function isInspectionWarehouseOption(warehouse) {
   return type.includes('inspection') || code.includes('inspection') || name.includes('待检')
 }
 
+function canReceiveOrder(order) {
+  return order && !order.receivable_completed && receiptAllowedStatuses.includes(order.status)
+}
+
+function orderOptionLabel(order) {
+  return `${order.order_no} / ${order.supplier_name || '-'} / ${order.status_label || statusLabel(order.status)}`
+}
+
 function handleWarehouseChange() {
   if (isInspectionWarehouse.value) {
     form.requires_quality = true
@@ -257,8 +273,9 @@ async function load() {
     candidateOrders.value = []
     return
   }
-  const orders = await get('/api/purchases/orders')
-  candidateOrders.value = orders.filter((item) => !item.receivable_completed && ['purchasing', 'partial_received', 'pending_approval'].includes(item.status))
+  const orderData = await get('/api/purchases/orders?tab=active&page=1&page_size=100')
+  const orders = Array.isArray(orderData) ? orderData : (orderData.items || [])
+  candidateOrders.value = orders.filter((item) => !item.receivable_completed && receiptVisibleStatuses.includes(item.status))
 }
 
 async function openDetail(row) {
@@ -305,6 +322,13 @@ function goInventoryExecute(row) {
 
 async function loadOrderDetail(id) {
   if (!id) {
+    form.items = []
+    return
+  }
+  const candidate = candidateOrders.value.find((item) => item.id === id)
+  if (candidate && !canReceiveOrder(candidate)) {
+    ElMessage.warning(`该采购单当前为${candidate.status_label || statusLabel(candidate.status)}，暂不能登记到货`)
+    selectedOrderId.value = null
     form.items = []
     return
   }
