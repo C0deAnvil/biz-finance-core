@@ -454,7 +454,8 @@ watch(
 )
 
 onMounted(async () => {
-  purchaseOrders.value = await get('/api/purchases/orders')
+  const orderData = await get('/api/purchases/orders?tab=all&page=1&page_size=100')
+  purchaseOrders.value = Array.isArray(orderData) ? orderData : (orderData.items || [])
   await load()
 })
 </script>

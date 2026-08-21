@@ -43,7 +43,7 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 
 import { get, upload } from '../api/client'
 
@@ -85,6 +85,16 @@ function openAttachment(id) {
 }
 
 onMounted(loadAttachments)
+
+watch(
+  () => [props.businessType, props.businessId],
+  () => {
+    attachments.value = []
+    selectedFile.value = null
+    attachmentType.value = ''
+    loadAttachments()
+  }
+)
 </script>
 
 <style scoped>

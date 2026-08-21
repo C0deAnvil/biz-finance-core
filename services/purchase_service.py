@@ -1632,7 +1632,7 @@ def create_receipt(payload: PurchaseReceiptCreate, current_user: User, db: Sessi
     _refresh_purchase_order_status(order)
     if order.status == "fully_received" or purchase_arrival_status(db, order.id) == "arrived":
         raise HTTPException(status_code=409, detail="当前采购订单已全部到货，不能重复登记到货")
-    if order.status not in {"purchasing", "partial_received", "pending_approval", "fully_received"}:
+    if order.status not in {"purchasing", "partial_received", "fully_received"}:
         raise HTTPException(status_code=409, detail="当前采购订单不可到货入库")
     if not payload.items:
         raise HTTPException(status_code=400, detail="采购到货至少需要一条明细")

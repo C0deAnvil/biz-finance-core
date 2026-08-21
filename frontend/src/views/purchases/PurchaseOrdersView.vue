@@ -231,7 +231,7 @@
 
     <el-drawer v-model="attachmentVisible" title="采购合同与发票附件" size="40%">
       <el-alert title="合同、发票上传后会同步通知财务和经理，便于后续付款审核与对账。" type="info" :closable="false" show-icon class="mb-12" />
-      <AttachmentUploader v-if="attachmentOrder" business-type="purchase_order" :business-id="attachmentOrder.id" :preset-types="['合同', '发票', '付款凭证', '到货单']" />
+      <AttachmentUploader v-if="attachmentOrder" :key="attachmentOrder.id" business-type="purchase_order" :business-id="attachmentOrder.id" :preset-types="['合同', '发票', '付款凭证', '到货单']" />
     </el-drawer>
 
     <el-dialog v-model="purchaseConfirmVisible" title="采购订单确认" width="760px">
