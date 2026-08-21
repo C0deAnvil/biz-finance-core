@@ -33,6 +33,7 @@ from services.purchase_service import (
     confirm_purchase_order as confirm_purchase_order_service,
     create_purchase_order as create_purchase_order_service,
     create_purchase_return as create_purchase_return_service,
+    link_purchase_order_to_replenishment_source as link_purchase_order_to_replenishment_source_service,
     create_receipt as create_receipt_service,
     submit_merged_purchase_payment_request as submit_merged_purchase_payment_request_service,
     submit_purchase_payment_request as submit_purchase_payment_request_service,
@@ -713,8 +714,12 @@ def list_purchase_fulfillment_demands(
         .where(TodoItem.business_type == "low_stock_replenishment", TodoItem.status != "completed", TodoItem.module == "purchase")
         .order_by(TodoItem.created_at.desc(), TodoItem.id.desc())
     ).scalars().all()
-    low_stock_demands = []
+    low_stock_groups: dict[int, list[TodoItem]] = {}
     for todo in low_stock_rows:
+        low_stock_groups.setdefault(todo.business_id, []).append(todo)
+    low_stock_demands = []
+    for source_id, todos in low_stock_groups.items():
+        todo = todos[0]
         raw_description = todo.description or ""
         payload = {}
         if "|replenishment:" in raw_description:
@@ -728,6 +733,8 @@ def list_purchase_fulfillment_demands(
             {
                 "id": f"low-{todo.id}",
                 "low_stock_todo_id": todo.id,
+                "low_stock_todo_ids": [item.id for item in todos],
+                "replenishment_source_id": source_id,
                 "demand_type": "low_stock_product" if product_id else "low_stock_material",
                 "source_type": "low_stock_replenishment",
                 "demand_no": f"AQ-{todo.id}",
@@ -753,8 +760,12 @@ def list_purchase_fulfillment_demands(
                 "created_at": todo.created_at.isoformat() if todo.created_at else None,
             }
         )
-    raw_demands = []
+    raw_groups: dict[int, list[tuple[TodoItem, ProductionMaterialUsage]]] = {}
     for todo, usage in raw_rows:
+        raw_groups.setdefault(usage.id, []).append((todo, usage))
+    raw_demands = []
+    for usage_id, todo_rows in raw_groups.items():
+        todo, usage = todo_rows[0]
         task = usage.production_task
         material = usage.material
         inventory = inventory_map.get(usage.material_id)
@@ -765,7 +776,9 @@ def list_purchase_fulfillment_demands(
             {
                 "id": f"raw-{todo.id}",
                 "raw_todo_id": todo.id,
-                "usage_id": usage.id,
+                "raw_todo_ids": [item.id for item, _ in todo_rows],
+                "usage_id": usage_id,
+                "replenishment_source_id": usage_id,
                 "demand_no": f"YL-{todo.id}",
                 "demand_type": "raw_material",
                 "source_type": "production_material_shortage",
@@ -933,21 +946,12 @@ def link_purchase_fulfillment_demand_order(
     if order.purchaser_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="仅可关联本人创建的采购订单")
 
-    row.status = "converted"
-    row.processed_by_id = current_user.id
-    row.process_note = f"已转采购订单 {order.order_no}"
-    complete_todos(db, business_type="fulfillment_demand", business_id=row.id)
-    recipient_user_ids = [current_user.id]
-    if row.sales_order and row.sales_order.sales_user_id:
-        recipient_user_ids.append(row.sales_order.sales_user_id)
-    create_notification(
+    link_purchase_order_to_replenishment_source_service(
         db,
-        title="采购补货需求已转采购单",
-        content=f"补货需求 {row.demand_no} 已转为采购订单 {order.order_no}。",
-        module="purchase",
-        recipient_user_ids=list(dict.fromkeys(recipient_user_ids)),
-        created_by_id=current_user.id,
-        category="success",
+        order=order,
+        source_type="fulfillment_demand",
+        source_id=row.id,
+        current_user=current_user,
     )
     write_operation_log(
         db,
@@ -955,7 +959,7 @@ def link_purchase_fulfillment_demand_order(
         module="purchase",
         action="convert_fulfillment_demand",
         content=f"补货需求 {row.demand_no} 关联采购订单 {order.order_no}",
-        after_data={"demand_id": row.id, "purchase_order_id": order.id, "status": row.status},
+        after_data={"demand_id": row.id, "purchase_order_id": order.id, "status": "converted"},
     )
     db.commit()
     return api_response(data={"id": row.id, "status": row.status})
@@ -985,38 +989,20 @@ def link_raw_material_replenishment_order(
     if order.purchaser_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="仅可关联本人创建的采购订单")
 
-    usage = db.execute(
-        select(ProductionMaterialUsage)
-        .options(joinedload(ProductionMaterialUsage.material), joinedload(ProductionMaterialUsage.production_task))
-        .where(ProductionMaterialUsage.id == todo.business_id)
-    ).unique().scalar_one_or_none()
-
-    todo.status = "completed"
-    todo.completed_at = todo.completed_at or now_local()
-
-    recipient_user_ids = [current_user.id]
-    if usage and usage.production_task and usage.production_task.created_by_id:
-        recipient_user_ids.append(usage.production_task.created_by_id)
-    create_notification(
+    link_purchase_order_to_replenishment_source_service(
         db,
-        title="原料补货需求已转采购单",
-        content=(
-            f"原料补货需求 {todo.title} 已转为采购订单 {order.order_no}。"
-            if usage is None
-            else f"生产任务 {usage.production_task.task_no if usage.production_task else '-'} 的原料 {usage.material.name if usage.material else usage.material_id} 已转为采购订单 {order.order_no}。"
-        ),
-        module="purchase",
-        recipient_user_ids=list(dict.fromkeys([user_id for user_id in recipient_user_ids if user_id])),
-        created_by_id=current_user.id,
-        category="success",
+        order=order,
+        source_type="raw_material_replenishment",
+        source_id=todo.business_id,
+        current_user=current_user,
     )
     write_operation_log(
         db,
         user_id=current_user.id,
         module="purchase",
         action="convert_raw_material_replenishment",
-        content=f"原料补货需求 {todo.id} 关联采购订单 {order.order_no}",
-        after_data={"todo_id": todo.id, "purchase_order_id": order.id, "status": todo.status},
+        content=f"原料补货需求 {todo.business_id} 关联采购订单 {order.order_no}",
+        after_data={"todo_id": todo.id, "purchase_order_id": order.id, "status": "completed"},
     )
     db.commit()
     return api_response(data={"id": todo.id, "status": todo.status})

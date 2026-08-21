@@ -16,6 +16,11 @@ class PurchaseOrderCreate(BaseModel):
     operator_user_id: int | None = None
     payment_type: str = Field(..., max_length=50)
     items: list[PurchaseOrderItemInput]
+    replenishment_source_type: str | None = Field(
+        default=None,
+        pattern="^(raw_material_replenishment|low_stock_replenishment|fulfillment_demand)$",
+    )
+    replenishment_source_id: int | None = Field(default=None, gt=0)
 
 
 class PurchaseOrderUpdate(BaseModel):

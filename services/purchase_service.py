@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from models import (
     Attachment,
     AppSetting,
+    FulfillmentDemand,
     Inventory,
     Material,
     PayableRecord,
     Product,
+    ProductionMaterialUsage,
     PurchaseOrder,
     PurchaseOrderApproval,
     PurchaseOrderItem,
@@ -26,6 +30,7 @@ from models import (
     Role,
     SupplierCatalogItem,
     Supplier,
+    TodoItem,
     User,
     Warehouse,
 )
@@ -49,6 +54,13 @@ from services.display import calculate_bag_count, get_default_packaging_config, 
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
+
+
+REPLENISHMENT_SOURCE_TYPES = {
+    "raw_material_replenishment",
+    "low_stock_replenishment",
+    "fulfillment_demand",
+}
 
 
 def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
@@ -366,6 +378,412 @@ def _purchase_order_attachment_summary(db: Session, order_id: int) -> list[dict]
     return _purchase_contract_attachments(db, order_id)
 
 
+def _has_replenishment_item(items, *, product_id: int | None = None, material_id: int | None = None) -> bool:
+    if product_id:
+        return any(item.product_id == product_id for item in items)
+    if material_id:
+        return any(item.material_id == material_id for item in items)
+    return False
+
+
+def _parse_low_stock_replenishment_payload(todo: TodoItem) -> dict:
+    description = todo.description or ""
+    if "|replenishment:" not in description:
+        return {}
+    try:
+        return json.loads(description.split("|replenishment:", 1)[1])
+    except (TypeError, ValueError):
+        return {}
+
+
+def _validate_purchase_order_replenishment_items(
+    db: Session,
+    *,
+    source_type: str,
+    source_id: int,
+    items,
+) -> None:
+    if source_type == "raw_material_replenishment":
+        usage = db.execute(
+            select(ProductionMaterialUsage).where(ProductionMaterialUsage.id == source_id)
+        ).scalar_one_or_none()
+        if usage is None:
+            raise HTTPException(status_code=404, detail="原料补货需求不存在")
+        if not _has_replenishment_item(items, material_id=usage.material_id):
+            raise HTTPException(status_code=409, detail="采购订单必须包含补货需求对应的原料")
+        return
+
+    if source_type == "low_stock_replenishment":
+        todos = db.execute(
+            select(TodoItem)
+            .where(
+                TodoItem.business_type == source_type,
+                TodoItem.business_id == source_id,
+                TodoItem.module == "purchase",
+            )
+            .order_by(TodoItem.id.asc())
+        ).scalars().all()
+        source_payload = next(
+            (
+                payload
+                for payload in (_parse_low_stock_replenishment_payload(todo) for todo in todos)
+                if payload.get("product_id") or payload.get("material_id")
+            ),
+            {},
+        )
+        product_id = source_payload.get("product_id")
+        material_id = source_payload.get("material_id")
+        if not product_id and not material_id:
+            raise HTTPException(status_code=409, detail="安全库存补货需求缺少产品或原料信息")
+        if not _has_replenishment_item(items, product_id=product_id, material_id=material_id):
+            raise HTTPException(status_code=409, detail="采购订单必须包含补货需求对应的产品或原料")
+        return
+
+    if source_type == "fulfillment_demand":
+        demand = db.execute(
+            select(FulfillmentDemand).where(FulfillmentDemand.id == source_id)
+        ).scalar_one_or_none()
+        if demand is None:
+            raise HTTPException(status_code=404, detail="采购补货需求不存在")
+        if not _has_replenishment_item(items, product_id=demand.product_id):
+            raise HTTPException(status_code=409, detail="采购订单必须包含补货需求对应的产品")
+        return
+
+    raise HTTPException(status_code=409, detail="不支持的补货来源类型")
+
+
+def _load_purchase_replenishment_source(
+    db: Session,
+    *,
+    source_type: str | None,
+    source_id: int | None,
+    items,
+    existing_order_id: int | None = None,
+) -> dict | None:
+    if bool(source_type) != bool(source_id):
+        raise HTTPException(status_code=409, detail="补货来源类型和来源编号必须同时提交")
+    if source_type is None:
+        return None
+    if source_type not in REPLENISHMENT_SOURCE_TYPES:
+        raise HTTPException(status_code=409, detail="不支持的补货来源类型")
+
+    existing_order = db.execute(
+        select(PurchaseOrder).where(
+            PurchaseOrder.replenishment_source_type == source_type,
+            PurchaseOrder.replenishment_source_id == source_id,
+        )
+    ).scalar_one_or_none()
+    if existing_order is not None and existing_order.id != existing_order_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该补货来源已关联采购订单 {existing_order.order_no}，不能重复创建采购订单",
+        )
+
+    if source_type == "raw_material_replenishment":
+        usage = db.execute(
+            select(ProductionMaterialUsage)
+            .options(joinedload(ProductionMaterialUsage.material), joinedload(ProductionMaterialUsage.production_task))
+            .where(ProductionMaterialUsage.id == source_id)
+        ).unique().scalar_one_or_none()
+        if usage is None:
+            raise HTTPException(status_code=404, detail="原料补货需求不存在")
+        pending_todos = db.execute(
+            select(TodoItem).where(
+                TodoItem.business_type == source_type,
+                TodoItem.business_id == source_id,
+                TodoItem.status != "completed",
+            )
+        ).scalars().all()
+        if not pending_todos:
+            raise HTTPException(status_code=409, detail="原料补货需求已处理")
+        _validate_purchase_order_replenishment_items(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+            items=items,
+        )
+        return {
+            "source_type": source_type,
+            "source_id": source_id,
+            "usage": usage,
+            "pending_todos": pending_todos,
+        }
+
+    if source_type == "low_stock_replenishment":
+        pending_todos = db.execute(
+            select(TodoItem)
+            .where(
+                TodoItem.business_type == source_type,
+                TodoItem.business_id == source_id,
+                TodoItem.module == "purchase",
+                TodoItem.status != "completed",
+            )
+            .order_by(TodoItem.id.asc())
+        ).scalars().all()
+        if not pending_todos:
+            raise HTTPException(status_code=409, detail="安全库存补货需求已处理")
+        source_payload = next(
+            (
+                payload
+                for payload in (_parse_low_stock_replenishment_payload(todo) for todo in pending_todos)
+                if payload.get("product_id") or payload.get("material_id")
+            ),
+            {},
+        )
+        _validate_purchase_order_replenishment_items(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+            items=items,
+        )
+        return {
+            "source_type": source_type,
+            "source_id": source_id,
+            "pending_todos": pending_todos,
+            "payload": source_payload,
+        }
+
+    demand = db.execute(
+        select(FulfillmentDemand)
+        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
+        .where(FulfillmentDemand.id == source_id, FulfillmentDemand.fulfillment_mode == "trade")
+    ).unique().scalar_one_or_none()
+    if demand is None:
+        raise HTTPException(status_code=404, detail="采购补货需求不存在")
+    if demand.status != "pending":
+        raise HTTPException(status_code=409, detail="当前采购补货需求已处理")
+    _validate_purchase_order_replenishment_items(
+        db,
+        source_type=source_type,
+        source_id=source_id,
+        items=items,
+    )
+    return {
+        "source_type": source_type,
+        "source_id": source_id,
+        "demand": demand,
+    }
+
+
+def _complete_purchase_replenishment_source(
+    db: Session,
+    *,
+    source: dict,
+    order: PurchaseOrder,
+    current_user: User,
+) -> None:
+    source_type = source["source_type"]
+    source_id = source["source_id"]
+
+    if source_type == "raw_material_replenishment":
+        completed_todos = complete_todos(db, business_type=source_type, business_id=source_id)
+        usage = source["usage"]
+        recipient_user_ids = [
+            current_user.id,
+            usage.production_task.created_by_id if usage.production_task else None,
+            *(todo.assigned_user_id for todo in completed_todos),
+        ]
+        material_name = usage.material.name if usage.material else f"原料#{usage.material_id}"
+        task_no = usage.production_task.task_no if usage.production_task else "-"
+        create_notification(
+            db,
+            title="原料补货需求已转采购单",
+            content=f"生产任务 {task_no} 的原料 {material_name} 已转为采购订单 {order.order_no}。",
+            module="purchase",
+            recipient_user_ids=list(dict.fromkeys(user_id for user_id in recipient_user_ids if user_id)),
+            created_by_id=current_user.id,
+            category="success",
+        )
+        return
+
+    if source_type == "low_stock_replenishment":
+        completed_todos = complete_todos(db, business_type=source_type, business_id=source_id)
+        source_payload = source["payload"]
+        item_name = source_payload.get("product_name") or source_payload.get("material_name") or "库存补货物料"
+        create_notification(
+            db,
+            title="安全库存补货需求已转采购单",
+            content=f"{item_name} 已转为采购订单 {order.order_no}。",
+            module="purchase",
+            recipient_user_ids=list(
+                dict.fromkeys(
+                    user_id
+                    for user_id in [current_user.id, *(todo.assigned_user_id for todo in completed_todos)]
+                    if user_id
+                )
+            ),
+            created_by_id=current_user.id,
+            category="success",
+        )
+        return
+
+    demand = source["demand"]
+    demand.status = "converted"
+    demand.processed_by_id = current_user.id
+    demand.process_note = f"已转采购订单 {order.order_no}"
+    complete_todos(db, business_type="fulfillment_demand", business_id=demand.id)
+    recipient_user_ids = [current_user.id]
+    if demand.sales_order and demand.sales_order.sales_user_id:
+        recipient_user_ids.append(demand.sales_order.sales_user_id)
+    create_notification(
+        db,
+        title="采购补货需求已转采购单",
+        content=f"补货需求 {demand.demand_no} 已转为采购订单 {order.order_no}。",
+        module="purchase",
+        recipient_user_ids=list(dict.fromkeys(recipient_user_ids)),
+        created_by_id=current_user.id,
+        category="success",
+    )
+
+
+def link_purchase_order_to_replenishment_source(
+    db: Session,
+    *,
+    order: PurchaseOrder,
+    source_type: str,
+    source_id: int,
+    current_user: User,
+) -> None:
+    if order.replenishment_source_type or order.replenishment_source_id:
+        if (
+            order.replenishment_source_type == source_type
+            and order.replenishment_source_id == source_id
+        ):
+            return
+        raise HTTPException(status_code=409, detail="采购订单已关联其他补货来源")
+
+    source = _load_purchase_replenishment_source(
+        db,
+        source_type=source_type,
+        source_id=source_id,
+        items=order.items,
+        existing_order_id=order.id,
+    )
+    order.replenishment_source_type = source_type
+    order.replenishment_source_id = source_id
+    _complete_purchase_replenishment_source(db, source=source, order=order, current_user=current_user)
+
+
+def _reopen_completed_replenishment_todos(
+    db: Session,
+    *,
+    source_type: str,
+    source_id: int,
+    module: str | None = None,
+) -> list[TodoItem]:
+    statement = select(TodoItem).where(
+        TodoItem.business_type == source_type,
+        TodoItem.business_id == source_id,
+    )
+    if module:
+        statement = statement.where(TodoItem.module == module)
+    rows = db.execute(statement).scalars().all()
+    for todo in rows:
+        todo.status = "pending"
+        todo.completed_at = None
+    db.flush()
+    return rows
+
+
+def _reopen_purchase_replenishment_source(
+    db: Session,
+    *,
+    order: PurchaseOrder,
+    current_user: User,
+) -> None:
+    source_type = order.replenishment_source_type
+    source_id = order.replenishment_source_id
+    if not source_type or not source_id:
+        return
+
+    if source_type == "raw_material_replenishment":
+        usage = db.execute(
+            select(ProductionMaterialUsage)
+            .options(joinedload(ProductionMaterialUsage.material), joinedload(ProductionMaterialUsage.production_task))
+            .where(ProductionMaterialUsage.id == source_id)
+        ).unique().scalar_one_or_none()
+        todos = _reopen_completed_replenishment_todos(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+            module="purchase",
+        )
+        recipient_user_ids = [current_user.id, *(todo.assigned_user_id for todo in todos)]
+        if usage and usage.production_task and usage.production_task.created_by_id:
+            recipient_user_ids.append(usage.production_task.created_by_id)
+        item_name = usage.material.name if usage and usage.material else "原料补货物料"
+        create_notification(
+            db,
+            title="原料补货需求已恢复",
+            content=f"采购订单 {order.order_no} 已作废，{item_name} 的补货需求已恢复待采购。",
+            module="purchase",
+            recipient_user_ids=list(dict.fromkeys(user_id for user_id in recipient_user_ids if user_id)),
+            created_by_id=current_user.id,
+            category="warning",
+        )
+    elif source_type == "low_stock_replenishment":
+        todos = _reopen_completed_replenishment_todos(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+            module="purchase",
+        )
+        source_payload = next(
+            (
+                payload
+                for payload in (_parse_low_stock_replenishment_payload(todo) for todo in todos)
+                if payload.get("product_name") or payload.get("material_name")
+            ),
+            {},
+        )
+        item_name = source_payload.get("product_name") or source_payload.get("material_name") or "安全库存补货物料"
+        create_notification(
+            db,
+            title="安全库存补货需求已恢复",
+            content=f"采购订单 {order.order_no} 已作废，{item_name} 的补货需求已恢复待采购。",
+            module="purchase",
+            recipient_user_ids=list(
+                dict.fromkeys(
+                    user_id
+                    for user_id in [current_user.id, *(todo.assigned_user_id for todo in todos)]
+                    if user_id
+                )
+            ),
+            created_by_id=current_user.id,
+            category="warning",
+        )
+    elif source_type == "fulfillment_demand":
+        demand = db.execute(
+            select(FulfillmentDemand)
+            .options(joinedload(FulfillmentDemand.sales_order))
+            .where(FulfillmentDemand.id == source_id)
+        ).unique().scalar_one_or_none()
+        todos = _reopen_completed_replenishment_todos(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+        )
+        if demand is not None:
+            demand.status = "pending"
+            demand.processed_by_id = None
+            demand.process_note = f"采购订单 {order.order_no} 已作废，待重新采购"
+        recipient_user_ids = [current_user.id, *(todo.assigned_user_id for todo in todos)]
+        if demand and demand.sales_order and demand.sales_order.sales_user_id:
+            recipient_user_ids.append(demand.sales_order.sales_user_id)
+        create_notification(
+            db,
+            title="采购补货需求已恢复",
+            content=f"采购订单 {order.order_no} 已作废，关联补货需求已恢复待处理。",
+            module="purchase",
+            recipient_user_ids=list(dict.fromkeys(user_id for user_id in recipient_user_ids if user_id)),
+            created_by_id=current_user.id,
+            category="warning",
+        )
+
+    order.replenishment_source_type = None
+    order.replenishment_source_id = None
+
+
 def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: Session):
     supplier = db.execute(select(Supplier).where(Supplier.id == payload.supplier_id, Supplier.status == "enabled")).scalar_one_or_none()
     if supplier is None:
@@ -373,6 +791,12 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
     if not payload.items:
         raise HTTPException(status_code=400, detail="采购订单至少需要一条明细")
     _validate_supplier_catalog(db, payload.supplier_id, payload.items)
+    replenishment_source = _load_purchase_replenishment_source(
+        db,
+        source_type=payload.replenishment_source_type,
+        source_id=payload.replenishment_source_id,
+        items=payload.items,
+    )
 
     order = PurchaseOrder(
         order_no=next_business_no(db, "CG"),
@@ -381,9 +805,17 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
         operator_user_id=_resolve_purchase_operator_user_id(db, payload.operator_user_id, current_user),
         payment_type=payment_type_label(payload.payment_type, module="purchase"),
         status="draft",
+        replenishment_source_type=payload.replenishment_source_type,
+        replenishment_source_id=payload.replenishment_source_id,
     )
     db.add(order)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if replenishment_source is not None:
+            raise HTTPException(status_code=409, detail="该补货来源已被其他采购订单处理，请刷新后查看") from exc
+        raise
 
     total_amount, threshold_triggered = _build_order_items(db, order, payload.items)
     order.total_amount = total_amount
@@ -412,15 +844,33 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
         recipient_user_ids=[current_user.id, *manager_user_ids],
         created_by_id=current_user.id,
     )
+    if replenishment_source is not None:
+        _complete_purchase_replenishment_source(
+            db,
+            source=replenishment_source,
+            order=order,
+            current_user=current_user,
+        )
     write_operation_log(
         db,
         user_id=current_user.id,
         module="purchase",
         action="create_purchase_order",
         content=f"创建采购订单 {order.order_no}",
-        after_data={"status": order.status, "threshold_triggered": threshold_triggered},
+        after_data={
+            "status": order.status,
+            "threshold_triggered": threshold_triggered,
+            "replenishment_source_type": order.replenishment_source_type,
+            "replenishment_source_id": order.replenishment_source_id,
+        },
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if replenishment_source is not None:
+            raise HTTPException(status_code=409, detail="该补货来源已被其他采购订单处理，请刷新后查看") from exc
+        raise
     return api_response(data={"id": order.id, "order_no": order.order_no})
 
 
@@ -440,6 +890,13 @@ def update_purchase_order(order_id: int, payload: PurchaseOrderUpdate, current_u
     if not payload.items:
         raise HTTPException(status_code=400, detail="采购订单至少需要一条明细")
     _validate_supplier_catalog(db, payload.supplier_id, payload.items)
+    if order.replenishment_source_type and order.replenishment_source_id:
+        _validate_purchase_order_replenishment_items(
+            db,
+            source_type=order.replenishment_source_type,
+            source_id=order.replenishment_source_id,
+            items=payload.items,
+        )
 
     before_data = {
         "supplier_id": order.supplier_id,
@@ -522,6 +979,7 @@ def cancel_purchase_order(order_id: int, current_user: User, db: Session):
     previous_status = order.status
     order.status = "cancelled"
     complete_todos(db, business_type="purchase_order", business_id=order.id)
+    _reopen_purchase_replenishment_source(db, order=order, current_user=current_user)
     create_notification(
         db,
         title="采购单已作废",

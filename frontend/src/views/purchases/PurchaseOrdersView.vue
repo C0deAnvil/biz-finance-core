@@ -435,10 +435,10 @@ async function applyFocus() {
   if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment')) {
     const matchedDemand = fulfillmentDemands.value.find((item) => {
       if (focusType === 'raw_material_replenishment') {
-        return Number(item.raw_todo_id) === focusId || Number(item.usage_id) === focusId || String(item.id) === String(route.query.focusId || '')
+        return (item.raw_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.raw_todo_id) === focusId || Number(item.usage_id) === focusId || String(item.id) === String(route.query.focusId || '')
       }
       if (focusType === 'low_stock_replenishment') {
-        return Number(item.low_stock_todo_id) === focusId || String(item.id) === `low-${focusId}`
+        return (item.low_stock_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.low_stock_todo_id) === focusId || String(item.id) === `low-${focusId}`
       }
       return Number(item.id) === focusId
     })
@@ -686,6 +686,18 @@ async function submit() {
     supplier_id: form.supplier_id,
     operator_user_id: form.operator_user_id || auth.user?.id,
     payment_type: form.payment_type,
+    replenishment_source_type: activeDemand.value?.demand_type === 'raw_material'
+      ? 'raw_material_replenishment'
+      : activeDemand.value?.low_stock_todo_id
+        ? 'low_stock_replenishment'
+        : form.fulfillment_demand_id
+          ? 'fulfillment_demand'
+          : null,
+    replenishment_source_id: activeDemand.value?.demand_type === 'raw_material'
+      ? activeDemand.value.usage_id
+      : activeDemand.value?.low_stock_todo_id
+        ? activeDemand.value.replenishment_source_id
+        : form.fulfillment_demand_id || null,
     items: form.items.map((item) => ({
       product_id: item.type === 'product' ? item.target_id : null,
       material_id: item.type === 'material' ? item.target_id : null,
@@ -699,13 +711,6 @@ async function submit() {
     ElMessage.success(`采购单已更新：${result.order_no}`)
   } else {
     const result = await post('/api/purchases/orders', payload)
-    if (activeDemand.value?.demand_type === 'raw_material' && activeDemand.value?.raw_todo_id) {
-      await post(`/api/purchases/raw-material-replenishments/${activeDemand.value.raw_todo_id}/link-order/${result.id}`)
-    } else if (activeDemand.value?.low_stock_todo_id) {
-      await post(`/api/dashboard/todos/${activeDemand.value.low_stock_todo_id}/done`)
-    } else if (form.fulfillment_demand_id) {
-      await post(`/api/purchases/fulfillment-demands/${form.fulfillment_demand_id}/link-order/${result.id}`)
-    }
     ElMessage.success(`采购单已创建：${result.order_no}`)
   }
   dialogVisible.value = false

@@ -707,6 +707,13 @@ class FulfillmentDemand(TimestampMixin, Base):
 # ===== 采购 =====
 class PurchaseOrder(TimestampMixin, Base):
     __tablename__ = "purchase_orders"
+    __table_args__ = (
+        UniqueConstraint(
+            "replenishment_source_type",
+            "replenishment_source_id",
+            name="uq_purchase_orders_replenishment_source",
+        ),
+    )
 
     id = Column(Integer, primary_key=True)
     order_no = Column(String(60), nullable=False, unique=True)
@@ -720,6 +727,8 @@ class PurchaseOrder(TimestampMixin, Base):
     approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     approved_at = Column(DateTime, nullable=True)
     contract_received = Column(Boolean, nullable=False, default=False)
+    replenishment_source_type = Column(String(50), nullable=True)
+    replenishment_source_id = Column(Integer, nullable=True)
 
     supplier = relationship("Supplier")
     purchaser = relationship("User", foreign_keys=[purchaser_user_id])

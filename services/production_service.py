@@ -123,11 +123,13 @@ def _create_raw_material_replenishment_notice(
     if shortage_quantity <= 0:
         return
     existing = db.execute(
-        select(TodoItem).where(
+        select(TodoItem.id)
+        .where(
             TodoItem.business_type == "raw_material_replenishment",
             TodoItem.business_id == usage.id,
             TodoItem.status != "completed",
         )
+        .limit(1)
     ).scalar_one_or_none()
     if existing is not None:
         return
