@@ -217,9 +217,13 @@ def list_orders(
     )
     scoped_user_ids = get_scoped_user_ids(db, current_user, "sales")
     if scoped_user_ids is not None:
+        # A salesperson must always be able to see orders they submitted, even
+        # when department-based scope resolution has no matching rows.
+        if current_user.id not in scoped_user_ids:
+            scoped_user_ids = [*scoped_user_ids, current_user.id]
         query = query.where(SalesOrder.sales_user_id.in_(scoped_user_ids))
     tab_filters = {
-        "reviewing": ~SalesOrder.status.in_(["pending_shipment", "shipped", "completed", "cancelled"]),
+        "reviewing": SalesOrder.status.in_(["pending_confirmation", "pending_price_approval", "rejected"]),
         "shipping": SalesOrder.status.in_(["pending_shipment", "shipped"]),
         "completed": SalesOrder.status.in_(["completed", "cancelled"]),
         "all": True,
