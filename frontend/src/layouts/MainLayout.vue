@@ -9,48 +9,37 @@
           <span v-if="auth.user?.department_name">｜{{ auth.user.department_name }}</span>
         </div>
       </div>
-      <el-scrollbar class="menu-scroll">
-        <el-menu
-          :default-active="route.path"
-          :default-openeds="defaultOpeneds"
-          router
-          unique-opened
-          class="menu"
-          background-color="transparent"
-          text-color="#e8f7ff"
-          active-text-color="#ffffff"
-        >
-          <template v-for="item in menuItems" :key="item.path">
-            <el-sub-menu v-if="item.children?.length" :index="item.path">
-              <template #title>
-                <span>{{ item.title }}</span>
-              </template>
-              <el-menu-item
-                v-for="child in item.children"
-                :key="child.path"
-                :index="child.path"
-                @mouseenter="prefetchMenu(child.path)"
-              >
-                <span>{{ child.title }}</span>
-              </el-menu-item>
-            </el-sub-menu>
-            <el-menu-item
-              v-else
-              :index="item.path"
-              @mouseenter="prefetchMenu(item.path)"
-            >
-              <span>{{ item.title }}</span>
-            </el-menu-item>
-          </template>
-        </el-menu>
-      </el-scrollbar>
+      <NavigationMenu
+        :menu-items="menuItems"
+        :default-openeds="defaultOpeneds"
+        @prefetch="prefetchMenu"
+        @select="handleMenuSelect"
+      />
     </el-aside>
-
+    <el-drawer
+      v-model="mobileMenuVisible"
+      direction="ltr"
+      :size="'min(86vw, 300px)'"
+      :with-header="false"
+      class="mobile-menu-drawer"
+    >
+      <div class="drawer-navigation">
+        <NavigationMenu
+          :menu-items="menuItems"
+          :default-openeds="defaultOpeneds"
+          @prefetch="prefetchMenu"
+          @select="handleMenuSelect"
+        />
+      </div>
+    </el-drawer>
     <el-container class="content-shell">
       <el-header class="topbar">
-        <div>
+        <div class="topbar-heading">
+          <el-button class="mobile-menu-button" plain aria-label="Open navigation" @click="mobileMenuVisible = true">&#9776;</el-button>
+          <div class="topbar-title-block">
           <div class="page-title">{{ route.meta.title || '首页' }}</div>
           <div class="page-subtitle">{{ nowText }}</div>
+          </div>
         </div>
         <div class="top-actions">
           <el-badge :value="todoCount" :hidden="!todoCount">
@@ -93,6 +82,7 @@ import 'element-plus/es/components/badge/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/container/style/css'
 import 'element-plus/es/components/dropdown/style/css'
+import 'element-plus/es/components/drawer/style/css'
 import 'element-plus/es/components/menu/style/css'
 import 'element-plus/es/components/scrollbar/style/css'
 
@@ -103,10 +93,11 @@ import ElBadge from 'element-plus/es/components/badge/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElContainer, { ElAside, ElHeader, ElMain } from 'element-plus/es/components/container/index.mjs'
 import ElDropdown, { ElDropdownItem, ElDropdownMenu } from 'element-plus/es/components/dropdown/index.mjs'
+import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElMenu, { ElMenuItem, ElSubMenu } from 'element-plus/es/components/menu/index.mjs'
 import ElScrollbar from 'element-plus/es/components/scrollbar/index.mjs'
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { post } from '../api/client'
@@ -114,6 +105,7 @@ import { preloadCommonDataForUser, preloadCommonRoutesForUser, preloadRouteCompo
 import { useAuthStore } from '../stores/auth'
 import { useDashboardStore } from '../stores/dashboard'
 import { getModuleMeta, getModuleNotificationClass } from '../utils/modules'
+import NavigationMenu from '../components/NavigationMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -125,6 +117,7 @@ const defaultOpeneds = computed(() => menuItems.value.filter((item) => item.chil
 const unreadCount = computed(() => dashboard.unreadCount)
 const todoCount = computed(() => dashboard.todoCount)
 const nowText = ref('')
+const mobileMenuVisible = ref(false)
 
 let refreshTimer = null
 let clockTimer = null
@@ -267,6 +260,14 @@ function handleCommand(command) {
   }
 }
 
+function handleMenuSelect() {
+  mobileMenuVisible.value = false
+}
+
+watch(() => route.path, () => {
+  mobileMenuVisible.value = false
+})
+
 onMounted(async () => {
   try {
     await auth.bootstrapSession()
@@ -296,12 +297,12 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .layout-shell {
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
 .sidebar {
-  height: 100vh;
+  height: 100dvh;
   background: #185f93;
   color: #fff;
   display: flex;
@@ -363,7 +364,7 @@ onBeforeUnmount(() => {
 }
 
 .content-shell {
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -435,5 +436,112 @@ onBeforeUnmount(() => {
 :global(.module-notification .el-notification__title),
 :global(.module-notification .el-notification__content) {
   color: #303133;
+}
+
+.mobile-menu-button {
+  display: none;
+}
+
+.topbar-heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.topbar-title-block {
+  min-width: 0;
+}
+
+.mobile-menu-drawer :deep(.el-drawer__body) {
+  padding: 0;
+  background: #185f93;
+}
+
+.drawer-navigation {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #185f93;
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    display: none;
+  }
+
+  .topbar {
+    min-height: 64px;
+    height: auto !important;
+    padding: 8px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .topbar-heading {
+    flex: 1 1 180px;
+    gap: 8px;
+  }
+
+  .mobile-menu-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 8px;
+    flex-shrink: 0;
+  }
+
+  .page-title {
+    font-size: 18px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .page-subtitle {
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .top-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .top-actions .el-button {
+    min-height: 40px;
+    padding: 8px 10px;
+  }
+
+  .user-trigger {
+    min-height: 40px;
+  }
+
+  .user-trigger > span {
+    max-width: 84px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .content-inner {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 420px) {
+  .top-actions {
+    justify-content: space-between;
+  }
+
+  .top-actions .el-button {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
 }
 </style>

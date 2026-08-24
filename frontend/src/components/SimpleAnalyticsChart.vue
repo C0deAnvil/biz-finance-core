@@ -498,4 +498,52 @@ function shortLabel(value, max = 10) {
   align-items: center;
   gap: 8px;
 }
+
+@media (max-width: 768px) {
+  .chart-shell {
+    min-width: 0;
+  }
+
+  .bar-row {
+    grid-template-columns: minmax(88px, 1fr) minmax(80px, 2fr) 64px;
+    gap: 8px;
+  }
+
+  .bar-label,
+  .bar-value,
+  .hbar-value,
+  .pie-number,
+  .pie-percent {
+    font-size: 12px;
+  }
+
+  .hbar-stage {
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
+
+  .hbar-col {
+    min-width: 48px;
+  }
+
+  .pie-chart {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .pie-svg {
+    width: min(220px, 100%);
+    height: auto;
+  }
+
+  .pie-summary,
+  .pie-list {
+    width: 100%;
+  }
+
+  .pie-row {
+    grid-template-columns: 16px minmax(0, 1fr) 72px 48px;
+  }
+}
 </style>

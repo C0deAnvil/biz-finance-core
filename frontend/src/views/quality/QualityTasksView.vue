@@ -472,4 +472,22 @@ onMounted(async () => {
 .mt-16 { margin-top: 16px; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 10px; }
 .focused-row > td { background: #f0f9eb !important; }
+
+@media (max-width: 768px) {
+  .detail-toolbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .quality-page :deep(.el-table),
+  .page-stack :deep(.el-table) {
+    min-width: 720px;
+  }
+
+  .quality-page :deep(.el-table__inner-wrapper),
+  .page-stack :deep(.el-table__inner-wrapper) {
+    overflow-x: auto;
+  }
+}
 </style>

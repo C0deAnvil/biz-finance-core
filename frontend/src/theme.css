@@ -17,8 +17,25 @@ body,
 #app {
   margin: 0;
   height: 100%;
+  min-width: 0;
   font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
   background: #f3f8fc;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+img,
+video,
+canvas {
+  max-width: 100%;
 }
 
 .el-card {
@@ -33,10 +50,241 @@ body,
 
 .el-dialog {
   border-radius: 14px;
+  max-width: calc(100vw - 24px);
+}
+
+.el-dialog__body {
+  max-height: calc(100vh - 190px);
+  overflow-y: auto;
 }
 
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner {
   border-radius: 8px;
+}
+
+.page-stack {
+  min-width: 0;
+}
+
+.el-table {
+  max-width: 100%;
+}
+
+.el-table__body-wrapper,
+.el-table__header-wrapper {
+  max-width: 100%;
+}
+
+.el-form-item__content,
+.el-form-item__label,
+.el-descriptions__content,
+.el-descriptions__label {
+  min-width: 0;
+}
+
+.el-button,
+.el-input,
+.el-select,
+.el-input-number,
+.el-date-editor,
+.el-cascader {
+  max-width: 100%;
+}
+
+.el-tabs__nav-wrap {
+  overflow-x: auto;
+}
+
+.el-tabs__nav {
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .el-card {
+    border-radius: 10px;
+  }
+
+  .el-card__header {
+    padding: 14px;
+  }
+
+  .el-card__body {
+    padding: 14px;
+  }
+
+  .el-button {
+    min-height: 40px;
+  }
+
+  .el-button.is-link,
+  .el-button--text {
+    min-height: 32px;
+  }
+
+  .el-form--inline {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .el-form--inline .el-form-item,
+  .el-form--inline .el-form-item:last-child {
+    width: 100%;
+    margin-right: 0;
+  }
+
+  .el-form-item__label {
+    line-height: 1.35;
+  }
+
+  .el-dialog .el-form:not(.el-form--inline) .el-form-item {
+    display: block;
+    margin-bottom: 16px;
+  }
+
+  .el-dialog .el-form:not(.el-form--inline) .el-form-item__label {
+    display: block;
+    width: auto !important;
+    padding: 0 0 6px;
+    line-height: 1.35;
+    text-align: left;
+  }
+
+  .el-dialog .el-form:not(.el-form--inline) .el-form-item__content {
+    margin-left: 0 !important;
+    width: 100%;
+  }
+
+  .el-form-item__content > .el-input,
+  .el-form-item__content > .el-select,
+  .el-form-item__content > .el-input-number,
+  .el-form-item__content > .el-date-editor,
+  .el-form-item__content > .el-cascader,
+  .el-form-item__content > .el-autocomplete {
+    width: 100% !important;
+  }
+
+  .el-row.summary-row,
+  .el-row.filters-row,
+  .el-row.form-row {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+
+  .summary-row > .el-col,
+  .filters-row > .el-col,
+  .form-row > .el-col,
+  .page-stack > .el-row > .el-col,
+  .queue-page > .el-row > .el-col,
+  .dashboard-page > .el-row > .el-col,
+  .analytics-page > .el-row > .el-col {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 0 0 100% !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  .el-descriptions {
+    width: 100%;
+  }
+
+  .el-descriptions__table {
+    table-layout: fixed;
+  }
+
+  .el-descriptions__cell {
+    word-break: break-word;
+  }
+
+  .el-table th.el-table__cell,
+  .el-table td.el-table__cell {
+    padding: 8px 0;
+  }
+
+  .el-table .cell {
+    word-break: break-word;
+    line-height: 1.4;
+  }
+
+  .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
+    background-color: inherit;
+  }
+
+  .el-dialog {
+    width: calc(100vw - 24px) !important;
+    margin: 6vh auto 0 !important;
+  }
+
+  .el-dialog__header {
+    padding: 16px 16px 10px;
+  }
+
+  .el-dialog__body {
+    padding: 10px 16px 16px;
+    max-height: calc(100vh - 170px);
+  }
+
+  .el-dialog__footer {
+    padding: 10px 16px 16px;
+  }
+
+  .el-dialog__footer .el-button {
+    min-width: 88px;
+  }
+
+  .el-pagination {
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .el-pagination__jump {
+    display: none;
+  }
+
+  .el-pagination .el-pagination__sizes {
+    margin-right: 0;
+  }
+
+  .el-tabs__header {
+    margin-bottom: 12px;
+  }
+
+  .w-280,
+  .w-260,
+  .w-240,
+  .w-180,
+  .w-160,
+  .w-150,
+  .w-140,
+  .w-120 {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .detail-toolbar,
+  .detail-actions,
+  .toolbar-actions,
+  .drawer-actions,
+  .section-actions,
+  .chart-toolbar {
+    flex-wrap: wrap !important;
+    width: 100%;
+  }
+
+  .detail-toolbar > *,
+  .detail-actions > *,
+  .toolbar-actions > *,
+  .drawer-actions > *,
+  .section-actions > *,
+  .chart-toolbar > * {
+    max-width: 100%;
+  }
+
+  .page-stack {
+    gap: 12px !important;
+  }
 }

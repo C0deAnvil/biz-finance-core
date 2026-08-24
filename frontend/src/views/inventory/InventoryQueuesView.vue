@@ -489,4 +489,30 @@ watch(() => [route.query.focusId, route.query.focusType], () => {
 .field-label { color: #909399; }
 .mb-12 { margin-bottom: 12px; }
 .mt-16 { margin-top: 16px; }
+
+@media (max-width: 768px) {
+  .queue-page :deep(.el-table .cell) {
+    white-space: normal !important;
+  }
+
+  .queue-page :deep(.el-table) {
+    min-width: 620px;
+  }
+
+  .queue-page :deep(.el-table__inner-wrapper) {
+    overflow-x: auto;
+  }
+
+  .queue-main-action {
+    min-width: 88px;
+    min-height: 36px;
+    white-space: normal;
+  }
+
+  .shipment-head,
+  .detail-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
 </style>

@@ -71,6 +71,7 @@ async function submit() {
 <style scoped>
 .login-page {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -80,7 +81,7 @@ async function submit() {
 }
 
 .login-card {
-  width: 480px;
+  width: min(480px, 100%);
   border: none;
   border-radius: 18px;
   box-shadow: 0 22px 60px rgba(10, 43, 70, 0.28);
@@ -126,6 +127,7 @@ async function submit() {
   margin-top: 4px;
   font-size: 14px;
   color: #7a8b9a;
+  line-height: 1.5;
 }
 
 .login-card :deep(.el-form-item__label) {
@@ -154,5 +156,44 @@ async function submit() {
 .login-button:focus {
   background: #1d6fa9;
   border-color: #1d6fa9;
+}
+
+@media (max-width: 600px) {
+  .login-page {
+    align-items: flex-start;
+    padding: 16px;
+  }
+
+  .login-card {
+    margin-top: 8vh;
+    border-radius: 14px;
+  }
+
+  .login-card :deep(.el-card__header) {
+    padding: 20px 18px 14px;
+  }
+
+  .login-card :deep(.el-card__body) {
+    padding: 18px;
+  }
+
+  .login-header {
+    align-items: flex-start;
+  }
+
+  .login-title {
+    font-size: 20px;
+  }
+
+  .login-subtitle {
+    font-size: 13px;
+  }
+
+  .login-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    font-size: 21px;
+  }
 }
 </style>

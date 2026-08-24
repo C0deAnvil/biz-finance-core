@@ -51,4 +51,21 @@ function handleCurrentChange(currentPage) {
   justify-content: flex-end;
   padding-top: 16px;
 }
+
+@media (max-width: 768px) {
+  .app-pagination {
+    justify-content: center;
+    padding-top: 12px;
+  }
+
+  .app-pagination :deep(.el-pagination) {
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .app-pagination :deep(.el-pagination__jump) {
+    display: none;
+  }
+}
 </style>

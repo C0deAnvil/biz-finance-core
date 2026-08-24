@@ -1,6 +1,6 @@
 <template>
   <div class="attachment-uploader">
-    <el-form v-if="!readonly" inline>
+    <el-form v-if="!readonly" inline class="attachment-form">
       <el-form-item label="附件类型">
         <el-select v-if="presetTypes.length" v-model="attachmentType" filterable allow-create default-first-option placeholder="请选择或输入附件类型" class="type-select">
           <el-option v-for="item in presetTypes" :key="item" :label="item" :value="item" />
@@ -100,4 +100,27 @@ watch(
 <style scoped>
 .attachment-uploader { display: flex; flex-direction: column; gap: 12px; }
 .type-select { width: 220px; }
+
+@media (max-width: 768px) {
+  .attachment-form {
+    width: 100%;
+  }
+
+  .type-select,
+  .attachment-form :deep(.el-input) {
+    width: 100%;
+  }
+
+  .attachment-form :deep(.el-form-item__content) {
+    width: 100%;
+  }
+
+  .attachment-form input[type='file'] {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 13px;
+  }
+}
 </style>

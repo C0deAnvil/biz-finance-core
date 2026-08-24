@@ -831,4 +831,25 @@ onMounted(async () => {
 .flow-step.is-done { background: #f0f9eb; color: #67c23a; }
 .flow-step.is-current { background: #ecf5ff; color: #409eff; font-weight: 600; }
 .flow-tooltip-content { max-width: 280px; white-space: pre-line; line-height: 1.6; }
+
+@media (max-width: 768px) {
+  .footer-actions,
+  .detail-toolbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .footer-actions > * {
+    max-width: 100%;
+  }
+
+  .flow-steps {
+    gap: 6px;
+  }
+
+  .flow-step {
+    white-space: normal;
+  }
+}
 </style>
