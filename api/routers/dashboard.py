@@ -366,10 +366,9 @@ def _ensure_inventory_home_todos(current_user: User, db: Session) -> None:
             should_keep = (
                 order is not None
                 and order.status == "pending_shipment"
-                and (
-                    queue is None
-                    or queue.shipment_status in {"pending", "waiting_approval"}
-                )
+                and queue is not None
+                and queue.placement_status == "hidden"
+                and queue.shipment_status in {"pending", "waiting_approval"}
             )
         elif todo.business_type == "sales_order_placement":
             should_keep = (

@@ -284,7 +284,9 @@ async function openDetail(row) {
 }
 
 function canExecuteInventoryRequest(row) {
-  return auth.user?.role_code === 'inventory' && row?.inventory_request_id && row?.inventory_request_status !== 'completed'
+  return auth.user?.role_code === 'inventory'
+    && row?.inventory_request_id
+    && ['pending', 'processing'].includes(row?.inventory_request_status)
 }
 
 async function executeInventoryRequest(row) {

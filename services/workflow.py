@@ -28,7 +28,7 @@ from models import (
     Warehouse,
 )
 from responses import api_response
-from schemas.inventory import InventoryOperationHandleRequest
+from schemas.inventory import InventoryOperationApprovalRequest, InventoryOperationHandleRequest
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, write_operation_log
 from services.display import status_label
 from services.time_utils import now_local
@@ -121,6 +121,68 @@ def purchase_arrival_status(db: Session, order_id: int) -> str:
     return "arrived"
 
 
+APPROVAL_REQUIRED_INBOUND_CATEGORIES = {
+    "purchase_receipt_inbound",
+    "purchase_quality_inbound",
+    "production_finished_inbound",
+    "production_quality_inbound",
+}
+
+
+def _requires_inventory_manager_approval(operation_type: str, request_category: str) -> bool:
+    return operation_type == "inbound" and request_category in APPROVAL_REQUIRED_INBOUND_CATEGORIES
+
+
+def _ensure_inventory_operation_todos(
+    db: Session,
+    *,
+    request: InventoryOperationRequest,
+    user_ids: list[int],
+    title: str,
+    description: str,
+) -> None:
+    current_user_ids = {
+        row.assigned_user_id
+        for row in db.execute(
+            select(TodoItem).where(
+                TodoItem.business_type == "inventory_operation_request",
+                TodoItem.business_id == request.id,
+                TodoItem.status != "completed",
+            )
+        ).scalars().all()
+    }
+    for user_id in user_ids:
+        if user_id in current_user_ids:
+            continue
+        create_todo(
+            db,
+            title=title,
+            description=description,
+            module="inventory",
+            assigned_user_id=user_id,
+            business_type="inventory_operation_request",
+            business_id=request.id,
+            priority="high",
+        )
+
+
+def normalize_inventory_operation_request_approval(request: InventoryOperationRequest, db: Session) -> bool:
+    if not _requires_inventory_manager_approval(request.operation_type, request.request_category):
+        return False
+    if request.status not in {"pending", "processing"} or request.handled_by_id is not None:
+        return False
+    request.status = "pending_manager_approval"
+    complete_todos(db, business_type="inventory_operation_request", business_id=request.id)
+    _ensure_inventory_operation_todos(
+        db,
+        request=request,
+        user_ids=role_user_ids(db, "manager"),
+        title=f"待审批库存入库 {request.source_no or request.request_no}",
+        description="库存入库申请需要负责人审批，审批通过后才可由库管执行。",
+    )
+    return True
+
+
 def create_inventory_operation_request(
     db: Session,
     *,
@@ -138,9 +200,14 @@ def create_inventory_operation_request(
     title: str | None = None,
     description: str | None = None,
 ) -> InventoryOperationRequest:
-    user_ids = list(dict.fromkeys(recipient_user_ids or role_user_ids(db, "inventory")))
-    request_title = title or f"待执行库存{'出库' if operation_type == 'outbound' else '入库'} {source_no or ''}".strip()
+    requires_manager_approval = _requires_inventory_manager_approval(operation_type, request_category)
+    user_ids = list(dict.fromkeys(role_user_ids(db, "manager") if requires_manager_approval else (recipient_user_ids or role_user_ids(db, "inventory"))))
+    request_title = title or f"待{'审批' if requires_manager_approval else '执行'}库存{'出库' if operation_type == 'outbound' else '入库'} {source_no or ''}".strip()
+    if requires_manager_approval and title:
+        request_title = title.replace("待执行", "待审批")
     request_description = description or f"{source_module}来源单据 {source_no or source_id} 已生成库存作业请求。"
+    if requires_manager_approval and description:
+        request_description = f"{description} 负责人审批通过后，库管才能执行入库。"
     item_fingerprint = _inventory_request_identity_items(items)
 
     existing_rows = db.execute(
@@ -148,7 +215,7 @@ def create_inventory_operation_request(
             InventoryOperationRequest.source_type == source_type,
             InventoryOperationRequest.source_id == source_id,
             InventoryOperationRequest.request_category == request_category,
-            InventoryOperationRequest.status.in_(["pending", "processing"]),
+            InventoryOperationRequest.status.in_(["pending", "processing", "pending_manager_approval"]),
         )
     ).scalars().all()
     existing = next(
@@ -167,27 +234,16 @@ def create_inventory_operation_request(
         existing.remark = remark
         existing.original_items_json = items
         existing.handled_items_json = existing.handled_items_json or []
-        current_todos = db.execute(
-            select(TodoItem).where(
-                TodoItem.business_type == "inventory_operation_request",
-                TodoItem.business_id == existing.id,
-                TodoItem.status != "completed",
-            )
-        ).scalars().all()
-        current_user_ids = {row.assigned_user_id for row in current_todos}
-        for user_id in user_ids:
-            if user_id in current_user_ids:
-                continue
-            create_todo(
-                db,
-                title=request_title,
-                description=request_description,
-                module="inventory",
-                assigned_user_id=user_id,
-                business_type="inventory_operation_request",
-                business_id=existing.id,
-                priority="high",
-            )
+        normalized = normalize_inventory_operation_request_approval(existing, db)
+        if normalized:
+            user_ids = role_user_ids(db, "manager")
+        _ensure_inventory_operation_todos(
+            db,
+            request=existing,
+            user_ids=user_ids,
+            title=request_title,
+            description=request_description,
+        )
         return existing
 
     request = InventoryOperationRequest(
@@ -200,7 +256,7 @@ def create_inventory_operation_request(
         source_no=source_no,
         warehouse_id=warehouse_id,
         requested_by_id=requested_by_id,
-        status="pending",
+        status="pending_manager_approval" if requires_manager_approval else "pending",
         remark=remark,
         original_items_json=items,
         handled_items_json=[],
@@ -208,18 +264,16 @@ def create_inventory_operation_request(
     db.add(request)
     db.flush()
 
-    request_title = title or f"待执行库存{'出库' if operation_type == 'outbound' else '入库'} {source_no or request.request_no}"
-    for user_id in user_ids:
-        create_todo(
-            db,
-            title=request_title,
-            description=request_description,
-            module="inventory",
-            assigned_user_id=user_id,
-            business_type="inventory_operation_request",
-            business_id=request.id,
-            priority="high",
-        )
+    request_title = title or f"待{'审批' if requires_manager_approval else '执行'}库存{'出库' if operation_type == 'outbound' else '入库'} {source_no or request.request_no}"
+    if requires_manager_approval and title:
+        request_title = title.replace("待执行", "待审批")
+    _ensure_inventory_operation_todos(
+        db,
+        request=request,
+        user_ids=user_ids,
+        title=request_title,
+        description=request_description,
+    )
     if user_ids:
         create_notification(
             db,
@@ -231,6 +285,69 @@ def create_inventory_operation_request(
             category="info",
         )
     return request
+
+
+def approve_inventory_operation_request(
+    request_id: int,
+    payload: InventoryOperationApprovalRequest,
+    current_user: User,
+    db: Session,
+):
+    request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id)).scalar_one_or_none()
+    if request is None:
+        raise HTTPException(status_code=404, detail="库存作业请求不存在")
+    if request.status != "pending_manager_approval":
+        raise HTTPException(status_code=409, detail="当前库存入库请求没有待经理审批")
+    if payload.decision == "rejected":
+        request.status = "rejected"
+        request.handled_by_id = current_user.id
+        request.completed_at = now_local()
+        request.handled_remark = (payload.note or "").strip() or "负责人驳回库存入库申请"
+        complete_todos(db, business_type="inventory_operation_request", business_id=request.id)
+        if request.requested_by_id:
+            create_notification(
+                db,
+                title="库存入库申请已驳回",
+                content=f"库存作业 {request.request_no} 已被负责人驳回，原因：{request.handled_remark}",
+                module=request.source_module or "inventory",
+                recipient_user_ids=[request.requested_by_id],
+                created_by_id=current_user.id,
+                category="warning",
+            )
+    else:
+        request.status = "pending"
+        request.handled_by_id = current_user.id
+        request.completed_at = None
+        request.handled_remark = (payload.note or "").strip() or None
+        complete_todos(db, business_type="inventory_operation_request", business_id=request.id)
+        inventory_user_ids = role_user_ids(db, "inventory")
+        _ensure_inventory_operation_todos(
+            db,
+            request=request,
+            user_ids=inventory_user_ids,
+            title=f"待执行库存入库 {request.source_no or request.request_no}",
+            description="负责人已审批通过，请库管核对明细后执行入库。",
+        )
+        if inventory_user_ids:
+            create_notification(
+                db,
+                title="库存入库申请已审批通过",
+                content=f"库存作业 {request.request_no} 已由负责人审批通过，请库管执行入库。",
+                module="inventory",
+                recipient_user_ids=inventory_user_ids,
+                created_by_id=current_user.id,
+                category="info",
+            )
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="inventory",
+        action="approve_inventory_operation_request",
+        content=f"处理库存入库审批 {request.request_no}",
+        after_data={"request_no": request.request_no, "decision": payload.decision, "status": request.status},
+    )
+    db.commit()
+    return api_response(data={"id": request.id, "status": request.status})
 
 def _sync_inventory_request_source(
     db: Session,
@@ -411,6 +528,9 @@ def complete_inventory_operation_request(
     request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id)).scalar_one_or_none()
     if request is None:
         raise HTTPException(status_code=404, detail="库存作业请求不存在")
+    normalize_inventory_operation_request_approval(request, db)
+    if _requires_inventory_manager_approval(request.operation_type, request.request_category) and request.handled_by_id is None:
+        raise HTTPException(status_code=409, detail="当前库存入库请求尚未完成负责人审批")
     if request.status not in {"pending", "processing"}:
         raise HTTPException(status_code=409, detail="当前库存作业已处理")
     if not payload.items:

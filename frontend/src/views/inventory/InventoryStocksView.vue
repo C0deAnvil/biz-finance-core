@@ -77,7 +77,8 @@
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openOperationRequest(scope.row)">详情</el-button>
-            <el-button v-if="scope.row.status !== 'completed'" size="small" text type="success" @click="openOperationRequest(scope.row, true)">执行</el-button>
+            <el-button v-if="canApproveInventoryOperation(scope.row)" size="small" text type="warning" @click="openOperationRequest(scope.row, true)">{{ approvalActionLabel }}</el-button>
+            <el-button v-if="canExecuteInventoryOperation(scope.row)" size="small" text type="success" @click="openOperationRequest(scope.row, true)">执行</el-button>
             <el-button v-if="canRejectOperation(scope.row)" size="small" text type="danger" @click="openRejectDialog(scope.row)">拒绝</el-button>
           </template>
         </el-table-column>
@@ -106,7 +107,7 @@
       </el-table>
     </el-drawer>
 
-    <el-dialog v-model="operationDialogVisible" :title="operationReadOnly ? '库存作业详情' : '执行库存作业'" width="860px">
+    <el-dialog v-model="operationDialogVisible" :title="operationDialogTitle" width="860px">
       <el-form v-if="activeOperation" :model="operationForm" label-width="100px">
         <el-form-item label="作业号"><el-input :model-value="activeOperation.request_no" disabled /></el-form-item>
         <el-form-item label="作业说明"><el-input :model-value="activeOperation.remark || activeOperation.source_no || '-'" disabled /></el-form-item>
@@ -148,18 +149,18 @@
           </el-table-column>
           <el-table-column :label="actualQuantityLabel" width="140">
             <template #default="scope">
-              <el-input-number v-model="scope.row.quantity" :disabled="operationReadOnly" :min="0.01" :precision="2" style="width: 100%" />
+              <el-input-number v-model="scope.row.quantity" :disabled="operationItemsReadOnly" :min="0.01" :precision="2" style="width: 100%" />
             </template>
           </el-table-column>
           <el-table-column v-if="!hidePriceInOperation" label="单价" width="140">
             <template #default="scope">
-              <el-input-number v-model="scope.row.unit_cost" :disabled="operationReadOnly" :min="0" :precision="2" style="width: 100%" />
+              <el-input-number v-model="scope.row.unit_cost" :disabled="operationItemsReadOnly" :min="0" :precision="2" style="width: 100%" />
             </template>
           </el-table-column>
         </el-table>
         <el-form-item class="mt-16" label="处理备注"><el-input v-model="operationForm.handled_remark" :disabled="operationReadOnly" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="调整原因"><el-input v-model="operationForm.adjust_reason" :disabled="operationReadOnly" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="差异备注"><el-input v-model="operationForm.quantity_difference_remark" :disabled="operationReadOnly" type="textarea" :rows="3" placeholder="应到/实到或应出/实出不一致时必填" /></el-form-item>
+        <el-form-item label="调整原因"><el-input v-model="operationForm.adjust_reason" :disabled="operationReadOnly || operationApprovalMode" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="差异备注"><el-input v-model="operationForm.quantity_difference_remark" :disabled="operationReadOnly || operationApprovalMode" type="textarea" :rows="3" placeholder="应到/实到或应出/实出不一致时必填" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="operationDialogVisible = false">关闭</el-button>
@@ -324,6 +325,13 @@ const operationForm = reactive({ items: [], handled_remark: '', adjust_reason: '
 const manualForm = reactive({ warehouse_id: null, source_no: '', remark: '', items: [] })
 const rejectForm = reactive({ reject_reason: '' })
 const canManualOperate = computed(() => auth.user?.role_code === 'inventory')
+const canApproveInventoryOperation = (row) => Boolean(
+  row && ['manager', 'system_admin'].includes(auth.user?.role_code) && row.status === 'pending_manager_approval'
+)
+const canExecuteInventoryOperation = (row) => Boolean(
+  row && canManualOperate.value && ['pending', 'processing'].includes(row.status)
+)
+const approvalActionLabel = '\u5ba1\u6279'
 
 const pagination = reactive({ page: 1, pageSize: 20 })
 const total = ref(0)
@@ -381,7 +389,14 @@ const sourceDetailItems = computed(() => activeOperation.value?.source_detail?.i
 const hidePriceInOperation = computed(() => ['purchase_receipt_inbound', 'purchase_quality_inbound', 'sales_shipment'].includes(activeOperation.value?.request_category))
 const expectedQuantityLabel = computed(() => activeOperation.value?.operation_type === 'inbound' ? '应到' : '应出')
 const actualQuantityLabel = computed(() => activeOperation.value?.operation_type === 'inbound' ? '实到' : '实出')
+const operationApprovalMode = computed(() => activeOperation.value?.status === 'pending_manager_approval' && canApproveInventoryOperation(activeOperation.value))
+const operationItemsReadOnly = computed(() => operationReadOnly.value || operationApprovalMode.value)
+const operationDialogTitle = computed(() => {
+  if (operationReadOnly.value) return '库存作业详情'
+  return operationApprovalMode.value ? '\u5ba1\u6279\u5e93\u5b58\u5165\u5e93' : '\u6267\u884c\u5e93\u5b58\u4f5c\u4e1a'
+})
 const operationSubmitLabel = computed(() => {
+  if (operationApprovalMode.value) return '\u5ba1\u6279\u901a\u8fc7'
   if (activeOperation.value?.request_category === 'production_material_issue') return '同意领料并出库'
   if (activeOperation.value?.operation_type === 'inbound') return '确认入库'
   if (activeOperation.value?.operation_type === 'outbound') return '确认出库'
@@ -496,13 +511,18 @@ function operationItemName(row) {
 }
 
 function canRejectOperation(row) {
-  return canManualOperate.value && ['pending', 'processing'].includes(row.status)
+  if (!row) return false
+  if (row.status === 'pending_manager_approval') return canApproveInventoryOperation(row)
+  return canExecuteInventoryOperation(row)
 }
 
 async function openOperationRequest(row, editable = false) {
   const detail = await get(`/api/inventory/operation-requests/${row.id}`)
   activeOperation.value = detail
-  operationReadOnly.value = !editable || detail.status === 'completed'
+  const canEdit = editable && (
+    canApproveInventoryOperation(detail) || canExecuteInventoryOperation(detail)
+  )
+  operationReadOnly.value = !canEdit || detail.status === 'completed'
   buildOperationForm(detail)
   operationDialogVisible.value = true
 }
@@ -510,13 +530,21 @@ async function openOperationRequest(row, editable = false) {
 async function submitOperationRequest() {
   if (!activeOperation.value) return
   try {
-    await post(`/api/inventory/operation-requests/${activeOperation.value.id}/complete`, {
-      items: operationForm.items,
-      handled_remark: operationForm.handled_remark,
-      adjust_reason: operationForm.adjust_reason,
-      quantity_difference_remark: operationForm.quantity_difference_remark
-    })
-    ElMessage.success('库存作业已完成')
+    if (operationApprovalMode.value) {
+      await post(`/api/inventory/operation-requests/${activeOperation.value.id}/approve`, {
+        decision: 'approved',
+        note: operationForm.handled_remark
+      })
+      ElMessage.success('\u5e93\u5b58\u5165\u5e93\u7533\u8bf7\u5df2\u5ba1\u6279\u901a\u8fc7')
+    } else {
+      await post(`/api/inventory/operation-requests/${activeOperation.value.id}/complete`, {
+        items: operationForm.items,
+        handled_remark: operationForm.handled_remark,
+        adjust_reason: operationForm.adjust_reason,
+        quantity_difference_remark: operationForm.quantity_difference_remark
+      })
+      ElMessage.success('库存作业已完成')
+    }
     operationDialogVisible.value = false
     await load({ skipRouteFocus: true })
   } catch (error) {
@@ -542,9 +570,16 @@ async function submitRejectOperation() {
     return
   }
   try {
-    await post(`/api/inventory/operation-requests/${rejectOperation.value.id}/reject`, {
-      reject_reason: rejectForm.reject_reason.trim()
-    })
+    if (rejectOperation.value.status === 'pending_manager_approval') {
+      await post(`/api/inventory/operation-requests/${rejectOperation.value.id}/approve`, {
+        decision: 'rejected',
+        note: rejectForm.reject_reason.trim()
+      })
+    } else {
+      await post(`/api/inventory/operation-requests/${rejectOperation.value.id}/reject`, {
+        reject_reason: rejectForm.reject_reason.trim()
+      })
+    }
     ElMessage.success('库存作业已拒绝并同步发起部门')
     rejectDialogVisible.value = false
     await load({ skipRouteFocus: true })

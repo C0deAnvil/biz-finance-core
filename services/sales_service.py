@@ -359,20 +359,32 @@ def _route_order_to_inventory_shipment(db: Session, *, order: SalesOrder, curren
         queue = InventoryDispatchQueue(sales_order_id=order.id, placement_status="pending", shipment_status="pending")
         db.add(queue)
     if queue is not None:
-        queue.shipment_status = "pending"
+        queue.shipment_status = "pending" if queue.placement_status == "hidden" else "waiting_approval"
     inventory_user_ids = _role_user_ids(db, "inventory")
-    complete_todos(db, business_type="sales_order_placement", business_id=order.id)
-    for user_id in inventory_user_ids:
-        create_todo(
-            db,
-            title=f"待发货客户订单 {order.order_no}",
-            description="订单为货到付款/分期付款，已直接流转库管发货。",
-            module="inventory",
-            assigned_user_id=user_id,
-            business_type="sales_order",
-            business_id=order.id,
-            priority="high",
-        )
+    if queue.placement_status == "hidden":
+        existing_todo_user_ids = {
+            todo.assigned_user_id
+            for todo in db.execute(
+                select(TodoItem).where(
+                    TodoItem.business_type == "sales_order",
+                    TodoItem.business_id == order.id,
+                    TodoItem.status != "completed",
+                )
+            ).scalars().all()
+        }
+        for user_id in inventory_user_ids:
+            if user_id in existing_todo_user_ids:
+                continue
+            create_todo(
+                db,
+                title=f"待发货客户订单 {order.order_no}",
+                description="订单已完成置货，请库管安排出库发货。",
+                module="inventory",
+                assigned_user_id=user_id,
+                business_type="sales_order",
+                business_id=order.id,
+                priority="high",
+            )
     create_notification(
         db,
         title="客户订单已直达发货",
@@ -739,7 +751,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         order.approved_by_id = current_user.id
         order.approved_at = now_local()
         order.rejection_reason = None
-        queue.shipment_status = "pending"
+        queue.shipment_status = "pending" if queue.placement_status == "hidden" else "waiting_approval"
 
         if actual_amount > 0:
             db.add(
@@ -764,17 +776,30 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
             )
 
         inventory_user_ids = _role_user_ids(db, "inventory")
-        for user_id in inventory_user_ids:
-            create_todo(
-                db,
-                title=f"待发货客户订单 {order.order_no}",
-                description="订单审批已通过，请尽快置货并发货。",
-                module="inventory",
-                assigned_user_id=user_id,
-                business_type="sales_order",
-                business_id=order.id,
-                priority="high",
-            )
+        if queue.placement_status == "hidden":
+            existing_todo_user_ids = {
+                todo.assigned_user_id
+                for todo in db.execute(
+                    select(TodoItem).where(
+                        TodoItem.business_type == "sales_order",
+                        TodoItem.business_id == order.id,
+                        TodoItem.status != "completed",
+                    )
+                ).scalars().all()
+            }
+            for user_id in inventory_user_ids:
+                if user_id in existing_todo_user_ids:
+                    continue
+                create_todo(
+                    db,
+                    title=f"待发货客户订单 {order.order_no}",
+                    description="订单已完成置货，请库管安排出库发货。",
+                    module="inventory",
+                    assigned_user_id=user_id,
+                    business_type="sales_order",
+                    business_id=order.id,
+                    priority="high",
+                )
         create_notification(
             db,
             title="客户订单审批通过",

@@ -32,13 +32,18 @@ from models import (
     Warehouse,
 )
 from responses import api_response
-from schemas.inventory import InventoryManualOperationCreateRequest, InventoryOperationHandleRequest, InventoryOperationRejectRequest, StockTakeCreate, StockTakeSubmit
+from schemas.inventory import InventoryManualOperationCreateRequest, InventoryOperationApprovalRequest, InventoryOperationHandleRequest, InventoryOperationRejectRequest, StockTakeCreate, StockTakeSubmit
 from schemas.sales import QueueActionRequest, SalesShipmentRequest
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
 from services.display import clean_display_text, inventory_request_category_label, status_label, transaction_type_label
 from services.display import payment_type_label
 from services.organization import get_inventory_scope_warehouse_ids, user_in_scope, warehouse_in_scope
-from services.workflow import complete_inventory_operation_request, create_inventory_operation_request
+from services.workflow import (
+    approve_inventory_operation_request,
+    complete_inventory_operation_request,
+    create_inventory_operation_request,
+    normalize_inventory_operation_request_approval,
+)
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
 
@@ -776,16 +781,11 @@ def list_dispatch_queues(
         .order_by(InventoryDispatchQueue.created_at.desc(), InventoryDispatchQueue.id.desc())
     ).unique().scalars().all()
 
-    shipment_filter = or_(
-        and_(
-            InventoryDispatchQueue.id.is_not(None),
-            SalesOrder.status == "pending_shipment",
-            InventoryDispatchQueue.shipment_status.in_(["pending", "waiting_approval"]),
-        ),
-        and_(
-            InventoryDispatchQueue.id.is_(None),
-            SalesOrder.status == "pending_shipment",
-        ),
+    shipment_filter = and_(
+        InventoryDispatchQueue.id.is_not(None),
+        SalesOrder.status == "pending_shipment",
+        InventoryDispatchQueue.placement_status == "hidden",
+        InventoryDispatchQueue.shipment_status.in_(["pending", "waiting_approval"]),
     )
     shipment_base = (
         select(SalesOrder.id)
@@ -829,12 +829,7 @@ def list_dispatch_queues(
         .offset((sales_order_page - 1) * sales_order_page_size)
         .limit(sales_order_page_size)
     ).scalars().all()
-    shipment_rows = [
-        _serialize_shipment_queue(shipment_queue_map[order.id], db, current_user)
-        if order.id in shipment_queue_map
-        else _serialize_sales_order_as_shipment_queue(order, db, current_user)
-        for order in shipment_orders
-    ]
+    shipment_rows = [_serialize_shipment_queue(shipment_queue_map[order.id], db, current_user) for order in shipment_orders]
     sales_order_rows = (
         db.execute(
             select(SalesOrder)
@@ -920,6 +915,33 @@ def mark_placement(
     if queue.placement_status == "placed":
         queue.placement_status = "hidden"
         complete_todos(db, business_type="sales_order_placement", business_id=queue.sales_order_id)
+        order = db.execute(select(SalesOrder).where(SalesOrder.id == queue.sales_order_id)).scalar_one_or_none()
+        if order is not None and order.status == "pending_shipment":
+            queue.shipment_status = "pending"
+            inventory_user_ids = _role_user_ids(db, "inventory")
+            existing_todo_user_ids = {
+                todo.assigned_user_id
+                for todo in db.execute(
+                    select(TodoItem).where(
+                        TodoItem.business_type == "sales_order",
+                        TodoItem.business_id == order.id,
+                        TodoItem.status != "completed",
+                    )
+                ).scalars().all()
+            }
+            for user_id in inventory_user_ids:
+                if user_id in existing_todo_user_ids:
+                    continue
+                create_todo(
+                    db,
+                    title=f"待发货客户订单 {order.order_no}",
+                    description="订单已完成置货，请库管安排出库发货。",
+                    module="inventory",
+                    assigned_user_id=user_id,
+                    business_type="sales_order",
+                    business_id=order.id,
+                    priority="high",
+                )
     db.commit()
     return api_response(msg="置货状态已更新")
 
@@ -937,6 +959,8 @@ def mark_shipment(
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.id == queue_id)).scalar_one_or_none()
     if queue is None:
         raise HTTPException(status_code=404, detail="发货队列不存在")
+    if queue.placement_status != "hidden":
+        raise HTTPException(status_code=409, detail="当前客户订单尚未完成置货，不能发货")
     order = db.execute(
         select(SalesOrder)
         .options(
@@ -1042,13 +1066,7 @@ def mark_sales_order_shipment(
         raise HTTPException(status_code=403, detail="当前账号无权处理成品仓发货任务")
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order_id)).scalar_one_or_none()
     if queue is None:
-        queue = InventoryDispatchQueue(
-            sales_order_id=order_id,
-            placement_status="hidden",
-            shipment_status="pending",
-        )
-        db.add(queue)
-        db.flush()
+        raise HTTPException(status_code=409, detail="当前客户订单尚未完成置货，不能发货")
     return mark_shipment(queue.id, payload, current_user, db)
 
 @router.get("/stocks")
@@ -1219,6 +1237,11 @@ def list_operation_requests(current_user: User = Depends(get_current_user), db: 
             )
         )
     rows = db.execute(query).scalars().all()
+    normalized_any = False
+    for row in rows:
+        normalized_any = normalize_inventory_operation_request_approval(row, db) or normalized_any
+    if normalized_any:
+        db.commit()
     return api_response(
         data=[
             {
@@ -1255,6 +1278,8 @@ def get_operation_request_detail(request_id: int, current_user: User = Depends(g
         raise HTTPException(status_code=404, detail="库存作业请求不存在")
     if not _can_access_operation_request(db, current_user, row):
         raise HTTPException(status_code=403, detail="仅可查看本仓库范围内的库存作业")
+    if normalize_inventory_operation_request_approval(row, db):
+        db.commit()
     source_detail = _operation_source_detail(db, row)
     return api_response(
         data={
@@ -1283,7 +1308,7 @@ def get_operation_request_detail(request_id: int, current_user: User = Depends(g
     )
 
 
-@router.post("/operation-requests/{request_id}/complete")
+@router.post('/operation-requests/{request_id}/complete')
 def complete_operation_request(
     request_id: int,
     payload: InventoryOperationHandleRequest,
@@ -1609,3 +1634,16 @@ def approve_stock_take(task_id: int, current_user: User = Depends(require_roles(
     result = _apply_stock_take_submission(task, payload, current_user, db)
     db.commit()
     return api_response(msg="盘点任务已完成并完成差异入账", data=result)
+@router.post('/operation-requests/{request_id}/approve')
+def approve_operation_request(
+    request_id: int,
+    payload: InventoryOperationApprovalRequest,
+    current_user: User = Depends(require_roles('manager', 'system_admin')),
+    db: Session = Depends(get_db),
+):
+    row = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail='\u5e93\u5b58\u4f5c\u4e1a\u8bf7\u6c42\u4e0d\u5b58\u5728')
+    if not _can_access_operation_request(db, current_user, row):
+        raise HTTPException(status_code=403, detail='\u4ec5\u53ef\u5ba1\u6279\u5f53\u524d\u6743\u9650\u8303\u56f4\u5185\u7684\u5e93\u5b58\u4f5c\u4e1a\u8bf7\u6c42')
+    return approve_inventory_operation_request(request_id, payload, current_user, db)

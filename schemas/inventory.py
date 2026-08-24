@@ -36,6 +36,11 @@ class InventoryOperationHandleRequest(BaseModel):
     quantity_difference_remark: str | None = Field(default=None, max_length=500)
 
 
+class InventoryOperationApprovalRequest(BaseModel):
+    decision: str = Field(..., pattern="^(approved|rejected)$")
+    note: str | None = Field(default=None, max_length=500)
+
+
 class InventoryManualOperationCreateRequest(BaseModel):
     warehouse_id: int
     operation_type: str = Field(..., pattern="^(inbound|outbound)$")

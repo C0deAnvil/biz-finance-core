@@ -333,23 +333,36 @@ def _route_sales_order_to_inventory_shipment(db: Session, order: SalesOrder, cur
     order.status = "pending_shipment"
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)).scalar_one_or_none()
     if queue is None:
-        queue = InventoryDispatchQueue(sales_order_id=order.id, placement_status="pending", shipment_status="pending")
+        queue = InventoryDispatchQueue(sales_order_id=order.id, placement_status="pending", shipment_status="waiting_approval")
         db.add(queue)
         db.flush()
     else:
-        queue.shipment_status = "pending"
+        queue.shipment_status = "pending" if queue.placement_status == "hidden" else "waiting_approval"
     inventory_user_ids = _role_user_ids(db, "inventory")
-    for user_id in inventory_user_ids:
-        create_todo(
-            db,
-            title=f"待发货客户订单 {order.order_no}",
-            description="订单已满足发货条件，请库管安排出库发货。",
-            module="inventory",
-            assigned_user_id=user_id,
-            business_type="sales_order",
-            business_id=order.id,
-            priority="high",
-        )
+    if queue.placement_status == "hidden":
+        existing_todo_user_ids = {
+            todo.assigned_user_id
+            for todo in db.execute(
+                select(TodoItem).where(
+                    TodoItem.business_type == "sales_order",
+                    TodoItem.business_id == order.id,
+                    TodoItem.status != "completed",
+                )
+            ).scalars().all()
+        }
+        for user_id in inventory_user_ids:
+            if user_id in existing_todo_user_ids:
+                continue
+            create_todo(
+                db,
+                title=f"待发货客户订单 {order.order_no}",
+                description="订单已完成置货，请库管安排出库发货。",
+                module="inventory",
+                assigned_user_id=user_id,
+                business_type="sales_order",
+                business_id=order.id,
+                priority="high",
+            )
     create_notification(
         db,
         title="客户订单已进入待发货",
