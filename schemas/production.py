@@ -81,6 +81,7 @@ class SpecialMaterialApproval(BaseModel):
     decision: str = Field(..., pattern="^(approved|rejected)$")
     approved_quantity: Decimal | None = Field(default=None, gt=0)
     remark: str | None = None
+    create_replenishment: bool = False
 
 
 class ProductionCompleteRequest(BaseModel):

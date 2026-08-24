@@ -1,4 +1,5 @@
 const STATUS_LABELS = {
+  pending_material_outbound: '\u5f85\u9886\u6599\u51fa\u5e93',
   draft: '草稿',
   pending: '待处理',
   unrequested: '未申请拨款',
@@ -263,6 +264,7 @@ export function formatRemark(value) {
 
 export function statusType(status) {
   const map = {
+    pending_material_outbound: 'primary',
     pending: 'warning',
     pending_confirmation: 'warning',
     pending_price_approval: 'warning',

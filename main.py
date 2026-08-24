@@ -126,11 +126,15 @@ async def business_error_handler(request: Request, exc: BusinessError):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     detail = exc.detail
-    if isinstance(detail, list):
+    response_data = None
+    if isinstance(detail, dict):
+        message = str(detail.get("message") or detail.get("msg") or detail.get("detail") or "请求失败")
+        response_data = {key: value for key, value in detail.items() if key not in {"message", "msg", "detail"}}
+    elif isinstance(detail, list):
         message = "；".join(str(item.get("msg", item)) if isinstance(item, dict) else str(item) for item in detail)
     else:
         message = str(detail or "请求失败")
-    return JSONResponse(status_code=exc.status_code, content=api_response(code=exc.status_code, msg=message))
+    return JSONResponse(status_code=exc.status_code, content=api_response(code=exc.status_code, msg=message, data=response_data))
 
 
 @app.exception_handler(RequestValidationError)

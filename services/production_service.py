@@ -185,8 +185,17 @@ def _refresh_task_material_status(task: ProductionTask) -> None:
     if any(usage.inventory_approval_status == "pending_approval" for usage in usages):
         task.status = "pending_material_approval"
         return
-    if usages and all(Decimal(usage.actual_quantity or 0) > 0 for usage in usages):
-        task.status = "material_issued"
+    approval_ready = all(
+        usage.inventory_approval_status == "approved"
+        and (not _is_special_material_request(task, usage) or usage.manager_approval_status == "approved")
+        for usage in usages
+    )
+    if approval_ready:
+        fully_issued = all(
+            Decimal(usage.actual_quantity or 0) >= Decimal(usage.approved_quantity or usage.requested_quantity or 0)
+            for usage in usages
+        )
+        task.status = "material_issued" if fully_issued else "pending_material_outbound"
         return
     task.status = "pending_material"
 
@@ -220,6 +229,53 @@ def _issue_material_if_ready(
         and Decimal(row.approved_quantity or row.requested_quantity or 0) > Decimal(row.actual_quantity or 0)
     ]
     return _create_task_material_issue_request(db, task=task, usages=ready_usages, current_user=current_user)
+
+
+def _ensure_inventory_stock_for_approval(
+    db: Session,
+    *,
+    task: ProductionTask,
+    usage: ProductionMaterialUsage,
+    current_user: User,
+    create_replenishment: bool,
+) -> None:
+    requested_quantity = Decimal(usage.requested_quantity or 0)
+    raw_warehouse = _raw_warehouse(db)
+    inventory = db.execute(
+        select(Inventory).where(
+            Inventory.warehouse_id == raw_warehouse.id,
+            Inventory.material_id == usage.material_id,
+        )
+    ).scalar_one_or_none()
+    available_quantity = (
+        Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
+        if inventory is not None
+        else Decimal('0')
+    )
+    available_quantity = max(available_quantity, Decimal('0'))
+    if available_quantity >= requested_quantity:
+        return
+    shortage_quantity = requested_quantity - available_quantity
+    if not create_replenishment:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                'code': 'inventory_shortage_confirmation_required',
+                'message': '原料库存不足，需要确认是否生成采购补货需求',
+                'task_no': task.task_no,
+                'material_name': usage.material.name if usage.material else f'原料#{usage.material_id}',
+                'requested_quantity': float(requested_quantity),
+                'available_quantity': float(available_quantity),
+                'shortage_quantity': float(shortage_quantity),
+            },
+        )
+    _create_raw_material_replenishment_notice(
+        db,
+        task=task,
+        usage=usage,
+        shortage_quantity=shortage_quantity,
+        current_user=current_user,
+    )
 
 
 def _create_material_issue_request(
@@ -450,7 +506,6 @@ def submit_material_request(
     if not payload.material_usages:
         raise HTTPException(status_code=409, detail="请至少提交一条领料明细")
 
-    raw_warehouse = _raw_warehouse(db)
     usage_map = {usage.material_id: usage for usage in task.usages}
     payload_map: dict[int, MaterialUsageInput] = {}
     for item in payload.material_usages:
@@ -461,49 +516,11 @@ def submit_material_request(
     if set(payload_map) != set(usage_map):
         raise HTTPException(status_code=409, detail="领料申请必须覆盖任务全部原料明细")
 
-    inventory_rows = db.execute(
-        select(Inventory).where(Inventory.warehouse_id == raw_warehouse.id, Inventory.material_id.in_(list(usage_map)))
-    ).scalars().all() if usage_map else []
-    inventory_map = {row.material_id: row for row in inventory_rows}
-
-    inventory_user_ids = _inventory_user_ids_for_warehouse(db, raw_warehouse.id)
+    inventory_user_ids = _inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id)
     manager_user_ids = _role_user_ids(db, "manager")
     requested_rows: list[ProductionMaterialUsage] = []
     special_rows: list[ProductionMaterialUsage] = []
     normal_rows: list[ProductionMaterialUsage] = []
-    shortage_names: list[str] = []
-
-    for material_id, item in payload_map.items():
-        usage = usage_map[material_id]
-        requested_quantity = Decimal(item.requested_quantity)
-        inventory = inventory_map.get(material_id)
-        available_quantity = (
-            Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
-            if inventory is not None
-            else Decimal("0")
-        )
-        if requested_quantity > available_quantity:
-            usage.requested_quantity = requested_quantity
-            _create_raw_material_replenishment_notice(
-                db,
-                task=task,
-                usage=usage,
-                shortage_quantity=requested_quantity - available_quantity,
-                current_user=current_user,
-            )
-            shortage_names.append(f"{usage.material.name if usage.material else material_id} 缺口 {float(requested_quantity - available_quantity)}")
-    if shortage_names:
-        write_operation_log(
-            db,
-            user_id=current_user.id,
-            module="production",
-            action="submit_material_request",
-            content=f"生产任务 {task.task_no} 领料申请因原料库存不足被拦截",
-            after_data={"task_no": task.task_no, "shortages": shortage_names},
-        )
-        db.commit()
-        raise HTTPException(status_code=409, detail=f"原料库存不足，已同步采购补货需求：{'；'.join(shortage_names)}")
-
     for material_id, usage in usage_map.items():
         item = payload_map[material_id]
         requested_quantity = Decimal(item.requested_quantity)
@@ -530,8 +547,6 @@ def submit_material_request(
 
     for usage in normal_rows:
         complete_todos(db, business_type="production_material_request", business_id=usage.id)
-    if normal_rows:
-        _create_task_material_issue_request(db, task=task, usages=normal_rows, current_user=current_user)
     for usage in special_rows:
         complete_todos(db, business_type="production_special_request", business_id=usage.id)
         for user_id in dict.fromkeys([*inventory_user_ids, *manager_user_ids]):
@@ -611,12 +626,6 @@ def submit_special_requests(
     if not payload.actual_usages:
         raise HTTPException(status_code=409, detail="请至少提交一条特殊领用明细")
 
-    raw_warehouse = _raw_warehouse(db)
-    material_ids = [usage.material_id for usage in task.usages]
-    inventory_rows = db.execute(
-        select(Inventory).where(Inventory.warehouse_id == raw_warehouse.id, Inventory.material_id.in_(material_ids))
-    ).scalars().all() if material_ids else []
-    inventory_map = {row.material_id: row for row in inventory_rows}
     usage_map = {usage.material_id: usage for usage in task.usages}
 
     submitted_rows: list[ProductionMaterialUsage] = []
@@ -626,11 +635,8 @@ def submit_special_requests(
             raise HTTPException(status_code=404, detail="存在未匹配的原料耗用明细")
         allowed_quantity = _allowed_quantity(task, usage)
         requested_quantity = Decimal(item.requested_quantity)
-        available_quantity = Decimal(inventory_map.get(item.material_id).quantity or 0) if inventory_map.get(item.material_id) else Decimal("0")
         if requested_quantity <= allowed_quantity:
             raise HTTPException(status_code=409, detail=f"原料 {usage.material.name if usage.material else item.material_id} 未超出浮动范围，无需提交流程")
-        if requested_quantity > available_quantity:
-            raise HTTPException(status_code=409, detail=f"原料 {usage.material.name if usage.material else item.material_id} 申请数量超过可用库存")
         if not item.reason:
             raise HTTPException(status_code=409, detail=f"原料 {usage.material.name if usage.material else item.material_id} 超额领用必须填写原因")
         usage.requested_quantity = requested_quantity
@@ -714,6 +720,14 @@ def approve_special_request(
     review_note = payload.remark.strip() if payload.remark else None
     is_admin = is_system_admin(current_user)
     is_special_request = _is_special_material_request(task, usage)
+    if payload.decision == 'approved' and (role_code == 'inventory' or is_admin):
+        _ensure_inventory_stock_for_approval(
+            db,
+            task=task,
+            usage=usage,
+            current_user=current_user,
+            create_replenishment=payload.create_replenishment,
+        )
 
     if role_code == "inventory":
         if usage.inventory_approval_status != "pending_approval":
@@ -783,6 +797,7 @@ def approve_special_request(
     db.flush()
 
     _refresh_task_material_status(task)
+
     request_business_type = "production_special_request" if is_special_request else "production_material_request"
     if (
         usage.inventory_approval_status in {"approved", "rejected"}
@@ -845,6 +860,8 @@ def complete_task(
         raise HTTPException(status_code=409, detail="当前生产任务仍有特殊领用待审批，不能完工")
     if task.status in {"pending_material", "pending_material_approval"}:
         raise HTTPException(status_code=409, detail="请先完成领料审批并完成原料出库，再执行完工")
+    if task.status == 'pending_material_outbound':
+        raise HTTPException(status_code=409, detail='请先完成原料出库，再执行完工')
     planned_quantity = Decimal(task.planned_quantity or 0)
     produced_quantity = Decimal(payload.produced_quantity)
     scrap_quantity = Decimal(payload.scrap_quantity or 0)

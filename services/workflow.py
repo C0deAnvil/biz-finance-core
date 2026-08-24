@@ -519,6 +519,30 @@ def _sync_inventory_request_source(
         )
 
 
+def _ensure_production_material_issue_approved(request: InventoryOperationRequest, db: Session) -> None:
+    if request.request_category != 'production_material_issue':
+        return
+    if request.source_type == 'production_material_usage':
+        usages = db.execute(
+            select(ProductionMaterialUsage).where(ProductionMaterialUsage.id == request.source_id)
+        ).scalars().all()
+    elif request.source_type == 'production_task':
+        usages = db.execute(
+            select(ProductionMaterialUsage).where(ProductionMaterialUsage.production_task_id == request.source_id)
+        ).scalars().all()
+    else:
+        usages = []
+    if not usages or any(
+        usage.inventory_approval_status != 'approved'
+        or (
+            usage.special_request_status != 'not_required'
+            and usage.manager_approval_status != 'approved'
+        )
+        for usage in usages
+    ):
+        raise HTTPException(status_code=409, detail='请先完成领料审批，再执行原料出库')
+
+
 def complete_inventory_operation_request(
     request_id: int,
     payload: InventoryOperationHandleRequest,
@@ -528,6 +552,7 @@ def complete_inventory_operation_request(
     request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id)).scalar_one_or_none()
     if request is None:
         raise HTTPException(status_code=404, detail="库存作业请求不存在")
+    _ensure_production_material_issue_approved(request, db)
     normalize_inventory_operation_request_approval(request, db)
     if _requires_inventory_manager_approval(request.operation_type, request.request_category) and request.handled_by_id is None:
         raise HTTPException(status_code=409, detail="当前库存入库请求尚未完成负责人审批")

@@ -26,6 +26,7 @@ from models import (
 
 
 STATUS_LABELS = {
+    "pending_material_outbound": "待领料出库",
     "draft": "草稿",
     "pending": "待处理",
     "unrequested": "未申请拨款",

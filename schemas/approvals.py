@@ -9,3 +9,4 @@ class ApprovalDecisionRequest(BaseModel):
     voucher_amount: Decimal = 0
     actual_amount: Decimal = 0
     approved_quantity: Decimal | None = Field(default=None, gt=0)
+    create_replenishment: bool = False

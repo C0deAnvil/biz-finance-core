@@ -137,7 +137,10 @@ async function performRequest(url, options = {}, meta = {}) {
     throw new Error('服务无响应，请确认后端已启动且接口可访问')
   }
   if (!response.ok || payload.code >= 400) {
-    throw new Error(payload.msg || '请求失败')
+    const error = new Error(payload.msg || '请求失败')
+    error.code = payload.code
+    error.data = payload.data
+    throw error
   }
   return payload.data
 }

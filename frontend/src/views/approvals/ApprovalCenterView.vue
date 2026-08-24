@@ -110,6 +110,7 @@
 
 <script setup>
 import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/card/style/css'
 import 'element-plus/es/components/col/style/css'
@@ -120,6 +121,7 @@ import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
@@ -376,7 +378,7 @@ function buildDecisionPayload(decision) {
   return {}
 }
 
-async function postDecision(decision, payload = {}) {
+async function postDecision(decision, payload = {}, options = {}) {
   if (!activeApproval.value || decisionSubmitting.value) return
   const activeApprovalId = activeApproval.value.id
   decisionSubmitting.value = true
@@ -387,7 +389,8 @@ async function postDecision(decision, payload = {}) {
       note: payload.note || payload.remark || '',
       voucher_amount: payload.voucher_amount || 0,
       actual_amount: payload.actual_amount || 0,
-      approved_quantity: payload.approved_quantity
+      approved_quantity: payload.approved_quantity,
+      create_replenishment: Boolean(payload.create_replenishment)
     })
     markActiveApprovalHandled(decision)
     ElMessage.success('审批已处理')
@@ -397,6 +400,34 @@ async function postDecision(decision, payload = {}) {
       await openDetail(row)
       markActiveApprovalHandled(decision)
     }
+  } catch (error) {
+    const shortage = decision === 'approved'
+      && options.allowShortageRetry !== false
+      && error?.data?.code === 'inventory_shortage_confirmation_required'
+    if (shortage) {
+      const shortageData = error.data
+      try {
+        await ElMessageBox.confirm(
+          `${shortageData.material_name}申请${shortageData.requested_quantity}，当前可用库存${shortageData.available_quantity}，缺口${shortageData.shortage_quantity}。是否生成采购补货需求并继续审批？`,
+          '库存不足',
+          {
+            confirmButtonText: '是，生成采购需求',
+            cancelButtonText: '否，保持待审批',
+            type: 'warning'
+          }
+        )
+        decisionSubmitting.value = false
+        await postDecision(decision, { ...payload, create_replenishment: true }, { allowShortageRetry: false })
+      } catch (confirmError) {
+        if (confirmError === 'cancel' || confirmError === 'close') {
+          ElMessage.info('已保留待审批状态')
+        } else {
+          ElMessage.error(confirmError?.message || '补货确认处理失败')
+        }
+      }
+      return
+    }
+    ElMessage.error(error?.message || '审批处理失败')
   } finally {
     decisionSubmitting.value = false
   }
