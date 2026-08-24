@@ -24,6 +24,7 @@ from services.core import sync_low_stock_alerts
 from services.production_service import repair_material_request_states
 from services.realtime import realtime_manager
 from services.request_trace import emit, request_id_var, operation_id_var
+from services.workflow_repair import repair_workflows
 
 
 logging.basicConfig(
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
         init_seed_data(db, settings.default_user_password)
         repair_material_request_states(db)
         sync_low_stock_alerts(db)
+        repair_workflows(db)
         db.commit()
     finally:
         db.close()
@@ -96,12 +98,19 @@ async def request_trace_middleware(request: Request, call_next):
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Operation-ID"] = operation_id
         return response
-    except Exception:
+    except Exception as exc:
         emit(
             "request_error",
             method=request.method,
             path=request.url.path,
             duration_ms=round((time.perf_counter() - started_at) * 1000, 2),
+            error_type=type(exc).__name__,
+            error=str(exc)[:500],
+        )
+        logging.getLogger("yecai.request").exception(
+            "Unhandled request error: %s %s",
+            request.method,
+            request.url.path,
         )
         raise
     finally:
@@ -149,7 +158,19 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def global_error_handler(request: Request, exc: Exception):
-    return JSONResponse(status_code=500, content=api_response(code=500, msg=str(exc)))
+    emit(
+        "unhandled_exception",
+        method=request.method,
+        path=request.url.path,
+        error_type=type(exc).__name__,
+        error=str(exc)[:500],
+    )
+    logging.getLogger("yecai.request").exception(
+        "Unhandled application exception: %s %s",
+        request.method,
+        request.url.path,
+    )
+    return JSONResponse(status_code=500, content=api_response(code=500, msg="服务器内部错误，请联系管理员"))
 
 
 @app.get('/')

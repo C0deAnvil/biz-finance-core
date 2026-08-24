@@ -31,7 +31,7 @@ from models import (
 )
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand
@@ -57,11 +57,11 @@ def _finished_warehouse(db: Session) -> Warehouse:
 
 
 def _chairman_user_ids(db: Session) -> list[int]:
-    return _role_user_ids(db, "chairman")
+    return resolve_workflow_recipients(db, "chairman", workflow="chairman_workflow")
 
 
 def _finance_user_ids(db: Session) -> list[int]:
-    return _role_user_ids(db, "finance")
+    return resolve_workflow_recipients(db, "finance", workflow="finance_workflow")
 
 
 def _manager_chairman_user_ids(db: Session) -> list[int]:
@@ -1263,7 +1263,13 @@ def submit_sales_receipt_request(payload: SalesReceiptRequestCreate, current_use
     db.add(request)
     db.flush()
 
-    finance_user_ids = _finance_user_ids(db)
+    finance_user_ids = resolve_workflow_recipients(
+        db,
+        "finance",
+        workflow="sales_receipt_request",
+        business_type="sales_receipt_request",
+        business_id=request.id,
+    )
     for user_id in finance_user_ids:
         create_todo(
             db,
@@ -1326,7 +1332,12 @@ def submit_merged_sales_receipt_request(payload: SalesMergedReceiptRequestCreate
     merge_no = next_business_no(db, "HSK")
     created_rows: list[SalesReceiptRequest] = []
     requested_total = Decimal("0")
-    finance_user_ids = _finance_user_ids(db)
+    finance_user_ids = resolve_workflow_recipients(
+        db,
+        "finance",
+        workflow="sales_merged_receipt_request",
+        business_type="sales_receipt_request",
+    )
 
     for order in orders:
         _ensure_order_owner_or_admin(order, current_user)

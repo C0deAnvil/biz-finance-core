@@ -38,6 +38,7 @@ from services.display import clean_display_text, payment_type_label, return_type
 from services.production_service import approve_special_request as approve_special_request_service
 from services.purchase_service import approve_purchase_order as approve_purchase_order_service, approve_purchase_payment_request as approve_purchase_payment_request_service
 from services.sales_service import approve_order as approve_sales_order_service, approve_return as approve_sales_return_service, approve_sales_receipt_request as approve_sales_receipt_request_service
+from services.workflow_repair import repair_sales_receipt_workflows
 from api.routers.reimbursements import audit_business_matter as audit_business_matter_service, audit_reimbursement as audit_reimbursement_service
 
 
@@ -1153,6 +1154,7 @@ def _reimbursement_detail(business_id: int, db: Session) -> dict:
 
 @router.get("/pending")
 def list_pending_approvals(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    repair_sales_receipt_workflows(db)
     data = _dedupe_approval_rows(
         [
             *_pending_sales_orders(current_user, db),

@@ -39,7 +39,7 @@ from schemas.production import (
     SpecialMaterialApproval,
     SpecialMaterialRequestCreate,
 )
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.organization import get_inventory_scope_warehouse_ids, is_system_admin
 from services.quality_workflow import create_production_quality_task
 from services.time_utils import now_local
@@ -133,7 +133,13 @@ def _create_raw_material_replenishment_notice(
     ).scalar_one_or_none()
     if existing is not None:
         return
-    purchaser_ids = _role_user_ids(db, "purchase")
+    purchaser_ids = resolve_workflow_recipients(
+        db,
+        "purchase",
+        workflow="raw_material_replenishment",
+        business_type="raw_material_replenishment",
+        business_id=usage.id,
+    )
     material_name = usage.material.name if usage.material else f"原料#{usage.material_id}"
     for user_id in purchaser_ids:
         create_todo(
@@ -932,7 +938,15 @@ def complete_task(
             submitted_by_id=current_user.id,
             required_tests=required_tests,
         )
-        quality_user_ids = _role_user_ids(db, "quality", "manager", "chairman")
+        quality_user_ids = resolve_workflow_recipients(
+            db,
+            "quality",
+            "manager",
+            "chairman",
+            workflow="production_quality_task",
+            business_type="quality_task",
+            business_id=quality_task.id,
+        )
         for user_id in quality_user_ids:
             create_todo(
                 db,

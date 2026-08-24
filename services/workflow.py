@@ -29,7 +29,7 @@ from models import (
 )
 from responses import api_response
 from schemas.inventory import InventoryOperationApprovalRequest, InventoryOperationHandleRequest
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import status_label
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
@@ -201,7 +201,23 @@ def create_inventory_operation_request(
     description: str | None = None,
 ) -> InventoryOperationRequest:
     requires_manager_approval = _requires_inventory_manager_approval(operation_type, request_category)
-    user_ids = list(dict.fromkeys(role_user_ids(db, "manager") if requires_manager_approval else (recipient_user_ids or role_user_ids(db, "inventory"))))
+    if requires_manager_approval:
+        user_ids = resolve_workflow_recipients(
+            db,
+            "manager",
+            workflow="inventory_operation_request",
+            business_type="inventory_operation_request",
+            business_id=source_id,
+        )
+    else:
+        explicit_user_ids = [user_id for user_id in dict.fromkeys(recipient_user_ids or []) if user_id is not None]
+        user_ids = explicit_user_ids or resolve_workflow_recipients(
+            db,
+            "inventory",
+            workflow="inventory_operation_request",
+            business_type="inventory_operation_request",
+            business_id=source_id,
+        )
     request_title = title or f"待{'审批' if requires_manager_approval else '执行'}库存{'出库' if operation_type == 'outbound' else '入库'} {source_no or ''}".strip()
     if requires_manager_approval and title:
         request_title = title.replace("待执行", "待审批")
@@ -236,7 +252,13 @@ def create_inventory_operation_request(
         existing.handled_items_json = existing.handled_items_json or []
         normalized = normalize_inventory_operation_request_approval(existing, db)
         if normalized:
-            user_ids = role_user_ids(db, "manager")
+            user_ids = resolve_workflow_recipients(
+                db,
+                "manager",
+                workflow="inventory_operation_request",
+                business_type="inventory_operation_request",
+                business_id=existing.id,
+            )
         _ensure_inventory_operation_todos(
             db,
             request=existing,

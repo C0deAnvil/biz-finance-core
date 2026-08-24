@@ -50,6 +50,7 @@ from services.quality_workflow import (
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.workflow import create_inventory_operation_request
 from services.time_utils import now_local
+from services.workflow_repair import repair_quality_workflows
 
 
 router = APIRouter(prefix="/quality", tags=["quality"])
@@ -378,6 +379,7 @@ def _sync_return_reinspection_status(
 
 @router.get("/tasks")
 def list_quality_tasks(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    repair_quality_workflows(db)
     tasks = db.execute(select(QualityTask).order_by(QualityTask.created_at.desc())).scalars().all()
     task_ids = [row.id for row in tasks]
     production_task_ids = [row.production_task_id for row in tasks]

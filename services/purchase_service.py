@@ -49,7 +49,7 @@ from schemas.purchases import (
     PurchaseReturnCreate,
 )
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
@@ -73,15 +73,15 @@ def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
 
 
 def _manager_user_ids(db: Session) -> list[int]:
-    return _role_user_ids(db, "manager")
+    return resolve_workflow_recipients(db, "manager", workflow="manager_workflow")
 
 
 def _chairman_user_ids(db: Session) -> list[int]:
-    return _role_user_ids(db, "chairman")
+    return resolve_workflow_recipients(db, "chairman", workflow="chairman_workflow")
 
 
 def _finance_user_ids(db: Session) -> list[int]:
-    return _role_user_ids(db, "finance")
+    return resolve_workflow_recipients(db, "finance", workflow="finance_workflow")
 
 
 def _resolve_purchase_operator_user_id(db: Session, operator_user_id: int | None, current_user: User) -> int:
@@ -2166,7 +2166,15 @@ def create_receipt(payload: PurchaseReceiptCreate, current_user: User, db: Sessi
     if requires_quality:
         quality_tasks = create_purchase_quality_tasks(db, order=order, receipt=receipt, submitted_by_id=current_user.id)
         quality_task_count = len(quality_tasks)
-        quality_user_ids = _role_user_ids(db, "quality", "manager", "chairman")
+        quality_user_ids = resolve_workflow_recipients(
+            db,
+            "quality",
+            "manager",
+            "chairman",
+            workflow="purchase_quality_task",
+            business_type="purchase_receipt",
+            business_id=receipt.id,
+        )
         for task in quality_tasks:
             for user_id in quality_user_ids:
                 create_todo(

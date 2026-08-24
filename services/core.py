@@ -4,6 +4,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,7 @@ from models import (
     Warehouse,
 )
 from services.realtime import realtime_manager
+from services.request_trace import emit
 from services.time_utils import now_local
 
 LOW_STOCK_BUSINESS_TYPE = 'low_stock_alert'
@@ -77,6 +79,20 @@ def create_todo(
     business_id: int | None = None,
     priority: str = 'normal',
 ):
+    if business_type is not None and business_id is not None:
+        existing = db.execute(
+            select(TodoItem)
+            .where(
+                TodoItem.business_type == business_type,
+                TodoItem.business_id == business_id,
+                TodoItem.assigned_user_id == assigned_user_id,
+                TodoItem.status != 'completed',
+            )
+            .order_by(TodoItem.id.asc())
+        ).scalars().first()
+        if existing is not None:
+            return existing
+
     todo = TodoItem(
         title=title,
         description=description,
@@ -88,6 +104,14 @@ def create_todo(
     )
     db.add(todo)
     db.flush()
+    emit(
+        'todo_created',
+        todo_id=todo.id,
+        business_type=business_type,
+        business_id=business_id,
+        assigned_user_id=assigned_user_id,
+        module=module,
+    )
     realtime_manager.push_to_user(
         assigned_user_id,
         {
@@ -143,6 +167,8 @@ def create_notification(
     created_by_id: int | None = None,
     is_popup: bool = True,
 ):
+    unique_recipient_ids = [user_id for user_id in dict.fromkeys(recipient_user_ids) if user_id is not None]
+
     notification = Notification(
         title=title,
         content=content,
@@ -154,11 +180,18 @@ def create_notification(
     db.add(notification)
     db.flush()
     recipients = []
-    for user_id in dict.fromkeys(recipient_user_ids):
+    for user_id in unique_recipient_ids:
         recipient = NotificationRecipient(notification_id=notification.id, user_id=user_id)
         recipients.append(recipient)
         db.add(recipient)
     db.flush()
+    emit(
+        'notification_created',
+        notification_id=notification.id,
+        module=module,
+        recipient_user_ids=unique_recipient_ids,
+        category=category,
+    )
     for recipient in recipients:
         realtime_manager.push_to_user(
             recipient.user_id,
@@ -174,6 +207,69 @@ def create_notification(
             },
         )
     return notification
+
+
+def ensure_todo(
+    db: Session,
+    *,
+    title: str,
+    description: str | None,
+    module: str,
+    assigned_user_id: int,
+    business_type: str | None = None,
+    business_id: int | None = None,
+    priority: str = 'normal',
+):
+    """Create one pending todo per user and business object."""
+    return create_todo(
+        db,
+        title=title,
+        description=description,
+        module=module,
+        assigned_user_id=assigned_user_id,
+        business_type=business_type,
+        business_id=business_id,
+        priority=priority,
+    )
+
+
+def ensure_notification(
+    db: Session,
+    *,
+    title: str,
+    content: str,
+    module: str,
+    recipient_user_ids: list[int],
+    category: str = 'info',
+    created_by_id: int | None = None,
+    is_popup: bool = True,
+):
+    """Create a notification only when this workflow message is absent."""
+    unique_recipient_ids = [user_id for user_id in dict.fromkeys(recipient_user_ids) if user_id is not None]
+    if unique_recipient_ids:
+        existing = db.execute(
+            select(Notification)
+            .join(NotificationRecipient, NotificationRecipient.notification_id == Notification.id)
+            .where(
+                Notification.title == title,
+                Notification.content == content,
+                Notification.module == module,
+                NotificationRecipient.user_id.in_(unique_recipient_ids),
+            )
+            .order_by(Notification.id.asc())
+        ).scalars().first()
+        if existing is not None:
+            return existing
+    return create_notification(
+        db,
+        title=title,
+        content=content,
+        module=module,
+        recipient_user_ids=unique_recipient_ids,
+        category=category,
+        created_by_id=created_by_id,
+        is_popup=is_popup,
+    )
 
 
 def write_operation_log(
@@ -233,6 +329,101 @@ def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
             select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
         ).scalars().all()
     ]
+
+
+def resolve_workflow_recipients(
+    db: Session,
+    *role_codes: str,
+    fallback_role_codes: tuple[str, ...] = ('system_admin',),
+    exclude_user_ids: set[int] | None = None,
+    workflow: str = 'workflow',
+    business_type: str | None = None,
+    business_id: int | None = None,
+) -> list[int]:
+    """Resolve active workflow owners and fail explicitly when none exist."""
+    excluded = exclude_user_ids or set()
+    primary_ids = [user_id for user_id in _role_user_ids(db, *role_codes) if user_id not in excluded]
+    selected_ids = list(dict.fromkeys(primary_ids))
+    resolution = 'primary'
+    if not selected_ids and fallback_role_codes:
+        selected_ids = [user_id for user_id in _role_user_ids(db, *fallback_role_codes) if user_id not in excluded]
+        selected_ids = list(dict.fromkeys(selected_ids))
+        resolution = 'fallback'
+
+    emit(
+        'workflow_recipient_resolution',
+        workflow=workflow,
+        business_type=business_type,
+        business_id=business_id,
+        requested_roles=list(role_codes),
+        fallback_roles=list(fallback_role_codes),
+        resolution=resolution,
+        recipient_user_ids=selected_ids,
+    )
+    if not selected_ids:
+        raise HTTPException(
+            status_code=503,
+            detail=f'{workflow} 未找到可处理人员，请先配置有效的责任人或系统管理员账号',
+        )
+    return selected_ids
+
+
+def ensure_workflow_routing(
+    db: Session,
+    *,
+    title: str,
+    description: str | None,
+    module: str,
+    business_type: str,
+    business_id: int,
+    recipient_role_codes: tuple[str, ...],
+    notification_content: str,
+    notification_recipient_user_ids: list[int] | None = None,
+    priority: str = 'normal',
+    category: str = 'info',
+    created_by_id: int | None = None,
+    workflow: str = 'workflow',
+):
+    """Persist and repair one workflow's todos and notification idempotently."""
+    recipient_ids = resolve_workflow_recipients(
+        db,
+        *recipient_role_codes,
+        workflow=workflow,
+        business_type=business_type,
+        business_id=business_id,
+    )
+    todos = [
+        ensure_todo(
+            db,
+            title=title,
+            description=description,
+            module=module,
+            assigned_user_id=user_id,
+            business_type=business_type,
+            business_id=business_id,
+            priority=priority,
+        )
+        for user_id in recipient_ids
+    ]
+    notification = ensure_notification(
+        db,
+        title=title,
+        content=notification_content,
+        module=module,
+        recipient_user_ids=list(dict.fromkeys([*(notification_recipient_user_ids or []), *recipient_ids])),
+        category=category,
+        created_by_id=created_by_id,
+    )
+    emit(
+        'workflow_routed',
+        workflow=workflow,
+        business_type=business_type,
+        business_id=business_id,
+        recipient_user_ids=recipient_ids,
+        todo_ids=[todo.id for todo in todos],
+        notification_id=notification.id if notification else None,
+    )
+    return todos, notification
 
 
 def _inventory_item_context(inventory: Inventory) -> dict:

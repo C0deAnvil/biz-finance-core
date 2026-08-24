@@ -58,6 +58,7 @@ from schemas.purchases import PurchasePaymentApprovalRequest
 from services.display import format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.time_utils import now_local
 from services.request_trace import trace_stage
+from services.workflow_repair import repair_sales_receipt_workflows
 
 
 router = APIRouter(prefix="/finance", tags=["finance"])
@@ -569,6 +570,7 @@ def list_receivable_records(
     db: Session = Depends(get_db),
 ):
     request_started_at = perf_counter()
+    repair_sales_receipt_workflows(db)
     stage_started_at = perf_counter()
     records = db.execute(select(ReceivableRecord).order_by(ReceivableRecord.received_at.desc(), ReceivableRecord.id.desc())).scalars().all()
     trace_stage("receivables_load_records", stage_started_at, record_count=len(records))
