@@ -70,11 +70,29 @@ canvas {
 
 .el-table {
   max-width: 100%;
+  min-width: 0;
 }
 
 .el-table__body-wrapper,
 .el-table__header-wrapper {
   max-width: 100%;
+}
+
+/* Keep wide Element Plus tables swipeable on narrow screens. */
+.el-table__body-wrapper .el-scrollbar__wrap {
+  overflow-x: auto !important;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.el-table__body-wrapper .el-scrollbar__view {
+  min-width: max-content;
+}
+
+.el-table__body,
+.el-table__header,
+.el-table__footer {
+  min-width: max-content;
 }
 
 .el-form-item__content,
@@ -207,6 +225,43 @@ canvas {
   .el-table .cell {
     word-break: break-word;
     line-height: 1.4;
+  }
+
+  .el-table {
+    width: 100% !important;
+    max-width: 100% !important;
+    touch-action: pan-x pan-y;
+  }
+
+  .el-table__body-wrapper {
+    overflow: hidden !important;
+  }
+
+  .el-table__body-wrapper .el-scrollbar__wrap {
+    overflow-x: auto !important;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #b7c9d8 transparent;
+  }
+
+  .el-table__body-wrapper .el-scrollbar__view {
+    min-width: max-content !important;
+  }
+
+  .el-table__body,
+  .el-table__header,
+  .el-table__footer {
+    min-width: max-content !important;
+  }
+
+  .el-table__body-wrapper .el-scrollbar__bar.is-horizontal {
+    display: block !important;
+    opacity: 1;
+    height: 8px;
+  }
+
+  .el-table__body-wrapper .el-scrollbar__thumb {
+    background-color: #9db5c7;
   }
 
   .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
