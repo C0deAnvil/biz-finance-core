@@ -24,7 +24,8 @@
         <el-button @click="exportTable">导出</el-button>
       </template>
 
-      <el-table :data="pagedRows" stripe :row-class-name="stockRowClassName">
+      <div class="inventory-table-scroll inventory-status-table-scroll">
+      <el-table class="inventory-status-table" :data="pagedRows" stripe :fit="false" :row-class-name="stockRowClassName">
         <el-table-column prop="warehouse_name" label="仓库" width="180" />
         <el-table-column label="类型" width="100">
           <template #default="scope">
@@ -52,6 +53,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <AppPagination
         v-model:page="pagination.page"
         v-model:page-size="pagination.pageSize"
@@ -62,7 +64,8 @@
     </PageSection>
 
     <PageSection title="库存作业请求" description="所有生产领料、采购到货、质检放行、销售发货、退货回库等库存动作，统一由库管在此手工完成。">
-      <el-table :data="operationRequests" stripe>
+      <div class="inventory-table-scroll inventory-operation-table-scroll">
+      <el-table class="inventory-operation-table" :data="operationRequests" stripe :fit="false">
         <el-table-column prop="request_no" label="作业号" width="150" />
         <el-table-column prop="operation_type" label="类型" width="100">
           <template #default="scope">{{ scope.row.operation_type === 'inbound' ? '入库' : '出库' }}</template>
@@ -83,6 +86,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </PageSection>
 
     <el-drawer v-model="drawerVisible" size="56%" title="库存流水">
@@ -656,10 +660,42 @@ watch(
 .w-140 { width: 140px; }
 .w-180 { width: 180px; }
 .w-240 { width: 240px; }
+.inventory-table-scroll {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: #9db5c7 transparent;
+}
+.inventory-status-table { min-width: 1760px; }
+.inventory-operation-table { min-width: 1340px; }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .drawer-title { font-size: 18px; font-weight: 700; color: #303133; }
 .drawer-subtitle { font-size: 13px; color: #909399; margin-top: 4px; }
 .detail-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .mb-16 { margin-bottom: 16px; }
 :deep(.row-focus td) { background: #fff3d8 !important; }
+
+@media (max-width: 768px) {
+  .inventory-table-scroll {
+    padding-bottom: 8px;
+  }
+
+  .inventory-status-table,
+  .inventory-operation-table {
+    width: max-content !important;
+    max-width: none !important;
+  }
+
+  .inventory-status-table {
+    min-width: 1760px !important;
+  }
+
+  .inventory-operation-table {
+    min-width: 1340px !important;
+  }
+}
 </style>
