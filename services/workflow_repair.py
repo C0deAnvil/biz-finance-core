@@ -5,9 +5,11 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import InventoryOperationRequest, ProductionTask, QualityTask, SalesReceiptRequest
-from services.core import ensure_notification, ensure_todo, resolve_workflow_recipients
+from models import InventoryDispatchQueue, InventoryOperationRequest, ProductionTask, QualityTask, SalesOrder, SalesOrderItem, SalesReceiptRequest, User
+from services.core import complete_todos, ensure_notification, ensure_todo, resolve_workflow_recipients
 from services.request_trace import emit
+from services.sales_service import ensure_sales_order_fulfillment_demands
+from sqlalchemy.orm import joinedload, selectinload
 
 
 def repair_sales_receipt_workflows(db: Session) -> int:
@@ -172,12 +174,75 @@ def repair_inventory_operation_workflows(db: Session) -> int:
     return repaired
 
 
+def repair_sales_dispatch_workflows(db: Session) -> int:
+    repaired = 0
+    orders = db.execute(
+        select(SalesOrder)
+        .options(
+            joinedload(SalesOrder.sales_user),
+            selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
+        )
+        .where(SalesOrder.status == "pending_shipment")
+    ).unique().scalars().all()
+    fallback_user = db.execute(select(User).where(User.is_active.is_(True)).order_by(User.id.asc())).scalars().first()
+    for order in orders:
+        try:
+            actor = order.sales_user or fallback_user
+            if actor is not None:
+                ensure_sales_order_fulfillment_demands(db, order, actor)
+            queue = db.execute(
+                select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)
+            ).scalar_one_or_none()
+            if queue is None:
+                queue = InventoryDispatchQueue(
+                    sales_order_id=order.id,
+                    placement_status="pending",
+                    shipment_status="waiting_approval",
+                )
+                db.add(queue)
+                db.flush()
+            if queue.placement_status != "hidden":
+                queue.placement_status = "pending"
+                queue.shipment_status = "waiting_approval"
+                complete_todos(db, business_type="sales_order", business_id=order.id)
+                inventory_user_ids = resolve_workflow_recipients(
+                    db,
+                    "inventory",
+                    workflow="sales_order_placement_repair",
+                    business_type="sales_order_placement",
+                    business_id=order.id,
+                )
+                for user_id in inventory_user_ids:
+                    ensure_todo(
+                        db,
+                        title=f"待置货客户订单 {order.order_no}",
+                        description="客户订单已通过财务/审批，成品库存满足后请完成置货；未置货前不能发货。",
+                        module="inventory",
+                        assigned_user_id=user_id,
+                        business_type="sales_order_placement",
+                        business_id=order.id,
+                        priority="high",
+                    )
+            repaired += 1
+        except Exception as exc:
+            emit(
+                "workflow_repair_failed",
+                workflow="sales_dispatch",
+                business_type="sales_order",
+                business_id=order.id,
+                error_type=type(exc).__name__,
+                error=str(exc)[:500],
+            )
+    return repaired
+
+
 def repair_workflows(db: Session) -> dict[str, int]:
     """Repair known pending workflows without creating duplicate todos."""
     result = {
         "sales_receipt_requests": repair_sales_receipt_workflows(db),
         "quality_tasks": repair_quality_workflows(db),
         "inventory_operation_requests": repair_inventory_operation_workflows(db),
+        "sales_dispatch_workflows": repair_sales_dispatch_workflows(db),
     }
     emit("workflow_repair_finished", **result)
     return result

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from models import (
     BOM,
     BOMItem,
+    FulfillmentDemand,
     Inventory,
     InventoryOperationRequest,
     Material,
@@ -83,6 +84,17 @@ def repair_material_request_states(db: Session) -> int:
 
 def _raw_warehouse(db: Session) -> Warehouse:
     return get_raw_warehouse(db)
+
+
+_PRODUCTION_TASK_NON_RESERVING_STATUSES = {
+    "completed",
+    "cancelled",
+    "scrapped",
+    "partially_scrapped",
+    "reworked",
+    "rework_pending",
+}
+
 
 def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
     return [
@@ -235,6 +247,78 @@ def _issue_material_if_ready(
         and Decimal(row.approved_quantity or row.requested_quantity or 0) > Decimal(row.actual_quantity or 0)
     ]
     return _create_task_material_issue_request(db, task=task, usages=ready_usages, current_user=current_user)
+
+
+def _max_producible_quantity_from_raw_stock(
+    db: Session,
+    *,
+    product_id: int,
+) -> tuple[Decimal, list[dict]]:
+    bom = db.execute(
+        select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == product_id)
+    ).unique().scalar_one_or_none()
+    if bom is None or not bom.items:
+        return Decimal("0"), []
+    raw_warehouse = _raw_warehouse(db)
+    material_ids = [item.material_id for item in bom.items if item.standard_quantity and item.standard_quantity > 0]
+    inventory_rows = db.execute(
+        select(Inventory)
+        .where(
+            Inventory.warehouse_id == raw_warehouse.id,
+            Inventory.material_id.in_(material_ids or [-1]),
+            Inventory.product_id.is_(None),
+        )
+        .with_for_update()
+    ).scalars().all() if material_ids else []
+    inventory_map = {row.material_id: row for row in inventory_rows}
+    planned_material_rows = db.execute(
+        select(
+            ProductionMaterialUsage.material_id,
+            ProductionMaterialUsage.planned_quantity,
+            ProductionMaterialUsage.actual_quantity,
+        )
+        .join(ProductionTask, ProductionTask.id == ProductionMaterialUsage.production_task_id)
+        .where(
+            ProductionTask.status.not_in(_PRODUCTION_TASK_NON_RESERVING_STATUSES),
+            ProductionMaterialUsage.material_id.in_(material_ids or [-1]),
+        )
+    ).all() if material_ids else []
+    planned_by_material: dict[int, Decimal] = {}
+    for material_id, planned_quantity, actual_quantity in planned_material_rows:
+        outstanding_quantity = max(
+            Decimal(planned_quantity or 0) - Decimal(actual_quantity or 0),
+            Decimal("0"),
+        )
+        planned_by_material[material_id] = planned_by_material.get(material_id, Decimal("0")) + outstanding_quantity
+    max_quantity: Decimal | None = None
+    material_rows: list[dict] = []
+    for bom_item in bom.items:
+        inventory = inventory_map.get(bom_item.material_id)
+        stock_available_quantity = max(
+            Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
+            if inventory is not None
+            else Decimal("0"),
+            Decimal("0"),
+        )
+        planned_quantity = planned_by_material.get(bom_item.material_id, Decimal("0"))
+        available_quantity = max(stock_available_quantity - planned_quantity, Decimal("0"))
+        standard_quantity = Decimal(bom_item.standard_quantity or 0)
+        if standard_quantity <= 0:
+            continue
+        item_max_quantity = available_quantity / standard_quantity
+        max_quantity = item_max_quantity if max_quantity is None else min(max_quantity, item_max_quantity)
+        material_name = inventory.material.name if inventory is not None and inventory.material else f"原料#{bom_item.material_id}"
+        material_rows.append(
+            {
+                "material_id": bom_item.material_id,
+                "material_name": material_name,
+                "available_quantity": float(available_quantity),
+                "stock_available_quantity": float(stock_available_quantity),
+                "reserved_by_production_quantity": float(planned_quantity),
+                "required_per_product": float(standard_quantity),
+            }
+        )
+    return max(max_quantity or Decimal("0"), Decimal("0")), material_rows
 
 
 def _ensure_inventory_stock_for_approval(
@@ -429,17 +513,39 @@ def create_task(
     product = db.execute(select(Product).where(Product.id == payload.product_id)).scalar_one_or_none()
     if product is None:
         raise HTTPException(status_code=404, detail="产品不存在")
-    if payload.source_type == "sales_order" and not payload.sales_order_id:
+    demand = None
+    if payload.fulfillment_demand_id:
+        demand = db.execute(
+            select(FulfillmentDemand)
+            .options(joinedload(FulfillmentDemand.sales_order))
+            .where(
+                FulfillmentDemand.id == payload.fulfillment_demand_id,
+                FulfillmentDemand.fulfillment_mode == "production",
+            )
+        ).unique().scalar_one_or_none()
+        if demand is None:
+            raise HTTPException(status_code=404, detail="生产补货需求不存在")
+        if demand.status != "pending":
+            raise HTTPException(status_code=409, detail="当前生产补货需求已处理")
+        if Decimal(payload.planned_quantity) > Decimal(demand.shortage_quantity or 0):
+            raise HTTPException(status_code=409, detail="本批生产数量不能超过当前补货需求剩余数量")
+
+    source_type = payload.source_type
+    sales_order_id = payload.sales_order_id
+    if demand is not None:
+        source_type = "sales_order"
+        sales_order_id = demand.sales_order_id
+    if source_type == "sales_order" and not sales_order_id:
         raise HTTPException(status_code=409, detail="请选择来源客户订单")
 
     order = None
-    if payload.sales_order_id:
+    if sales_order_id:
         order = db.execute(
-            select(SalesOrder).options(joinedload(SalesOrder.items)).where(SalesOrder.id == payload.sales_order_id)
+            select(SalesOrder).options(joinedload(SalesOrder.items)).where(SalesOrder.id == sales_order_id)
         ).unique().scalar_one_or_none()
         if order is None:
             raise HTTPException(status_code=404, detail="来源销售订单不存在")
-        if payload.source_type == "sales_order":
+        if source_type == "sales_order":
             matched_item = next((item for item in order.items if item.product_id == payload.product_id), None)
             if matched_item is None:
                 raise HTTPException(status_code=409, detail="所选产品不在来源客户订单明细中")
@@ -450,6 +556,18 @@ def create_task(
     if bom is None or not bom.items:
         raise HTTPException(status_code=409, detail="当前产品尚未配置 BOM，不能创建生产任务")
 
+    max_quantity, material_rows = _max_producible_quantity_from_raw_stock(db, product_id=payload.product_id)
+    if Decimal(payload.planned_quantity) > max_quantity:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "production_batch_exceeds_raw_stock",
+                "message": "本批生产数量超过当前原料可支持的最大生产数量",
+                "max_producible_quantity": float(max_quantity),
+                "materials": material_rows,
+            },
+        )
+
     payload_usage_map = {item.material_id: item for item in (payload.material_usages or [])}
     bom_material_ids = {item.material_id for item in bom.items}
     if payload_usage_map and set(payload_usage_map) != bom_material_ids:
@@ -457,14 +575,14 @@ def create_task(
 
     task = ProductionTask(
         task_no=next_business_no(db, "SC"),
-        source_type=payload.source_type,
-        sales_order_id=payload.sales_order_id,
+        source_type=source_type,
+        sales_order_id=sales_order_id,
         product_id=payload.product_id,
         planned_quantity=payload.planned_quantity,
         fluctuation_ratio=payload.fluctuation_ratio,
         status="pending_material",
         created_by_id=current_user.id,
-        notes=payload.notes or (f"来源客户订单：{order.order_no}" if order and payload.source_type == "sales_order" else None),
+        notes=payload.notes or (f"来源客户订单：{order.order_no}" if order and source_type == "sales_order" else None),
     )
     db.add(task)
     db.flush()
@@ -484,6 +602,30 @@ def create_task(
                 actual_quantity=0,
                 reason=request_item.reason if request_item else None,
             )
+        )
+    if demand is not None:
+        remaining_quantity = max(Decimal(demand.shortage_quantity or 0) - Decimal(payload.planned_quantity), Decimal("0"))
+        demand.processed_by_id = current_user.id
+        demand.process_note = (
+            f"已创建生产任务 {task.task_no}，本批 {float(payload.planned_quantity)}，剩余 {float(remaining_quantity)}。"
+        )
+        if remaining_quantity <= 0:
+            demand.status = "converted"
+            complete_todos(db, business_type="fulfillment_demand", business_id=demand.id)
+        else:
+            demand.shortage_quantity = remaining_quantity
+            demand.status = "pending"
+        create_notification(
+            db,
+            title="销售订单生产需求已分批转生产任务",
+            content=(
+                f"补货需求 {demand.demand_no} 已创建生产任务 {task.task_no}，本批 {float(payload.planned_quantity)}，"
+                f"剩余 {float(remaining_quantity)}。"
+            ),
+            module="production",
+            recipient_user_ids=list(dict.fromkeys([current_user.id, demand.sales_order.sales_user_id if demand.sales_order else None])),
+            created_by_id=current_user.id,
+            category="success",
         )
     db.commit()
     return api_response(data={"id": task.id, "task_no": task.task_no})

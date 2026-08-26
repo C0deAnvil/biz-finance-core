@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from models import FulfillmentDemand, Inventory, Material, Product, PurchaseOrder, PurchaseOrderItem, Role, SalesOrder, SalesOrderItem, TodoItem, User
+from models import FulfillmentDemand, Inventory, Material, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderItem, Role, SalesOrder, SalesOrderItem, TodoItem, User
 from services.core import create_notification, create_todo, next_business_no, write_operation_log
 
 
@@ -53,6 +53,32 @@ def material_expected_available_quantity(db: Session, *, material_id: int, inven
     available_quantity = Decimal("0")
     if inventory is not None:
         available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
+    planned_material_rows = db.execute(
+        select(
+            ProductionMaterialUsage.planned_quantity,
+            ProductionMaterialUsage.actual_quantity,
+        )
+        .join(ProductionTask, ProductionTask.id == ProductionMaterialUsage.production_task_id)
+        .where(
+            ProductionMaterialUsage.material_id == material_id,
+            ProductionTask.status.not_in({
+                "completed",
+                "cancelled",
+                "scrapped",
+                "partially_scrapped",
+                "reworked",
+                "rework_pending",
+            }),
+        )
+    ).all()
+    planned_quantity = sum(
+        (
+            max(Decimal(row.planned_quantity or 0) - Decimal(row.actual_quantity or 0), Decimal("0"))
+            for row in planned_material_rows
+        ),
+        Decimal("0"),
+    )
+    available_quantity = max(available_quantity - planned_quantity, Decimal("0"))
     in_transit = db.execute(
         select(
             func.coalesce(func.sum(PurchaseOrderItem.quantity), 0),

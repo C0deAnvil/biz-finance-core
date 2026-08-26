@@ -60,6 +60,7 @@ REPLENISHMENT_SOURCE_TYPES = {
     "raw_material_replenishment",
     "low_stock_replenishment",
     "fulfillment_demand",
+    "sales_order_material_replenishment",
 }
 
 
@@ -396,6 +397,17 @@ def _parse_low_stock_replenishment_payload(todo: TodoItem) -> dict:
         return {}
 
 
+def _parse_sales_order_material_replenishment_payload(todo: TodoItem) -> dict:
+    description = todo.description or ""
+    marker = "|sales_order_material_replenishment:"
+    if marker not in description:
+        return {}
+    try:
+        return json.loads(description.split(marker, 1)[1])
+    except (TypeError, ValueError):
+        return {}
+
+
 def _validate_purchase_order_replenishment_items(
     db: Session,
     *,
@@ -403,6 +415,39 @@ def _validate_purchase_order_replenishment_items(
     source_id: int,
     items,
 ) -> None:
+    if source_type == "sales_order_material_replenishment":
+        todos = db.execute(
+            select(TodoItem).where(
+                TodoItem.business_type == source_type,
+                TodoItem.business_id == source_id,
+                TodoItem.status != "completed",
+            )
+        ).scalars().all()
+        payload = next(
+            (
+                value
+                for value in (_parse_sales_order_material_replenishment_payload(todo) for todo in todos)
+                if value.get("items")
+            ),
+            {},
+        )
+        shortage_map = {
+            int(item["material_id"]): Decimal(str(item.get("shortage_quantity") or 0))
+            for item in payload.get("items", [])
+            if item.get("material_id")
+        }
+        provided_map = {}
+        for item in items:
+            if not item.material_id or item.material_id not in shortage_map:
+                continue
+            provided_map[item.material_id] = Decimal(item.quantity or 0)
+            if Decimal(item.quantity or 0) > shortage_map[item.material_id]:
+                raise HTTPException(status_code=409, detail="采购数量不能超过销售订单原料缺口")
+        missing_material_ids = set(shortage_map) - set(provided_map)
+        if missing_material_ids:
+            raise HTTPException(status_code=409, detail="采购订单必须一次性包含该销售订单原料需求中的全部原料")
+        return
+
     if source_type == "raw_material_replenishment":
         usage = db.execute(
             select(ProductionMaterialUsage).where(ProductionMaterialUsage.id == source_id)
@@ -478,6 +523,37 @@ def _load_purchase_replenishment_source(
             status_code=409,
             detail=f"该补货来源已关联采购订单 {existing_order.order_no}，不能重复创建采购订单",
         )
+
+    if source_type == "sales_order_material_replenishment":
+        pending_todos = db.execute(
+            select(TodoItem).where(
+                TodoItem.business_type == source_type,
+                TodoItem.business_id == source_id,
+                TodoItem.status != "completed",
+            )
+        ).scalars().all()
+        if not pending_todos:
+            raise HTTPException(status_code=409, detail="销售订单原料采购需求已处理")
+        _validate_purchase_order_replenishment_items(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+            items=items,
+        )
+        payload = next(
+            (
+                value
+                for value in (_parse_sales_order_material_replenishment_payload(todo) for todo in pending_todos)
+                if value.get("items")
+            ),
+            {},
+        )
+        return {
+            "source_type": source_type,
+            "source_id": source_id,
+            "pending_todos": pending_todos,
+            "payload": payload,
+        }
 
     if source_type == "raw_material_replenishment":
         usage = db.execute(
@@ -574,6 +650,27 @@ def _complete_purchase_replenishment_source(
 ) -> None:
     source_type = source["source_type"]
     source_id = source["source_id"]
+
+    if source_type == "sales_order_material_replenishment":
+        completed_todos = complete_todos(db, business_type=source_type, business_id=source_id)
+        payload = source.get("payload") or {}
+        order_no = payload.get("sales_order_no") or "销售订单"
+        create_notification(
+            db,
+            title="销售订单原料采购需求已转采购单",
+            content=f"{order_no} 的生产原料采购需求已转为采购订单 {order.order_no}。",
+            module="purchase",
+            recipient_user_ids=list(
+                dict.fromkeys(
+                    user_id
+                    for user_id in [current_user.id, *(todo.assigned_user_id for todo in completed_todos)]
+                    if user_id
+                )
+            ),
+            created_by_id=current_user.id,
+            category="success",
+        )
+        return
 
     if source_type == "raw_material_replenishment":
         completed_todos = complete_todos(db, business_type=source_type, business_id=source_id)

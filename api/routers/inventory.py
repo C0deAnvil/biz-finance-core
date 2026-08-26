@@ -46,6 +46,7 @@ from services.workflow import (
 )
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
+from services.sales_service import ensure_sales_order_fulfillment_demands
 
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -909,13 +910,65 @@ def mark_placement(
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.id == queue_id)).scalar_one_or_none()
     if queue is None:
         raise HTTPException(status_code=404, detail="置货队列不存在")
-    queue.placement_status = "placed" if payload.action == "placed" else queue.placement_status
+    if payload.action != "placed":
+        raise HTTPException(status_code=409, detail="置货操作只允许提交 placed")
+    order = db.execute(
+        select(SalesOrder)
+        .options(selectinload(SalesOrder.items).joinedload(SalesOrderItem.product))
+        .where(SalesOrder.id == queue.sales_order_id)
+    ).unique().scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="置货对应的客户订单不存在")
+
+    ensure_sales_order_fulfillment_demands(db, order, current_user)
+    shortage_rows = []
+    finished_warehouse_id = _finished_warehouse_id(db)
+    for item in order.items:
+        remaining_quantity = max(
+            Decimal(item.quantity or 0) - Decimal(item.shipped_quantity or 0),
+            Decimal("0"),
+        )
+        if remaining_quantity <= 0:
+            continue
+        inventory = db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == finished_warehouse_id,
+                Inventory.product_id == item.product_id,
+                Inventory.material_id.is_(None),
+            )
+        ).scalar_one_or_none()
+        available_quantity = max(
+            Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
+            if inventory is not None
+            else Decimal("0"),
+            Decimal("0"),
+        )
+        if available_quantity < remaining_quantity:
+            shortage_rows.append(
+                {
+                    "product_id": item.product_id,
+                    "product_name": _order_item_name(item),
+                    "required_quantity": float(remaining_quantity),
+                    "available_quantity": float(available_quantity),
+                    "shortage_quantity": float(remaining_quantity - available_quantity),
+                }
+            )
+    if shortage_rows:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "finished_product_stock_shortage",
+                "message": "成品库存不足，暂不能完成置货；已生成生产/采购处理需求",
+                "shortages": shortage_rows,
+            },
+        )
+
+    queue.placement_status = "placed"
     queue.placement_marked_by_id = current_user.id
     queue.placement_marked_at = now_local()
     if queue.placement_status == "placed":
         queue.placement_status = "hidden"
         complete_todos(db, business_type="sales_order_placement", business_id=queue.sales_order_id)
-        order = db.execute(select(SalesOrder).where(SalesOrder.id == queue.sales_order_id)).scalar_one_or_none()
         if order is not None and order.status == "pending_shipment":
             queue.shipment_status = "pending"
             inventory_user_ids = _role_user_ids(db, "inventory")

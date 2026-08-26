@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
@@ -57,6 +57,7 @@ from services.production_service import (
     convert_plan_to_task as convert_plan_to_task_service,
     create_plan as create_plan_service,
     create_task as create_task_service,
+    _max_producible_quantity_from_raw_stock,
     submit_material_request as submit_material_request_service,
     submit_special_requests as submit_special_requests_service,
     update_plan as update_plan_service,
@@ -884,7 +885,18 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
     )
     if current_user.role.code == "production":
         query = query.where(
-            (FulfillmentDemand.assigned_user_id == current_user.id) | FulfillmentDemand.assigned_user_id.is_(None)
+            or_(
+                FulfillmentDemand.assigned_user_id == current_user.id,
+                FulfillmentDemand.assigned_user_id.is_(None),
+                select(TodoItem.id)
+                .where(
+                    TodoItem.business_type == "fulfillment_demand",
+                    TodoItem.business_id == FulfillmentDemand.id,
+                    TodoItem.assigned_user_id == current_user.id,
+                    TodoItem.status != "completed",
+                )
+                .exists(),
+            )
         )
     rows = db.execute(query).unique().scalars().all()
     low_stock_rows = db.execute(
@@ -901,6 +913,10 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
         ).scalars().all()
     } if product_ids else {}
     pending_sales, purchase_in_transit = _expected_available_maps(db)
+    max_producible_map = {
+        row.id: _max_producible_quantity_from_raw_stock(db, product_id=row.product_id)[0]
+        for row in rows
+    }
     data = [
             {
                 "id": row.id,
@@ -912,6 +928,7 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
                 "product_id": row.product_id,
                 "product_name": row.product.name if row.product else None,
                 "shortage_quantity": float(row.shortage_quantity or 0),
+                "max_producible_quantity": float(max_producible_map.get(row.id, 0)),
                 "safety_stock_qty": float(row.product.safety_stock_qty or 0) if row.product else 0,
                 "expected_available_quantity": float(
                     (
@@ -1015,18 +1032,32 @@ def link_fulfillment_demand_task(
     row = db.execute(select(FulfillmentDemand).where(FulfillmentDemand.id == demand_id)).scalar_one_or_none()
     if row is None or row.fulfillment_mode != "production":
         raise HTTPException(status_code=404, detail="补货需求不存在")
-    if row.status != "pending":
-        raise HTTPException(status_code=409, detail="当前补货需求已处理")
     task = db.execute(select(ProductionTask).where(ProductionTask.id == task_id)).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="生产任务不存在")
     if task.created_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="仅可关联本人创建的生产任务")
+    if row.process_note and task.task_no in row.process_note:
+        return api_response(data={"id": row.id, "status": row.status})
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="当前补货需求已处理")
+    if task.product_id != row.product_id:
+        raise HTTPException(status_code=409, detail="生产任务产品与补货需求不一致")
+    if task.sales_order_id is None:
+        task.sales_order_id = row.sales_order_id
+        task.source_type = "sales_order"
+    if task.sales_order_id != row.sales_order_id:
+        raise HTTPException(status_code=409, detail="生产任务来源客户订单与补货需求不一致")
 
-    row.status = "converted"
     row.processed_by_id = current_user.id
-    row.process_note = f"已转生产任务 {task.task_no}"
-    complete_todos(db, business_type="fulfillment_demand", business_id=row.id)
+    remaining_quantity = max(Decimal(row.shortage_quantity or 0) - Decimal(task.planned_quantity or 0), Decimal("0"))
+    row.process_note = f"已转生产任务 {task.task_no}，本批 {float(task.planned_quantity or 0)}，剩余 {float(remaining_quantity)}。"
+    if remaining_quantity <= 0:
+        row.status = "converted"
+        complete_todos(db, business_type="fulfillment_demand", business_id=row.id)
+    else:
+        row.shortage_quantity = remaining_quantity
+        row.status = "pending"
     recipient_user_ids = [current_user.id]
     if row.sales_order and row.sales_order.sales_user_id:
         recipient_user_ids.append(row.sales_order.sales_user_id)

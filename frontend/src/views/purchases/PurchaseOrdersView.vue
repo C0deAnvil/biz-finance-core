@@ -432,13 +432,16 @@ function canConfirmPurchase(row) {
 async function applyFocus() {
   const focusType = String(route.query.focusType || '')
   const focusId = Number(route.query.focusId || 0)
-  if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment')) {
+  if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment' || focusType === 'sales_order_material_replenishment')) {
     const matchedDemand = fulfillmentDemands.value.find((item) => {
       if (focusType === 'raw_material_replenishment') {
         return (item.raw_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.raw_todo_id) === focusId || Number(item.usage_id) === focusId || String(item.id) === String(route.query.focusId || '')
       }
       if (focusType === 'low_stock_replenishment') {
         return (item.low_stock_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.low_stock_todo_id) === focusId || String(item.id) === `low-${focusId}`
+      }
+      if (focusType === 'sales_order_material_replenishment') {
+        return Number(item.replenishment_source_id) === focusId || Number(item.sales_material_todo_id) === focusId
       }
       return Number(item.id) === focusId
     })
@@ -601,6 +604,7 @@ async function handleOrderPaginationChange({ page, pageSize }) {
 
 function demandSourceLabel(row) {
   if (row?.source_type === 'low_stock_replenishment') return '安全库存补货'
+  if (row?.source_type === 'sales_order_material_replenishment') return '销售订单生产原料'
   return row?.demand_type === 'raw_material' ? '生产领料缺料' : '客户订单缺货'
 }
 
@@ -613,7 +617,34 @@ async function loadSettings() {
 async function loadSupplierOptionsForDemand(row) {
   demandSupplierOptions.value = []
   if (!row) return
-  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
+  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material'
+  if (row.demand_type === 'sales_order_raw_material' && row.source_items?.length) {
+    const optionLists = await Promise.all(
+      row.source_items
+        .filter((item) => item.material_id)
+        .map((item) => get(`/api/purchases/supplier-options?material_id=${item.material_id}`))
+    )
+    const commonSupplierIds = optionLists.reduce((common, options) => {
+      const ids = new Set((options || []).map((item) => item.supplier_id))
+      return common === null ? ids : new Set([...common].filter((id) => ids.has(id)))
+    }, null)
+    const firstOptions = optionLists[0] || []
+    demandSupplierOptions.value = firstOptions
+      .filter((item) => commonSupplierIds?.has(item.supplier_id))
+      .map((item) => ({
+        id: item.supplier_id,
+        name: item.supplier_name,
+        latest_price: item.latest_price,
+        latest_order_no: item.latest_order_no
+      }))
+    if (demandSupplierOptions.value.length) {
+      form.supplier_id = demandSupplierOptions.value[0].id
+      await loadSupplierCatalog(form.supplier_id)
+      await loadSupplierAi(form.supplier_id)
+      form.items.forEach((item) => handlePurchaseItemSelect(item))
+    }
+    return
+  }
   const query = isRawDemand ? `material_id=${row.material_id}` : `product_id=${row.product_id}`
   if ((!isRawDemand && !row.product_id) || (isRawDemand && !row.material_id)) return
   const options = await get(`/api/purchases/supplier-options?${query}`)
@@ -640,14 +671,17 @@ async function prefillDemand(row) {
   if (!row) return
   resetForm()
   activeDemand.value = row
-  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
+  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material'
   const isLowStockDemand = row.demand_type === 'low_stock_product' || row.demand_type === 'low_stock_material'
-  form.items = [{
+  const sourceItems = row.demand_type === 'sales_order_raw_material' && row.source_items?.length
+    ? row.source_items
+    : [row]
+  form.items = sourceItems.map((item) => ({
     type: isRawDemand ? 'material' : 'product',
-    target_id: isRawDemand ? row.material_id : row.product_id,
-    quantity: Number(row.shortage_quantity || 1),
+    target_id: isRawDemand ? item.material_id : item.product_id,
+    quantity: Number(item.shortage_quantity || 1),
     unit_price: 0
-  }]
+  }))
   form.fulfillment_demand_id = (isRawDemand || isLowStockDemand) ? null : row.id
   await loadSupplierOptionsForDemand(row)
   demandDetailVisible.value = false
@@ -686,14 +720,18 @@ async function submit() {
     supplier_id: form.supplier_id,
     operator_user_id: form.operator_user_id || auth.user?.id,
     payment_type: form.payment_type,
-    replenishment_source_type: activeDemand.value?.demand_type === 'raw_material'
+    replenishment_source_type: activeDemand.value?.source_type === 'sales_order_material_replenishment'
+      ? 'sales_order_material_replenishment'
+      : activeDemand.value?.demand_type === 'raw_material'
       ? 'raw_material_replenishment'
       : activeDemand.value?.low_stock_todo_id
         ? 'low_stock_replenishment'
         : form.fulfillment_demand_id
           ? 'fulfillment_demand'
           : null,
-    replenishment_source_id: activeDemand.value?.demand_type === 'raw_material'
+    replenishment_source_id: activeDemand.value?.source_type === 'sales_order_material_replenishment'
+      ? activeDemand.value.replenishment_source_id
+      : activeDemand.value?.demand_type === 'raw_material'
       ? activeDemand.value.usage_id
       : activeDemand.value?.low_stock_todo_id
         ? activeDemand.value.replenishment_source_id

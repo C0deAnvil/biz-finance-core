@@ -518,6 +518,11 @@ function rowClassName({ row }) {
   return row.id === focusedTaskId.value ? 'focused-row' : ''
 }
 
+function canCreateDemandTask(row) {
+  if (row?.max_producible_quantity === undefined || row?.max_producible_quantity === null) return true
+  return Number(row.max_producible_quantity) > 0
+}
+
 async function applyFocusFromRoute() {
   const focusType = String(route.query.focusType || '')
   const focusId = Number(route.query.focusId || 0)
@@ -594,9 +599,7 @@ async function createTask() {
       reason: item.reason
     }))
   })
-  if (createForm.fulfillment_demand_id) {
-    await post(`/api/production/fulfillment-demands/${createForm.fulfillment_demand_id}/link-task/${result.id}`)
-  } else if (activeDemand.value?.low_stock_todo_id) {
+  if (activeDemand.value?.low_stock_todo_id) {
     await post(`/api/dashboard/todos/${activeDemand.value.low_stock_todo_id}/done`)
   }
   ElMessage.success('生产任务已创建')
@@ -612,9 +615,19 @@ async function createTask() {
 
 function prefillDemand(row) {
   resetCreateForm()
+  if (!canCreateDemandTask(row)) {
+    ElMessage.warning('当前原料库存暂时无法支持生产，请先处理采购补货待办')
+    return
+  }
   activeDemand.value = row
+  createForm.source_type = row.sales_order_id ? 'sales_order' : 'manual'
+  createForm.sales_order_id = row.sales_order_id || null
   createForm.product_id = row.product_id
-  createForm.planned_quantity = Number(row.shortage_quantity || 1)
+  const shortageQuantity = Number(row.shortage_quantity || 1)
+  const maxProducibleQuantity = row.max_producible_quantity === undefined
+    ? shortageQuantity
+    : Number(row.max_producible_quantity || 0)
+  createForm.planned_quantity = Math.min(shortageQuantity, maxProducibleQuantity)
   createForm.fulfillment_demand_id = row.source_type === 'low_stock_replenishment' ? null : row.id
   buildCreateMaterialUsages()
   createVisible.value = true

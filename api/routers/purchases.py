@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
@@ -677,7 +677,18 @@ def list_purchase_fulfillment_demands(
         scoped_user_ids = get_scoped_user_ids(db, current_user, "purchase")
         if scoped_user_ids is not None:
             query = query.where(
-                (FulfillmentDemand.assigned_user_id.in_(scoped_user_ids or [-1])) | FulfillmentDemand.assigned_user_id.is_(None)
+                or_(
+                    FulfillmentDemand.assigned_user_id.in_(scoped_user_ids or [-1]),
+                    FulfillmentDemand.assigned_user_id.is_(None),
+                    select(TodoItem.id)
+                    .where(
+                        TodoItem.business_type == "fulfillment_demand",
+                        TodoItem.business_id == FulfillmentDemand.id,
+                        TodoItem.assigned_user_id.in_(scoped_user_ids or [-1]),
+                        TodoItem.status != "completed",
+                    )
+                    .exists(),
+                )
             )
     rows = db.execute(query).unique().scalars().all()
     raw_warehouse = get_raw_warehouse(db)
@@ -804,6 +815,62 @@ def list_purchase_fulfillment_demands(
                 "created_at": todo.created_at.isoformat() if todo.created_at else None,
             }
         )
+    sales_material_rows = db.execute(
+        select(TodoItem).where(
+            TodoItem.business_type == "sales_order_material_replenishment",
+            TodoItem.module == "purchase",
+            TodoItem.status != "completed",
+        ).order_by(TodoItem.created_at.desc(), TodoItem.id.desc())
+    ).scalars().all()
+    sales_material_demands = []
+    for todo in sales_material_rows:
+        raw_description = todo.description or ""
+        payload = {}
+        marker = "|sales_order_material_replenishment:"
+        if marker in raw_description:
+            try:
+                payload = json.loads(raw_description.split(marker, 1)[1])
+            except Exception:
+                payload = {}
+        for item in payload.get("items", []):
+            sales_material_demands.append(
+                {
+                    "id": f"sales-raw-{todo.id}-{item.get('material_id')}",
+                    "sales_material_todo_id": todo.id,
+                    "replenishment_source_id": todo.business_id,
+                    "demand_no": payload.get("fulfillment_demand_no") or f"XS-YL-{todo.id}",
+                    "demand_type": "sales_order_raw_material",
+                    "source_type": "sales_order_material_replenishment",
+                    "sales_order_id": payload.get("sales_order_id"),
+                    "sales_order_no": payload.get("sales_order_no"),
+                    "production_task_id": None,
+                    "production_task_no": None,
+                    "production_product_name": None,
+                    "product_id": None,
+                    "product_name": None,
+                    "material_id": item.get("material_id"),
+                    "material_name": item.get("material_name"),
+                    "material_code": None,
+                    "item_name": item.get("material_name"),
+                    "shortage_quantity": float(item.get("shortage_quantity") or 0),
+                    "source_items": [
+                        {
+                            "material_id": source_item.get("material_id"),
+                            "material_name": source_item.get("material_name"),
+                            "shortage_quantity": float(source_item.get("shortage_quantity") or 0),
+                        }
+                        for source_item in payload.get("items", [])
+                    ],
+                    "safety_stock_qty": 0,
+                    "expected_available_quantity": float(item.get("expected_available_quantity") or 0),
+                    "status": "pending",
+                    "status_label": "待处理",
+                    "assigned_user_id": todo.assigned_user_id,
+                    "process_note": raw_description.split(marker, 1)[0],
+                    "cancel_reason": None,
+                    "created_at": todo.created_at.isoformat() if todo.created_at else None,
+                }
+            )
     return api_response(
         data=[
             {
@@ -840,7 +907,7 @@ def list_purchase_fulfillment_demands(
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
             for row in rows
-        ] + raw_demands + low_stock_demands
+        ] + raw_demands + sales_material_demands + low_stock_demands
     )
 
 

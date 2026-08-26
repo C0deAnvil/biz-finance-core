@@ -27,6 +27,7 @@ class MaterialUsageInput(BaseModel):
 class ProductionTaskCreate(BaseModel):
     source_type: str = "manual"
     sales_order_id: int | None = None
+    fulfillment_demand_id: int | None = None
     product_id: int
     planned_quantity: Decimal = Field(..., gt=0)
     fluctuation_ratio: Decimal = 0

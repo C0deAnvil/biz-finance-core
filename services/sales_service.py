@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from models import (
+    BOM,
     Customer,
     Inventory,
     InventoryDispatchQueue,
@@ -26,15 +27,16 @@ from models import (
     SalesReceiptRequest,
     SalesReturn,
     SalesReturnItem,
+    TodoItem,
     User,
     Warehouse,
 )
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
-from services.replenishment_service import create_sales_shortage_demand
+from services.replenishment_service import create_sales_shortage_demand, material_expected_available_quantity
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
 from services.time_utils import now_local
@@ -356,10 +358,21 @@ def _route_order_to_inventory_shipment(db: Session, *, order: SalesOrder, curren
     order.status = "pending_shipment"
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)).scalar_one_or_none()
     if queue is None:
-        queue = InventoryDispatchQueue(sales_order_id=order.id, placement_status="pending", shipment_status="pending")
+        queue = InventoryDispatchQueue(
+            sales_order_id=order.id,
+            placement_status="pending",
+            shipment_status="waiting_approval",
+        )
         db.add(queue)
-    if queue is not None:
-        queue.shipment_status = "pending" if queue.placement_status == "hidden" else "waiting_approval"
+        db.flush()
+    _create_fulfillment_demands(db, order=order, current_user=current_user)
+    if queue.placement_status != "hidden":
+        queue.placement_status = "pending"
+        queue.shipment_status = "waiting_approval"
+        complete_todos(db, business_type="sales_order", business_id=order.id)
+        _create_inventory_placement_todos(db, order=order)
+    else:
+        queue.shipment_status = "pending"
     inventory_user_ids = _role_user_ids(db, "inventory")
     if queue.placement_status == "hidden":
         existing_todo_user_ids = {
@@ -394,6 +407,16 @@ def _route_order_to_inventory_shipment(db: Session, *, order: SalesOrder, curren
         created_by_id=current_user.id,
         category="info",
     )
+
+
+def route_sales_order_to_inventory_shipment(db: Session, order: SalesOrder, current_user: User) -> None:
+    """统一销售订单放行入口，财务和销售审批必须复用此流程。"""
+    _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
+
+
+def ensure_sales_order_fulfillment_demands(db: Session, order: SalesOrder, current_user: User) -> list[dict]:
+    """Refresh production/purchase demands without changing the order approval state."""
+    return _create_fulfillment_demands(db, order=order, current_user=current_user)
 
 
 def _build_split_items(db: Session, payload_items) -> tuple[list[dict], list[dict]]:
@@ -461,15 +484,49 @@ def _create_fulfillment_demands(
     created_demands: list[dict] = []
     for item in order.items:
         available_quantity = inventory_map.get(item.product_id, Decimal("0"))
+        remaining_order_quantity = max(
+            Decimal(item.quantity or 0) - Decimal(item.shipped_quantity or 0),
+            Decimal("0"),
+        )
         shortage_quantity = (
             Decimal(shortage_override.get(item.product_id, Decimal("0")))
             if shortage_override is not None
-            else max(Decimal(item.quantity or 0) - available_quantity, Decimal("0"))
+            else max(remaining_order_quantity - available_quantity, Decimal("0"))
         )
         if shortage_quantity <= 0:
             continue
         product = item.product
         if product is None:
+            continue
+        existing_demand = db.execute(
+            select(FulfillmentDemand)
+            .where(
+                FulfillmentDemand.sales_order_item_id == item.id,
+                FulfillmentDemand.status.in_(["pending", "converted"]),
+            )
+            .order_by(FulfillmentDemand.id.desc())
+        ).scalars().first()
+        if existing_demand is not None:
+            if existing_demand.status == "pending" and not existing_demand.process_note:
+                existing_demand.shortage_quantity = shortage_quantity
+                if existing_demand.fulfillment_mode == "production":
+                    _ensure_sales_order_material_replenishment_todos(
+                        db,
+                        order=order,
+                        demand=existing_demand,
+                        current_user=current_user,
+                    )
+            created_demands.append(
+                {
+                    "id": existing_demand.id,
+                    "demand_no": existing_demand.demand_no,
+                    "product_id": item.product_id,
+                    "product_name": product.name,
+                    "fulfillment_mode": existing_demand.fulfillment_mode,
+                    "fulfillment_mode_label": "采购" if existing_demand.fulfillment_mode == "trade" else "生产",
+                    "shortage_quantity": float(existing_demand.shortage_quantity or shortage_quantity),
+                }
+            )
             continue
         demand = create_sales_shortage_demand(
             db,
@@ -480,6 +537,13 @@ def _create_fulfillment_demands(
             current_user=current_user,
         )
         if demand is not None:
+            if demand.fulfillment_mode == "production":
+                _ensure_sales_order_material_replenishment_todos(
+                    db,
+                    order=order,
+                    demand=demand,
+                    current_user=current_user,
+                )
             created_demands.append(
                 {
                     "id": demand.id,
@@ -492,6 +556,133 @@ def _create_fulfillment_demands(
                 }
             )
     return created_demands
+
+
+def _ensure_sales_order_material_replenishment_todos(
+    db: Session,
+    *,
+    order: SalesOrder,
+    demand: FulfillmentDemand,
+    current_user: User,
+) -> None:
+    """为生产补货需求创建幂等的原料采购待办。"""
+    if demand.fulfillment_mode != "production":
+        return
+    bom = db.execute(
+        select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == demand.product_id)
+    ).unique().scalar_one_or_none()
+    if bom is None or not bom.items:
+        return
+    raw_warehouse = db.execute(
+        select(Warehouse).where(Warehouse.warehouse_type == "raw")
+    ).scalar_one_or_none()
+    if raw_warehouse is None:
+        return
+
+    material_ids = [item.material_id for item in bom.items]
+    inventory_rows = db.execute(
+        select(Inventory).where(
+            Inventory.warehouse_id == raw_warehouse.id,
+            Inventory.material_id.in_(material_ids or [-1]),
+            Inventory.product_id.is_(None),
+        )
+    ).scalars().all()
+    inventory_map = {row.material_id: row for row in inventory_rows}
+    shortage_items: list[dict] = []
+    demand_quantity = Decimal(demand.shortage_quantity or 0)
+    for bom_item in bom.items:
+        required_quantity = demand_quantity * Decimal(bom_item.standard_quantity or 0)
+        inventory = inventory_map.get(bom_item.material_id)
+        expected_available = material_expected_available_quantity(
+            db,
+            material_id=bom_item.material_id,
+            inventory=inventory,
+        )
+        shortage_quantity = max(required_quantity - expected_available, Decimal("0"))
+        if shortage_quantity <= 0:
+            continue
+        material_name = f"原料#{bom_item.material_id}"
+        if inventory is not None and inventory.material is not None:
+            material_name = inventory.material.name
+        else:
+            from models import Material
+
+            material = db.execute(select(Material).where(Material.id == bom_item.material_id)).scalar_one_or_none()
+            if material is not None:
+                material_name = material.name
+        shortage_items.append(
+            {
+                "material_id": bom_item.material_id,
+                "material_name": material_name,
+                "required_quantity": float(required_quantity),
+                "expected_available_quantity": float(expected_available),
+                "shortage_quantity": float(shortage_quantity),
+            }
+        )
+
+    business_type = "sales_order_material_replenishment"
+    pending_todos = db.execute(
+        select(TodoItem).where(
+            TodoItem.business_type == business_type,
+            TodoItem.business_id == demand.id,
+            TodoItem.status != "completed",
+        )
+    ).scalars().all()
+    if not shortage_items:
+        for todo in pending_todos:
+            todo.status = "completed"
+            todo.completed_at = now_local()
+        return
+
+    import json
+
+    purchase_user_ids = resolve_workflow_recipients(
+        db,
+        "purchase",
+        workflow=business_type,
+        business_type=business_type,
+        business_id=demand.id,
+    )
+    payload = {
+        "sales_order_id": order.id,
+        "sales_order_no": order.order_no,
+        "fulfillment_demand_id": demand.id,
+        "fulfillment_demand_no": demand.demand_no,
+        "product_id": demand.product_id,
+        "production_quantity": float(demand_quantity),
+        "items": shortage_items,
+    }
+    description = (
+        f"客户订单 {order.order_no} 的生产补货需求 {demand.demand_no} 存在原料缺口，"
+        f"共 {len(shortage_items)} 种原料，请采购人员按上游需求处理。"
+        f"|sales_order_material_replenishment:{json.dumps(payload, ensure_ascii=False)}"
+    )
+    for user_id in purchase_user_ids:
+        todo = next((row for row in pending_todos if row.assigned_user_id == user_id), None)
+        if todo is None:
+            create_todo(
+                db,
+                title=f"待采购生产原料 {order.order_no}",
+                description=description,
+                module="purchase",
+                assigned_user_id=user_id,
+                business_type=business_type,
+                business_id=demand.id,
+                priority="high",
+            )
+        else:
+            todo.title = f"待采购生产原料 {order.order_no}"
+            todo.description = description
+    if purchase_user_ids:
+        ensure_notification(
+            db,
+            title="销售订单已生成原料采购需求",
+            content=f"客户订单 {order.order_no} 的生产需求 {demand.demand_no} 存在原料缺口，已通知采购人员。",
+            module="purchase",
+            recipient_user_ids=purchase_user_ids,
+            created_by_id=current_user.id,
+            category="warning",
+        )
 
 
 def _create_child_split_order(
@@ -751,7 +942,14 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         order.approved_by_id = current_user.id
         order.approved_at = now_local()
         order.rejection_reason = None
-        queue.shipment_status = "pending" if queue.placement_status == "hidden" else "waiting_approval"
+        _create_fulfillment_demands(db, order=order, current_user=current_user)
+        if queue.placement_status == "hidden":
+            queue.shipment_status = "pending"
+        else:
+            queue.placement_status = "pending"
+            queue.shipment_status = "waiting_approval"
+            complete_todos(db, business_type="sales_order", business_id=order.id)
+            _create_inventory_placement_todos(db, order=order)
 
         if actual_amount > 0:
             db.add(
