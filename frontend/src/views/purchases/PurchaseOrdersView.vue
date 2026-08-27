@@ -432,7 +432,7 @@ function canConfirmPurchase(row) {
 async function applyFocus() {
   const focusType = String(route.query.focusType || '')
   const focusId = Number(route.query.focusId || 0)
-  if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment' || focusType === 'sales_order_material_replenishment')) {
+  if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment' || focusType === 'sales_order_material_replenishment' || focusType === 'low_stock_product_material_replenishment')) {
     const matchedDemand = fulfillmentDemands.value.find((item) => {
       if (focusType === 'raw_material_replenishment') {
         return (item.raw_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.raw_todo_id) === focusId || Number(item.usage_id) === focusId || String(item.id) === String(route.query.focusId || '')
@@ -440,7 +440,7 @@ async function applyFocus() {
       if (focusType === 'low_stock_replenishment') {
         return (item.low_stock_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.low_stock_todo_id) === focusId || String(item.id) === `low-${focusId}`
       }
-      if (focusType === 'sales_order_material_replenishment') {
+      if (focusType === 'sales_order_material_replenishment' || focusType === 'low_stock_product_material_replenishment') {
         return Number(item.replenishment_source_id) === focusId || Number(item.sales_material_todo_id) === focusId
       }
       return Number(item.id) === focusId
@@ -605,6 +605,7 @@ async function handleOrderPaginationChange({ page, pageSize }) {
 function demandSourceLabel(row) {
   if (row?.source_type === 'low_stock_replenishment') return '安全库存补货'
   if (row?.source_type === 'sales_order_material_replenishment') return '销售订单生产原料'
+  if (row?.source_type === 'low_stock_product_material_replenishment') return '安全库存生产原料'
   return row?.demand_type === 'raw_material' ? '生产领料缺料' : '客户订单缺货'
 }
 
@@ -617,8 +618,8 @@ async function loadSettings() {
 async function loadSupplierOptionsForDemand(row) {
   demandSupplierOptions.value = []
   if (!row) return
-  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material'
-  if (row.demand_type === 'sales_order_raw_material' && row.source_items?.length) {
+  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material'
+  if ((row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length) {
     const optionLists = await Promise.all(
       row.source_items
         .filter((item) => item.material_id)
@@ -671,9 +672,9 @@ async function prefillDemand(row) {
   if (!row) return
   resetForm()
   activeDemand.value = row
-  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material'
+  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material'
   const isLowStockDemand = row.demand_type === 'low_stock_product' || row.demand_type === 'low_stock_material'
-  const sourceItems = row.demand_type === 'sales_order_raw_material' && row.source_items?.length
+  const sourceItems = (row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length
     ? row.source_items
     : [row]
   form.items = sourceItems.map((item) => ({
@@ -720,8 +721,8 @@ async function submit() {
     supplier_id: form.supplier_id,
     operator_user_id: form.operator_user_id || auth.user?.id,
     payment_type: form.payment_type,
-    replenishment_source_type: activeDemand.value?.source_type === 'sales_order_material_replenishment'
-      ? 'sales_order_material_replenishment'
+    replenishment_source_type: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
+      ? activeDemand.value.source_type
       : activeDemand.value?.demand_type === 'raw_material'
       ? 'raw_material_replenishment'
       : activeDemand.value?.low_stock_todo_id
@@ -729,7 +730,7 @@ async function submit() {
         : form.fulfillment_demand_id
           ? 'fulfillment_demand'
           : null,
-    replenishment_source_id: activeDemand.value?.source_type === 'sales_order_material_replenishment'
+    replenishment_source_id: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
       ? activeDemand.value.replenishment_source_id
       : activeDemand.value?.demand_type === 'raw_material'
       ? activeDemand.value.usage_id

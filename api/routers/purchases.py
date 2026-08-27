@@ -42,6 +42,7 @@ from services.purchase_service import (
 from services.core import complete_todos, create_notification, sync_low_stock_alerts, write_operation_log
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.workflow import purchase_arrival_status, purchase_flow_steps
+from services.workflow_repair import repair_fulfillment_demand_workflows
 from services.time_utils import now_local
 
 
@@ -666,6 +667,7 @@ def list_purchase_fulfillment_demands(
     db: Session = Depends(get_db),
 ):
     sync_low_stock_alerts(db)
+    repair_fulfillment_demand_workflows(db)
     db.commit()
     query = (
         select(FulfillmentDemand)
@@ -817,7 +819,12 @@ def list_purchase_fulfillment_demands(
         )
     sales_material_rows = db.execute(
         select(TodoItem).where(
-            TodoItem.business_type == "sales_order_material_replenishment",
+            TodoItem.business_type.in_(
+                [
+                    "sales_order_material_replenishment",
+                    "low_stock_product_material_replenishment",
+                ]
+            ),
             TodoItem.module == "purchase",
             TodoItem.status != "completed",
         ).order_by(TodoItem.created_at.desc(), TodoItem.id.desc())
@@ -838,16 +845,20 @@ def list_purchase_fulfillment_demands(
                     "id": f"sales-raw-{todo.id}-{item.get('material_id')}",
                     "sales_material_todo_id": todo.id,
                     "replenishment_source_id": todo.business_id,
-                    "demand_no": payload.get("fulfillment_demand_no") or f"XS-YL-{todo.id}",
-                    "demand_type": "sales_order_raw_material",
-                    "source_type": "sales_order_material_replenishment",
+                    "demand_no": payload.get("fulfillment_demand_no") or f"YL-{todo.id}",
+                    "demand_type": (
+                        "low_stock_product_raw_material"
+                        if todo.business_type == "low_stock_product_material_replenishment"
+                        else "sales_order_raw_material"
+                    ),
+                    "source_type": todo.business_type,
                     "sales_order_id": payload.get("sales_order_id"),
-                    "sales_order_no": payload.get("sales_order_no"),
+                    "sales_order_no": payload.get("sales_order_no") or payload.get("source_no"),
                     "production_task_id": None,
                     "production_task_no": None,
-                    "production_product_name": None,
+                    "production_product_name": payload.get("product_name"),
                     "product_id": None,
-                    "product_name": None,
+                    "product_name": payload.get("product_name"),
                     "material_id": item.get("material_id"),
                     "material_name": item.get("material_name"),
                     "material_code": None,

@@ -4,10 +4,11 @@ import json
 from decimal import Decimal
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from models import FulfillmentDemand, Inventory, Material, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderItem, Role, SalesOrder, SalesOrderItem, TodoItem, User
-from services.core import create_notification, create_todo, next_business_no, write_operation_log
+from models import BOM, FulfillmentDemand, Inventory, Material, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderItem, Role, SalesOrder, SalesOrderItem, TodoItem, User, Warehouse
+from services.core import create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.request_trace import emit
 
 
 def role_user_ids(db: Session, *role_codes: str) -> list[int]:
@@ -19,6 +20,84 @@ def role_user_ids(db: Session, *role_codes: str) -> list[int]:
             select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
         ).scalars().all()
     ]
+
+
+def ensure_fulfillment_demand_routing(
+    db: Session,
+    *,
+    demand: FulfillmentDemand,
+    order: SalesOrder | None = None,
+    product: Product | None = None,
+    current_user: User | None = None,
+) -> list[int]:
+    """Ensure an existing shortage demand has active owner todos."""
+    if demand.status != "pending":
+        return []
+    order = order or demand.sales_order
+    product = product or demand.product
+    assigned_role = "purchase" if demand.fulfillment_mode == "trade" else "production"
+    recipient_ids = resolve_workflow_recipients(
+        db,
+        assigned_role,
+        workflow="fulfillment_demand",
+        business_type="fulfillment_demand",
+        business_id=demand.id,
+    )
+    if recipient_ids and demand.assigned_user_id not in recipient_ids:
+        demand.assigned_user_id = recipient_ids[0]
+
+    order_no = order.order_no if order else (demand.source_order_no or str(demand.sales_order_id))
+    product_name = product.name if product else str(demand.product_id)
+    action_label = "创建采购单" if demand.fulfillment_mode == "trade" else "创建生产任务"
+    title = f"待处理补货需求 {demand.demand_no}"
+    description = (
+        f"客户订单 {order_no} 的产品 {product_name} 缺口 {float(demand.shortage_quantity or 0)}，"
+        f"请{action_label}或填写取消原因。"
+    )
+    for user_id in recipient_ids:
+        todo = create_todo(
+            db,
+            title=title,
+            description=description,
+            module=assigned_role,
+            assigned_user_id=user_id,
+            business_type="fulfillment_demand",
+            business_id=demand.id,
+            priority="high",
+        )
+        todo.title = title
+        todo.description = description
+        todo.module = assigned_role
+        todo.priority = "high"
+
+    notification_user_ids = list(
+        dict.fromkeys([
+            *recipient_ids,
+            order.sales_user_id if order and order.sales_user_id else None,
+        ])
+    )
+    ensure_notification(
+        db,
+        title="新增履约补货需求",
+        content=(
+            f"客户订单 {order_no} 的产品 {product_name} 库存不足，"
+            f"已生成{'采购' if demand.fulfillment_mode == 'trade' else '生产'}待办。"
+        ),
+        module=assigned_role,
+        recipient_user_ids=notification_user_ids,
+        created_by_id=current_user.id if current_user else None,
+        category="warning",
+    )
+    emit(
+        "fulfillment_demand_routing_synced",
+        demand_id=demand.id,
+        demand_no=demand.demand_no,
+        sales_order_id=demand.sales_order_id,
+        fulfillment_mode=demand.fulfillment_mode,
+        assigned_user_id=demand.assigned_user_id,
+        recipient_user_ids=recipient_ids,
+    )
+    return recipient_ids
 
 
 def product_expected_available_quantity(db: Session, *, product_id: int, inventory: Inventory | None = None) -> Decimal:
@@ -107,7 +186,6 @@ def create_sales_shortage_demand(
         return None
     fulfillment_mode = product.fulfillment_mode if product else "production"
     assigned_role = "purchase" if fulfillment_mode == "trade" else "production"
-    assigned_user_ids = role_user_ids(db, assigned_role)
     demand = FulfillmentDemand(
         demand_no=next_business_no(db, "BH"),
         sales_order_id=order.id,
@@ -116,36 +194,17 @@ def create_sales_shortage_demand(
         fulfillment_mode=fulfillment_mode,
         shortage_quantity=shortage_quantity,
         status="pending",
-        assigned_user_id=assigned_user_ids[0] if assigned_user_ids else None,
+        assigned_user_id=None,
         source_order_no=order.order_no,
     )
     db.add(demand)
     db.flush()
-    for user_id in assigned_user_ids:
-        create_todo(
-            db,
-            title=f"待处理补货需求 {demand.demand_no}",
-            description=(
-                f"客户订单 {order.order_no} 的产品 {product.name if product else order_item.product_id} 缺口 {float(shortage_quantity)}，"
-                f"请{'创建采购单' if fulfillment_mode == 'trade' else '创建生产任务'}或填写取消原因。"
-            ),
-            module=assigned_role,
-            assigned_user_id=user_id,
-            business_type="fulfillment_demand",
-            business_id=demand.id,
-            priority="high",
-        )
-    create_notification(
+    ensure_fulfillment_demand_routing(
         db,
-        title="新增履约补货需求",
-        content=(
-            f"客户订单 {order.order_no} 的产品 {product.name if product else order_item.product_id} 库存不足，"
-            f"已生成{'采购' if fulfillment_mode == 'trade' else '生产'}待办。"
-        ),
-        module=assigned_role,
-        recipient_user_ids=list(dict.fromkeys([*assigned_user_ids, order.sales_user_id])),
-        created_by_id=current_user.id,
-        category="warning",
+        demand=demand,
+        order=order,
+        product=product,
+        current_user=current_user,
     )
     write_operation_log(
         db,
@@ -160,6 +219,157 @@ def create_sales_shortage_demand(
         },
     )
     return demand
+
+
+def _sync_low_stock_product_material_replenishment(
+    db: Session,
+    *,
+    inventory: Inventory,
+    product: Product,
+    production_quantity: Decimal,
+) -> None:
+    """Create purchase todos for raw materials needed by product low-stock production."""
+    business_type = "low_stock_product_material_replenishment"
+    pending_todos = db.execute(
+        select(TodoItem).where(
+            TodoItem.business_type == business_type,
+            TodoItem.business_id == inventory.id,
+            TodoItem.status != "completed",
+        )
+    ).scalars().all()
+    if production_quantity <= 0:
+        for todo in pending_todos:
+            todo.status = "completed"
+        return
+
+    bom = db.execute(
+        select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == product.id)
+    ).unique().scalar_one_or_none()
+    if bom is None or not bom.items:
+        emit(
+            "low_stock_product_material_replenishment_skipped",
+            reason="missing_bom",
+            inventory_id=inventory.id,
+            product_id=product.id,
+            production_quantity=float(production_quantity),
+        )
+        return
+    raw_warehouse = db.execute(
+        select(Warehouse).where(Warehouse.warehouse_type == "raw").order_by(Warehouse.id.asc())
+    ).scalars().first()
+    if raw_warehouse is None:
+        emit(
+            "low_stock_product_material_replenishment_skipped",
+            reason="missing_raw_warehouse",
+            inventory_id=inventory.id,
+            product_id=product.id,
+            production_quantity=float(production_quantity),
+        )
+        return
+
+    material_ids = [item.material_id for item in bom.items]
+    inventory_rows = db.execute(
+        select(Inventory).where(
+            Inventory.warehouse_id == raw_warehouse.id,
+            Inventory.material_id.in_(material_ids or [-1]),
+            Inventory.product_id.is_(None),
+        )
+    ).scalars().all()
+    inventory_map = {row.material_id: row for row in inventory_rows}
+    material_map = {
+        row.id: row
+        for row in db.execute(select(Material).where(Material.id.in_(material_ids or [-1]))).scalars().all()
+    }
+    shortage_items: list[dict] = []
+    for bom_item in bom.items:
+        required_quantity = production_quantity * Decimal(bom_item.standard_quantity or 0)
+        inventory_row = inventory_map.get(bom_item.material_id)
+        expected_available = material_expected_available_quantity(
+            db,
+            material_id=bom_item.material_id,
+            inventory=inventory_row,
+        )
+        shortage_quantity = max(required_quantity - expected_available, Decimal("0"))
+        if shortage_quantity <= 0:
+            continue
+        material = material_map.get(bom_item.material_id)
+        shortage_items.append(
+            {
+                "material_id": bom_item.material_id,
+                "material_name": material.name if material else f"原料#{bom_item.material_id}",
+                "required_quantity": float(required_quantity),
+                "expected_available_quantity": float(expected_available),
+                "shortage_quantity": float(shortage_quantity),
+            }
+        )
+
+    if not shortage_items:
+        for todo in pending_todos:
+            todo.status = "completed"
+        emit(
+            "low_stock_product_material_replenishment_skipped",
+            reason="no_material_shortage",
+            inventory_id=inventory.id,
+            product_id=product.id,
+            production_quantity=float(production_quantity),
+        )
+        return
+
+    purchase_user_ids = resolve_workflow_recipients(
+        db,
+        "purchase",
+        workflow=business_type,
+        business_type=business_type,
+        business_id=inventory.id,
+    )
+    payload = {
+        "source_no": f"安全库存-{product.product_code or product.id}",
+        "inventory_id": inventory.id,
+        "product_id": product.id,
+        "product_name": product.name,
+        "production_quantity": float(production_quantity),
+        "items": shortage_items,
+    }
+    description = (
+        f"产品 {product.name} 安全库存补货生产需求存在原料缺口，"
+        f"共 {len(shortage_items)} 种原料，请采购人员处理。"
+        f"|sales_order_material_replenishment:{json.dumps(payload, ensure_ascii=False)}"
+    )
+    existing_user_ids = {todo.assigned_user_id for todo in pending_todos}
+    new_user_ids = [user_id for user_id in purchase_user_ids if user_id not in existing_user_ids]
+    for user_id in purchase_user_ids:
+        todo = create_todo(
+            db,
+            title=f"待采购安全库存生产原料 {product.name}",
+            description=description,
+            module="purchase",
+            assigned_user_id=user_id,
+            business_type=business_type,
+            business_id=inventory.id,
+            priority="high",
+        )
+        todo.title = f"待采购安全库存生产原料 {product.name}"
+        todo.description = description
+        todo.module = "purchase"
+        todo.priority = "high"
+    if new_user_ids:
+        ensure_notification(
+            db,
+            title="安全库存成品生产原料采购需求",
+            content=f"产品 {product.name} 的安全库存生产补货存在原料缺口，已通知采购处理。",
+            module="purchase",
+            recipient_user_ids=new_user_ids,
+            category="warning",
+        )
+    emit(
+        "low_stock_product_material_replenishment_synced",
+        inventory_id=inventory.id,
+        product_id=product.id,
+        production_quantity=float(production_quantity),
+        material_ids=[item["material_id"] for item in shortage_items],
+        recipient_user_ids=purchase_user_ids,
+        new_recipient_user_ids=new_user_ids,
+    )
 
 
 def sync_product_low_stock_replenishment(
@@ -199,15 +409,30 @@ def sync_product_low_stock_replenishment(
             )
         for todo in pending_todos:
             todo.status = "completed"
+        if product.fulfillment_mode == "production":
+            complete_low_stock_material_todos = db.execute(
+                select(TodoItem).where(
+                    TodoItem.business_type == "low_stock_product_material_replenishment",
+                    TodoItem.business_id == inventory.id,
+                    TodoItem.status != "completed",
+                )
+            ).scalars().all()
+            for todo in complete_low_stock_material_todos:
+                todo.status = "completed"
         db.flush()
         return
     fulfillment_mode = product.fulfillment_mode or "production"
     target_role = "purchase" if fulfillment_mode == "trade" else "production"
     module = "purchase" if fulfillment_mode == "trade" else "production"
     existing_user_ids = {todo.assigned_user_id for todo in pending_todos}
-    target_user_ids = [user_id for user_id in role_user_ids(db, target_role) if user_id not in existing_user_ids]
-    if not target_user_ids:
-        return
+    target_user_ids = resolve_workflow_recipients(
+        db,
+        target_role,
+        workflow="low_stock_replenishment",
+        business_type=business_type,
+        business_id=inventory.id,
+    )
+    new_user_ids = [user_id for user_id in target_user_ids if user_id not in existing_user_ids]
     payload = {
         "product_id": product.id,
         "product_name": product.name,
@@ -232,14 +457,37 @@ def sync_product_low_stock_replenishment(
             business_id=inventory.id,
             priority="high",
         )
-    create_notification(
-        db,
-        title="安全库存补货需求",
-        content=f"{product.name} 低于安全库存，已同步{'采购' if fulfillment_mode == 'trade' else '生产'}处理。",
-        module=module,
+    for todo in pending_todos:
+        if todo.assigned_user_id in target_user_ids:
+            todo.title = f"安全库存补货需求：{product.name}"
+            todo.description = description
+            todo.module = module
+    if new_user_ids:
+        ensure_notification(
+            db,
+            title="安全库存补货需求",
+            content=f"{product.name} 低于安全库存，已同步{'采购' if fulfillment_mode == 'trade' else '生产'}处理。",
+            module=module,
+            recipient_user_ids=new_user_ids,
+            category="warning",
+        )
+    emit(
+        "low_stock_replenishment_synced",
+        inventory_id=inventory.id,
+        item_type="product",
+        item_id=product.id,
+        fulfillment_mode=fulfillment_mode,
+        shortage_quantity=float(shortage_quantity),
         recipient_user_ids=target_user_ids,
-        category="warning",
+        new_recipient_user_ids=new_user_ids,
     )
+    if fulfillment_mode == "production":
+        _sync_low_stock_product_material_replenishment(
+            db,
+            inventory=inventory,
+            product=product,
+            production_quantity=shortage_quantity,
+        )
 
 
 def sync_material_low_stock_replenishment(
@@ -282,9 +530,14 @@ def sync_material_low_stock_replenishment(
         db.flush()
         return
     existing_user_ids = {todo.assigned_user_id for todo in pending_todos}
-    target_user_ids = [user_id for user_id in role_user_ids(db, "purchase") if user_id not in existing_user_ids]
-    if not target_user_ids:
-        return
+    target_user_ids = resolve_workflow_recipients(
+        db,
+        "purchase",
+        workflow="low_stock_replenishment",
+        business_type=business_type,
+        business_id=inventory.id,
+    )
+    new_user_ids = [user_id for user_id in target_user_ids if user_id not in existing_user_ids]
     payload = {
         "material_id": material.id,
         "material_name": material.name,
@@ -309,11 +562,27 @@ def sync_material_low_stock_replenishment(
             business_id=inventory.id,
             priority="high",
         )
-    create_notification(
-        db,
-        title="安全库存补货需求",
-        content=f"{material.name} 低于安全库存，已同步采购处理。",
-        module="purchase",
+    for todo in pending_todos:
+        if todo.assigned_user_id in target_user_ids:
+            todo.title = f"安全库存补货需求：{material.name}"
+            todo.description = description
+            todo.module = "purchase"
+    if new_user_ids:
+        ensure_notification(
+            db,
+            title="安全库存补货需求",
+            content=f"{material.name} 低于安全库存，已同步采购处理。",
+            module="purchase",
+            recipient_user_ids=new_user_ids,
+            category="warning",
+        )
+    emit(
+        "low_stock_replenishment_synced",
+        inventory_id=inventory.id,
+        item_type="material",
+        item_id=material.id,
+        fulfillment_mode="purchase",
+        shortage_quantity=float(shortage_quantity),
         recipient_user_ids=target_user_ids,
-        category="warning",
+        new_recipient_user_ids=new_user_ids,
     )

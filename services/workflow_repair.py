@@ -5,9 +5,10 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import InventoryDispatchQueue, InventoryOperationRequest, ProductionTask, QualityTask, SalesOrder, SalesOrderItem, SalesReceiptRequest, User
+from models import FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, ProductionTask, QualityTask, SalesOrder, SalesOrderItem, SalesReceiptRequest, User
 from services.core import complete_todos, ensure_notification, ensure_todo, resolve_workflow_recipients
 from services.request_trace import emit
+from services.replenishment_service import ensure_fulfillment_demand_routing
 from services.sales_service import ensure_sales_order_fulfillment_demands
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -236,6 +237,40 @@ def repair_sales_dispatch_workflows(db: Session) -> int:
     return repaired
 
 
+def repair_fulfillment_demand_workflows(db: Session) -> int:
+    repaired = 0
+    demands = db.execute(
+        select(FulfillmentDemand)
+        .options(
+            joinedload(FulfillmentDemand.sales_order),
+            joinedload(FulfillmentDemand.product),
+        )
+        .where(FulfillmentDemand.status == "pending")
+    ).unique().scalars().all()
+    fallback_user = db.execute(select(User).where(User.is_active.is_(True)).order_by(User.id.asc())).scalars().first()
+    for demand in demands:
+        try:
+            actor = demand.sales_order.sales_user if demand.sales_order and demand.sales_order.sales_user else fallback_user
+            ensure_fulfillment_demand_routing(
+                db,
+                demand=demand,
+                order=demand.sales_order,
+                product=demand.product,
+                current_user=actor,
+            )
+            repaired += 1
+        except Exception as exc:
+            emit(
+                "workflow_repair_failed",
+                workflow="fulfillment_demand",
+                business_type="fulfillment_demand",
+                business_id=demand.id,
+                error_type=type(exc).__name__,
+                error=str(exc)[:500],
+            )
+    return repaired
+
+
 def repair_workflows(db: Session) -> dict[str, int]:
     """Repair known pending workflows without creating duplicate todos."""
     result = {
@@ -243,6 +278,7 @@ def repair_workflows(db: Session) -> dict[str, int]:
         "quality_tasks": repair_quality_workflows(db),
         "inventory_operation_requests": repair_inventory_operation_workflows(db),
         "sales_dispatch_workflows": repair_sales_dispatch_workflows(db),
+        "fulfillment_demands": repair_fulfillment_demand_workflows(db),
     }
     emit("workflow_repair_finished", **result)
     return result

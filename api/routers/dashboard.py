@@ -65,6 +65,7 @@ TODO_ROUTE_BY_BUSINESS_TYPE = {
     "stock_take_task": "/inventory/stock-takes",
     "low_stock_alert": "/inventory/stocks",
     "raw_material_replenishment": "/purchases/orders",
+    "low_stock_product_material_replenishment": "/purchases/orders",
     "reimbursement_payment": "/finance/reimbursements",
 }
 
@@ -124,6 +125,8 @@ def _todo_route(todo: TodoItem) -> tuple[str, dict]:
     if todo.business_type == "low_stock_replenishment" and todo.business_id is not None:
         route = "/purchases/orders" if todo.module == "purchase" else "/production/tasks"
         return route, {"focusId": str(todo.id), "focusType": todo.business_type}
+    if todo.business_type == "low_stock_product_material_replenishment" and todo.business_id is not None:
+        return "/purchases/orders", {"focusId": str(todo.id), "focusType": todo.business_type}
     route = TODO_ROUTE_BY_BUSINESS_TYPE.get(todo.business_type) or TODO_ROUTE_BY_MODULE.get(todo.module) or "/dashboard"
     query: dict[str, str] = {}
     if todo.business_id is not None:

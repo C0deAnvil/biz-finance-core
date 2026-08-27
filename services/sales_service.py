@@ -36,7 +36,8 @@ from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate,
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
-from services.replenishment_service import create_sales_shortage_demand, material_expected_available_quantity
+from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
+from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
 from services.time_utils import now_local
@@ -507,8 +508,16 @@ def _create_fulfillment_demands(
             .order_by(FulfillmentDemand.id.desc())
         ).scalars().first()
         if existing_demand is not None:
-            if existing_demand.status == "pending" and not existing_demand.process_note:
-                existing_demand.shortage_quantity = shortage_quantity
+            if existing_demand.status == "pending":
+                if not existing_demand.process_note:
+                    existing_demand.shortage_quantity = shortage_quantity
+                ensure_fulfillment_demand_routing(
+                    db,
+                    demand=existing_demand,
+                    order=order,
+                    product=product,
+                    current_user=current_user,
+                )
                 if existing_demand.fulfillment_mode == "production":
                     _ensure_sales_order_material_replenishment_todos(
                         db,
@@ -572,11 +581,25 @@ def _ensure_sales_order_material_replenishment_todos(
         select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == demand.product_id)
     ).unique().scalar_one_or_none()
     if bom is None or not bom.items:
+        emit(
+            "sales_order_material_replenishment_skipped",
+            reason="missing_bom",
+            sales_order_id=order.id,
+            fulfillment_demand_id=demand.id,
+            product_id=demand.product_id,
+        )
         return
     raw_warehouse = db.execute(
         select(Warehouse).where(Warehouse.warehouse_type == "raw")
     ).scalar_one_or_none()
     if raw_warehouse is None:
+        emit(
+            "sales_order_material_replenishment_skipped",
+            reason="missing_raw_warehouse",
+            sales_order_id=order.id,
+            fulfillment_demand_id=demand.id,
+            product_id=demand.product_id,
+        )
         return
 
     material_ids = [item.material_id for item in bom.items]
@@ -632,6 +655,14 @@ def _ensure_sales_order_material_replenishment_todos(
         for todo in pending_todos:
             todo.status = "completed"
             todo.completed_at = now_local()
+        emit(
+            "sales_order_material_replenishment_skipped",
+            reason="no_material_shortage",
+            sales_order_id=order.id,
+            fulfillment_demand_id=demand.id,
+            product_id=demand.product_id,
+            demand_quantity=float(demand_quantity),
+        )
         return
 
     import json
@@ -649,6 +680,7 @@ def _ensure_sales_order_material_replenishment_todos(
         "fulfillment_demand_id": demand.id,
         "fulfillment_demand_no": demand.demand_no,
         "product_id": demand.product_id,
+        "product_name": demand.product.name if demand.product else None,
         "production_quantity": float(demand_quantity),
         "items": shortage_items,
     }
@@ -683,6 +715,14 @@ def _ensure_sales_order_material_replenishment_todos(
             created_by_id=current_user.id,
             category="warning",
         )
+    emit(
+        "sales_order_material_replenishment_synced",
+        sales_order_id=order.id,
+        fulfillment_demand_id=demand.id,
+        product_id=demand.product_id,
+        material_ids=[item["material_id"] for item in shortage_items],
+        recipient_user_ids=purchase_user_ids,
+    )
 
 
 def _create_child_split_order(

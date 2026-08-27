@@ -18,7 +18,7 @@ class PurchaseOrderCreate(BaseModel):
     items: list[PurchaseOrderItemInput]
     replenishment_source_type: str | None = Field(
         default=None,
-        pattern="^(raw_material_replenishment|low_stock_replenishment|fulfillment_demand|sales_order_material_replenishment)$",
+        pattern="^(raw_material_replenishment|low_stock_replenishment|low_stock_product_material_replenishment|fulfillment_demand|sales_order_material_replenishment)$",
     )
     replenishment_source_id: int | None = Field(default=None, gt=0)
 
