@@ -47,6 +47,8 @@ from services.workflow import (
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
 from services.sales_service import ensure_sales_order_fulfillment_demands
+from services.document_status import sync_sales_order_process_status
+from services.inventory_dimensions import sync_inventory_dimensions
 
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -149,7 +151,11 @@ def _serialize_stock(
         "item_name": row.product.name if row.product else (row.material.name if row.material else ""),
         "quantity": float(row.quantity),
         "reserved_quantity": float(row.reserved_quantity),
+        "in_production": float(row.in_production or 0),
+        "in_transit": float(row.in_transit or 0),
+        "on_order": float(row.on_order or 0),
         "available_quantity": float(available_quantity),
+        "available_stock": float(row.available if row.available is not None else available_quantity),
         "expected_available_quantity": float(expected_available_quantity),
         "avg_unit_cost": float(row.avg_unit_cost),
         "inventory_amount": float(Decimal(row.quantity or 0) * Decimal(row.avg_unit_cost or 0)),
@@ -250,6 +256,7 @@ def _order_item_name(item: SalesOrderItem) -> str:
 
 def _serialize_shipment_queue(row: InventoryDispatchQueue, db: Session, current_user: User) -> dict:
     order = row.sales_order
+    process_status = sync_sales_order_process_status(db, order)
     items = []
     for item in order.items:
         ordered_quantity = Decimal(item.quantity or 0)
@@ -280,11 +287,35 @@ def _serialize_shipment_queue(row: InventoryDispatchQueue, db: Session, current_
         "order_status": order.status,
         "finance_edit_pending": bool(order.finance_edit_pending),
         "finance_edit_confirm_state": _finance_edit_confirm_state(db, order.id, current_user),
+        "current_stage": process_status["current_stage"],
+        "current_stage_label": process_status["current_stage_label"],
+        "blocked_reason": process_status["blocked_reason"],
+        "dimensions": process_status["dimensions"],
         "items": items,
     }
 
 
+def _serialize_placement_queue(row: InventoryDispatchQueue, db: Session, current_user: User) -> dict:
+    order = row.sales_order
+    process_status = sync_sales_order_process_status(db, order)
+    return {
+        'queue_id': row.id,
+        'order_id': row.sales_order_id,
+        'order_no': order.order_no,
+        'customer_name': order.customer.name if order.customer else None,
+        'status': row.placement_status,
+        'order_status': order.status,
+        'finance_edit_pending': bool(order.finance_edit_pending),
+        'finance_edit_confirm_state': _finance_edit_confirm_state(db, order.id, current_user),
+        'current_stage': process_status['current_stage'],
+        'current_stage_label': process_status['current_stage_label'],
+        'blocked_reason': process_status['blocked_reason'],
+        'dimensions': process_status['dimensions'],
+    }
+
+
 def _serialize_sales_order_as_shipment_queue(order: SalesOrder, db: Session, current_user: User) -> dict:
+    process_status = sync_sales_order_process_status(db, order)
     items = []
     for item in order.items:
         ordered_quantity = Decimal(item.quantity or 0)
@@ -315,17 +346,23 @@ def _serialize_sales_order_as_shipment_queue(order: SalesOrder, db: Session, cur
         "order_status": order.status,
         "finance_edit_pending": bool(order.finance_edit_pending),
         "finance_edit_confirm_state": _finance_edit_confirm_state(db, order.id, current_user),
+        "current_stage": process_status["current_stage"],
+        "current_stage_label": process_status["current_stage_label"],
+        "blocked_reason": process_status["blocked_reason"],
+        "dimensions": process_status["dimensions"],
         "items": items,
     }
 
 
-def _serialize_inventory_order_detail(order: SalesOrder) -> dict:
+def _serialize_inventory_order_detail(order: SalesOrder, process_status: dict | None = None) -> dict:
+    process_status = process_status or {}
     return {
         "id": order.id,
         "order_no": order.order_no,
         "status": order.status,
         "status_label": status_label(order.status),
         "finance_edit_pending": bool(order.finance_edit_pending),
+        "process_status": process_status,
         "customer": {"id": order.customer.id, "name": order.customer.name} if order.customer else None,
         "consignee": order.consignee,
         "consignee_phone": order.consignee_phone,
@@ -359,6 +396,7 @@ def _serialize_inventory_order_detail(order: SalesOrder) -> dict:
 
 
 def _serialize_inventory_sales_order_summary(order: SalesOrder, db: Session, current_user: User) -> dict:
+    process_status = sync_sales_order_process_status(db, order)
     item_names = []
     for item in order.items:
       if item.product and item.product.name:
@@ -371,6 +409,10 @@ def _serialize_inventory_sales_order_summary(order: SalesOrder, db: Session, cur
         "customer_name": order.customer.name if order.customer else None,
         "status": order.status,
         "status_label": status_label(order.status),
+        "current_stage": process_status["current_stage"],
+        "current_stage_label": process_status["current_stage_label"],
+        "blocked_reason": process_status["blocked_reason"],
+        "dimensions": process_status["dimensions"],
         "payment_type_label": payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales"),
         "finance_edit_pending": bool(order.finance_edit_pending),
         "finance_edit_confirm_state": _finance_edit_confirm_state(db, order.id, current_user),
@@ -892,7 +934,8 @@ def get_inventory_sales_order_detail(
     ).unique().scalar_one_or_none()
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
-    detail = _serialize_inventory_order_detail(order)
+    process_status = sync_sales_order_process_status(db, order)
+    detail = _serialize_inventory_order_detail(order, process_status)
     detail["finance_edit_snapshot"] = _finance_edit_snapshot(db, order)
     detail["finance_edit_confirm_state"] = _finance_edit_confirm_state(db, order.id, current_user)
     return api_response(data=detail)
@@ -996,6 +1039,7 @@ def mark_placement(
                     priority="high",
                 )
     db.commit()
+    sync_sales_order_process_status(db, order, updated_by_id=current_user.id)
     return api_response(msg="置货状态已更新")
 
 
@@ -1027,6 +1071,38 @@ def mark_shipment(
         raise HTTPException(status_code=409, detail="当前客户订单不处于待发货状态")
     if order.finance_edit_pending:
         raise HTTPException(status_code=409, detail="财务修改待销售和库存确认，暂不能发货")
+
+    # ---- 发货条件检查：财务收款 / 质检 / 库存 / 置货 ----
+    process_status = sync_sales_order_process_status(db, order)
+    dimensions = {d["status_dimension"]: d for d in process_status.get("dimensions", [])}
+
+    def _dim_stage(name: str) -> str:
+        return (dimensions.get(name) or {}).get("current_stage") or ""
+
+    finance_stage = _dim_stage("finance")
+    quality_stage = _dim_stage("quality")
+    inbound_stage = _dim_stage("inbound")
+    blocked_conditions: list[str] = []
+    if finance_stage not in ("paid", "cleared", "partial_paid", "approved", "received", "complete", "completed"):
+        blocked_conditions.append("财务收款条件未满足")
+    if quality_stage not in ("passed", "qualified", "completed", "not_required", "done", "complete", "approved"):
+        blocked_conditions.append("质检条件未满足")
+    if inbound_stage not in ("completed", "done", "complete", "approved", "not_required", "passed"):
+        blocked_conditions.append("入库条件未满足")
+
+    force_shipment = bool(getattr(payload, "force", False)) if not isinstance(payload, QueueActionRequest) else False
+    if blocked_conditions and not force_shipment:
+        return api_response(
+            code=409,
+            msg="存在未满足的发货条件，是否继续发货？",
+            data={
+                "blocked_conditions": blocked_conditions,
+                "finance_stage": finance_stage,
+                "quality_stage": quality_stage,
+                "inbound_stage": inbound_stage,
+                "require_force": True,
+            },
+        )
 
     if isinstance(payload, QueueActionRequest):
         shipment_items = [
@@ -1103,6 +1179,8 @@ def mark_shipment(
         created_by_id=current_user.id,
         category="success" if all_shipped else "info",
     )
+    sync_sales_order_process_status(db, order, updated_by_id=current_user.id)
+    sync_inventory_dimensions(db)
     db.commit()
     return api_response(msg="发货出库已完成", data={"order_id": order.id, "status": order.status, "all_shipped": all_shipped})
 
@@ -1133,6 +1211,7 @@ def list_stocks(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     sync_low_stock_alerts(db)
+    sync_inventory_dimensions(db)
     db.commit()
     query = (
         select(Inventory)

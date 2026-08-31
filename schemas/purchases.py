@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -111,3 +111,10 @@ class PurchasePaymentApprovalRequest(BaseModel):
 
 class PurchasePaymentCompleteRequest(BaseModel):
     completion_remark: str | None = None
+
+
+class PurchasePaymentInvoiceUpdate(BaseModel):
+    invoice_no: str | None = Field(default=None, max_length=80)
+    invoice_amount: Decimal | None = None
+    invoice_date: date | None = None
+    invoice_attachment_id: int | None = None

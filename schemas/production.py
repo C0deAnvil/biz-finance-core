@@ -32,6 +32,7 @@ class ProductionTaskCreate(BaseModel):
     planned_quantity: Decimal = Field(..., gt=0)
     fluctuation_ratio: Decimal = 0
     notes: str | None = None
+    warehouse_id: int | None = None
     material_usages: list[MaterialUsageInput] = []
 
 

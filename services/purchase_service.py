@@ -36,6 +36,7 @@ from models import (
 )
 from responses import api_response
 from schemas.purchases import (
+    PurchasePaymentInvoiceUpdate,
     PurchaseApprovalRequest,
     PurchaseFundApprovalRequest,
     PurchaseFundRequestCreate,
@@ -51,6 +52,7 @@ from schemas.purchases import (
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
+from services.inventory_dimensions import sync_inventory_dimensions
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
@@ -1921,6 +1923,63 @@ def complete_purchase_payment_request(request_id: int, payload: PurchasePaymentC
     return api_response(data={"id": request.id, "status": request.status})
 
 
+def update_purchase_payment_invoice(
+    request_id: int,
+    payload: PurchasePaymentInvoiceUpdate,
+    current_user: User,
+    db: Session,
+):
+    """采购付款单补充发票信息（发票号/金额/日期/附件）。"""
+    request = db.execute(
+        select(PurchasePaymentRequest).where(PurchasePaymentRequest.id == request_id)
+    ).scalar_one_or_none()
+    if request is None:
+        raise HTTPException(status_code=404, detail="采购付款申请不存在")
+    order = _load_order(db, request.purchase_order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="采购订单不存在")
+
+    changed: list[str] = []
+    if payload.invoice_no is not None and payload.invoice_no != request.invoice_no:
+        request.invoice_no = payload.invoice_no
+        changed.append("发票号")
+    if payload.invoice_amount is not None and payload.invoice_amount != request.invoice_amount:
+        request.invoice_amount = payload.invoice_amount
+        changed.append("发票金额")
+    if payload.invoice_date is not None and payload.invoice_date != request.invoice_date:
+        request.invoice_date = payload.invoice_date
+        changed.append("发票日期")
+    if payload.invoice_attachment_id is not None and payload.invoice_attachment_id != request.invoice_attachment_id:
+        request.invoice_attachment_id = payload.invoice_attachment_id
+        changed.append("发票附件")
+
+    if changed:
+        write_operation_log(
+            db,
+            user_id=current_user.id,
+            module="purchase",
+            action="update_payment_invoice",
+            content=f"采购订单 {order.order_no} 付款申请 {request.request_no} 补充发票信息",
+            after_data={
+                "request_no": request.request_no,
+                "invoice_no": request.invoice_no,
+                "invoice_amount": float(request.invoice_amount) if request.invoice_amount is not None else None,
+                "invoice_date": request.invoice_date.isoformat() if request.invoice_date else None,
+                "changed": changed,
+            },
+        )
+        db.commit()
+    return api_response(
+        data={
+            "id": request.id,
+            "invoice_no": request.invoice_no,
+            "invoice_amount": float(request.invoice_amount) if request.invoice_amount is not None else None,
+            "invoice_date": request.invoice_date.isoformat() if request.invoice_date else None,
+            "invoice_attachment_id": request.invoice_attachment_id,
+        }
+    )
+
+
 def build_purchase_settlement_snapshot(current_user: User, db: Session, *, scoped_user_ids: list[int] | None = None):
     query = (
         select(PurchaseOrder)
@@ -2062,6 +2121,10 @@ def build_purchase_settlement_snapshot(current_user: User, db: Session, *, scope
             "approved_by_name": user_map[row.approved_by_id].full_name if row.approved_by_id in user_map else None,
             "completed_by_name": user_map[row.completed_by_id].full_name if row.completed_by_id in user_map else None,
             "contract_attachment_count": len(_purchase_contract_attachments(db, row.purchase_order_id)),
+            "invoice_no": row.invoice_no,
+            "invoice_amount": float(row.invoice_amount) if row.invoice_amount is not None else None,
+            "invoice_date": row.invoice_date.isoformat() if row.invoice_date else None,
+            "invoice_attachment_id": row.invoice_attachment_id,
             "approved_at": row.approved_at.isoformat() if row.approved_at else None,
             "completed_at": row.completed_at.isoformat() if row.completed_at else None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -2380,6 +2443,7 @@ def create_receipt(payload: PurchaseReceiptCreate, current_user: User, db: Sessi
             "status": receipt.status,
         },
     )
+    sync_inventory_dimensions(db)
     db.commit()
     return api_response(
         data={

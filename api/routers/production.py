@@ -917,6 +917,17 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
         row.id: _max_producible_quantity_from_raw_stock(db, product_id=row.product_id)[0]
         for row in rows
     }
+
+    def _shortage_level(shortage: float, available: float) -> str:
+        """红=完全不足 / 黄=部分不足 / 绿=充足"""
+        if shortage <= 0:
+            return "green"
+        if available <= 0:
+            return "red"
+        if available < shortage:
+            return "yellow"
+        return "green"
+
     data = [
             {
                 "id": row.id,
@@ -929,6 +940,9 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
                 "product_name": row.product.name if row.product else None,
                 "shortage_quantity": float(row.shortage_quantity or 0),
                 "max_producible_quantity": float(max_producible_map.get(row.id, 0)),
+                "shortage_level": _shortage_level(
+                    float(row.shortage_quantity or 0), float(max_producible_map.get(row.id, 0))
+                ),
                 "safety_stock_qty": float(row.product.safety_stock_qty or 0) if row.product else 0,
                 "expected_available_quantity": float(
                     (

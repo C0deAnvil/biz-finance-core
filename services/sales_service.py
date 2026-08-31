@@ -40,6 +40,7 @@ from services.replenishment_service import create_sales_shortage_demand, ensure_
 from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
+from services.inventory_dimensions import sync_inventory_dimensions
 from services.time_utils import now_local
 
 
@@ -1062,6 +1063,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         )
 
     complete_todos(db, business_type="sales_order_approval", business_id=order.id)
+    sync_inventory_dimensions(db)
     write_operation_log(
         db,
         user_id=current_user.id,

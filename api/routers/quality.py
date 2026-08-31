@@ -40,6 +40,7 @@ from schemas.quality import (
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, write_operation_log
 from services.display import clean_display_text, status_label
 from services.quality_workflow import (
+    resolve_quality_recipients_for_warehouse,
     build_purchase_quality_notes,
     create_purchase_quality_tasks,
     parse_purchase_quality_meta,
@@ -118,6 +119,7 @@ def _serialize_quality_task(
     disposition: QualityDisposition | None,
     quality_cost: QualityCostRecord | None = None,
     related_task_map: dict[int, ProductionTask] | None = None,
+    warehouse_name: str | None = None,
 ) -> dict:
     passed_tests = sum(1 for item in inspections if item.is_passed)
     latest_grade = inspections[-1].grade if inspections else None
@@ -155,8 +157,8 @@ def _serialize_quality_task(
         "return_business_id": return_meta.get("business_id"),
         "return_business_no": return_meta.get("business_no"),
         "supplier_name": purchase_meta.get("supplier_name"),
-        "warehouse_id": purchase_meta.get("warehouse_id"),
-        "warehouse_name": purchase_meta.get("warehouse_name"),
+        "warehouse_id": purchase_meta.get("warehouse_id") or (production_task.warehouse_id if production_task else None),
+        "warehouse_name": purchase_meta.get("warehouse_name") or warehouse_name,
         "display_specification": purchase_meta.get("display_specification"),
         "required_tests": task.required_tests,
         "completed_tests": len(inspections),
@@ -417,6 +419,16 @@ def list_quality_tasks(current_user: User = Depends(get_current_user), db: Sessi
         row.id: row for row in db.execute(select(ProductionTask).where(ProductionTask.id.in_(related_task_ids))).scalars().all()
     } if related_task_ids else {}
 
+    warehouse_ids = {
+        pt.warehouse_id for pt in production_tasks.values() if pt.warehouse_id
+    } | {
+        meta.get("warehouse_id") for meta in (parse_purchase_quality_meta(pt) for pt in production_tasks.values())
+    }
+    warehouse_map = {
+        row.id: row.name
+        for row in db.execute(select(Warehouse).where(Warehouse.id.in_(warehouse_ids or [-1]))).scalars().all()
+    } if warehouse_ids else {}
+
     return api_response(
         data=[
             _serialize_quality_task(
@@ -427,6 +439,10 @@ def list_quality_tasks(current_user: User = Depends(get_current_user), db: Sessi
                 disposition_map.get(task.id),
                 quality_cost_map.get(disposition_map.get(task.id).id) if disposition_map.get(task.id) else None,
                 related_task_map,
+                warehouse_map.get(
+                    (production_tasks.get(task.production_task_id).warehouse_id if production_tasks.get(task.production_task_id) else None)
+                    or 0
+                ),
             )
             for task in tasks
         ]
@@ -506,6 +522,12 @@ def create_manual_quality_task(
             raise HTTPException(status_code=409, detail="该采购订单的来料质检任务已全部生成，无需重复创建")
 
         quality_user_ids = _role_user_ids(db, "quality", "manager", "chairman")
+        # 按仓库路由质检员：优先到货仓库绑定的质检
+        quality_user_ids = resolve_quality_recipients_for_warehouse(
+            db,
+            warehouse_id=payload.warehouse_id if getattr(payload, "warehouse_id", None) else None,
+            fallback_user_ids=quality_user_ids,
+        )
         for task_info in created_tasks:
             for user_id in quality_user_ids:
                 create_todo(

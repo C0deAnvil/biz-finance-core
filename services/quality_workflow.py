@@ -57,6 +57,20 @@ def build_return_quality_notes(meta: dict) -> str:
     return f"{RETURN_QUALITY_NOTES_PREFIX}{json.dumps(meta, ensure_ascii=False)}"
 
 
+def resolve_quality_recipients_for_warehouse(
+    db: Session,
+    *,
+    warehouse_id: int | None,
+    fallback_user_ids: list[int],
+) -> list[int]:
+    """按仓库路由质检员：优先该仓库绑定的质检员，否则回退到全部质检员。"""
+    if warehouse_id:
+        warehouse = db.execute(select(Warehouse).where(Warehouse.id == warehouse_id)).scalar_one_or_none()
+        if warehouse is not None and warehouse.qc_user_id:
+            return [warehouse.qc_user_id]
+    return list(dict.fromkeys(fallback_user_ids))
+
+
 def quality_shadow_product(db: Session) -> Product:
     product = db.execute(select(Product).where(Product.product_code == "SYS-QUALITY-MATERIAL")).scalar_one_or_none()
     if product is None:

@@ -242,6 +242,7 @@
 
 <script setup>
 import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/col/style/css'
@@ -255,6 +256,7 @@ import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
@@ -453,17 +455,36 @@ async function submitShipment() {
   const targetUrl = activeShipment.value.queue_id
     ? `/api/inventory/queues/${activeShipment.value.queue_id}/shipment`
     : `/api/inventory/sales-orders/${orderId}/shipment`
+  await doShipment(targetUrl, items, false)
+}
+
+async function doShipment(targetUrl, items, force) {
   shipmentSubmitting.value = true
   try {
     await post(targetUrl, {
       items,
-      remark: shipmentForm.remark
+      remark: shipmentForm.remark,
+      force
     })
     ElMessage.success('客户订单发货出库已完成')
     shipmentDialogVisible.value = false
     await load()
   } catch (error) {
-    ElMessage.error(error.message || '客户订单发货出库失败')
+    const blocked = error?.data?.require_force ? (error.data.blocked_conditions || []) : []
+    if (error?.code === 409 && blocked.length) {
+      try {
+        await ElMessageBox.confirm(
+          `以下条件尚未满足：\n${blocked.map((c) => '· ' + c).join('\n')}\n\n确定仍要强制发货吗？`,
+          '发货条件未满足',
+          { confirmButtonText: '强制发货', cancelButtonText: '再等等', type: 'warning', confirmButtonClass: 'el-button--danger' }
+        )
+        await doShipment(targetUrl, items, true)
+      } catch {
+        // 用户取消强制发货
+      }
+    } else {
+      ElMessage.error(error.message || '客户订单发货出库失败')
+    }
   } finally {
     shipmentSubmitting.value = false
   }

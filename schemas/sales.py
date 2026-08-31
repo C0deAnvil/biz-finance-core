@@ -80,6 +80,7 @@ class SalesShipmentItemInput(BaseModel):
 class SalesShipmentRequest(BaseModel):
     items: list[SalesShipmentItemInput]
     remark: str | None = None
+    force: bool = False
 
 
 class SalesSettlementCollectRequest(BaseModel):

@@ -41,8 +41,9 @@ from schemas.production import (
     SpecialMaterialRequestCreate,
 )
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.inventory_dimensions import sync_inventory_dimensions
 from services.organization import get_inventory_scope_warehouse_ids, is_system_admin
-from services.quality_workflow import create_production_quality_task
+from services.quality_workflow import create_production_quality_task, resolve_quality_recipients_for_warehouse
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
@@ -573,6 +574,15 @@ def create_task(
     if payload_usage_map and set(payload_usage_map) != bom_material_ids:
         raise HTTPException(status_code=409, detail="领料明细必须与 BOM 原料保持一致")
 
+    warehouse_id = None
+    if payload.warehouse_id:
+        target_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.warehouse_id)).scalar_one_or_none()
+        if target_warehouse is None:
+            raise HTTPException(status_code=404, detail="目标仓库不存在")
+        if target_warehouse.warehouse_type != "finished":
+            raise HTTPException(status_code=409, detail="生产成品只能入成品仓")
+        warehouse_id = target_warehouse.id
+
     task = ProductionTask(
         task_no=next_business_no(db, "SC"),
         source_type=source_type,
@@ -581,6 +591,7 @@ def create_task(
         planned_quantity=payload.planned_quantity,
         fluctuation_ratio=payload.fluctuation_ratio,
         status="pending_material",
+        warehouse_id=warehouse_id,
         created_by_id=current_user.id,
         notes=payload.notes or (f"来源客户订单：{order.order_no}" if order and source_type == "sales_order" else None),
     )
@@ -1072,6 +1083,9 @@ def complete_task(
 
     quality_task = None
     finished_warehouse = get_finished_warehouse(db)
+    # 目标入库仓库：任务指定优先，否则默认成品仓（沧州）
+    if not task.warehouse_id:
+        task.warehouse_id = finished_warehouse.id
     if task.requires_quality:
         required_tests = max(1, ceil(float(payload.produced_quantity) / 1000))
         quality_task = create_production_quality_task(
@@ -1088,6 +1102,12 @@ def complete_task(
             workflow="production_quality_task",
             business_type="quality_task",
             business_id=quality_task.id,
+        )
+        # 按仓库路由质检员：优先该仓绑定的质检
+        quality_user_ids = resolve_quality_recipients_for_warehouse(
+            db,
+            warehouse_id=task.warehouse_id,
+            fallback_user_ids=quality_user_ids,
         )
         for user_id in quality_user_ids:
             create_todo(
@@ -1165,6 +1185,7 @@ def complete_task(
             "batch_no": task.batch_no,
         },
     )
+    sync_inventory_dimensions(db)
     db.commit()
     return api_response(
         data={

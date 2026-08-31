@@ -12,6 +12,7 @@ from models import Inventory, InventoryOperationRequest, InventoryTransaction, M
 from models import FulfillmentDemand
 from responses import api_response
 from schemas.purchases import (
+    PurchasePaymentInvoiceUpdate,
     PurchaseApprovalRequest,
     PurchaseMergedPaymentRequestCreate,
     PurchaseOrderCreate,
@@ -25,6 +26,7 @@ from schemas.purchases import (
 from services.display import clean_display_text, format_legacy_remark, payment_type_label, return_type_label, status_label
 from services.organization import get_inventory_scope_warehouse_ids, get_scoped_user_ids, user_in_scope, warehouse_in_scope
 from services.purchase_service import (
+    update_purchase_payment_invoice as update_purchase_payment_invoice_service,
     approve_purchase_order as approve_purchase_order_service,
     approve_purchase_payment_request as approve_purchase_payment_request_service,
     build_purchase_settlement_snapshot,
@@ -387,6 +389,16 @@ def approve_purchase_payment_request(
     return approve_purchase_payment_request_service(request_id, payload, current_user, db)
 
 
+@router.put("/settlements/payment-requests/{request_id}/invoice")
+def update_purchase_payment_invoice(
+    request_id: int,
+    payload: PurchasePaymentInvoiceUpdate,
+    current_user: User = Depends(require_roles("purchase", "finance", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    return update_purchase_payment_invoice_service(request_id, payload, current_user, db)
+
+
 @router.post("/settlements/payment-requests/{request_id}/complete")
 def complete_purchase_payment_request(
     request_id: int,
@@ -696,6 +708,17 @@ def list_purchase_fulfillment_demands(
     raw_warehouse = get_raw_warehouse(db)
     finished_warehouse = get_finished_warehouse(db)
     pending_sales, purchase_in_transit = _expected_available_maps(db)
+
+    def _shortage_level(shortage: float, available: float) -> str:
+        """红=完全不足 / 黄=部分不足 / 绿=充足"""
+        if shortage <= 0:
+            return "green"
+        if available <= 0:
+            return "red"
+        if available < shortage:
+            return "yellow"
+        return "green"
+
     product_ids = [row.product_id for row in rows if row.product_id]
     product_inventory_map = {
         row.product_id: row
@@ -765,6 +788,9 @@ def list_purchase_fulfillment_demands(
                 "shortage_quantity": float(payload.get("shortage_quantity") or 0),
                 "safety_stock_qty": float(payload.get("safety_stock_qty") or 0),
                 "expected_available_quantity": float(payload.get("expected_available_quantity") or 0),
+                "shortage_level": _shortage_level(
+                    float(payload.get("shortage_quantity") or 0), float(payload.get("expected_available_quantity") or 0)
+                ),
                 "status": "pending",
                 "status_label": "待处理",
                 "assigned_user_id": todo.assigned_user_id,
@@ -809,6 +835,7 @@ def list_purchase_fulfillment_demands(
                 "shortage_quantity": float(shortage_quantity),
                 "safety_stock_qty": float(material.safety_stock_qty or 0) if material else 0,
                 "expected_available_quantity": float(expected_available_quantity),
+                "shortage_level": _shortage_level(float(shortage_quantity), float(expected_available_quantity)),
                 "status": "pending",
                 "status_label": "待处理",
                 "assigned_user_id": todo.assigned_user_id,
@@ -874,6 +901,9 @@ def list_purchase_fulfillment_demands(
                     ],
                     "safety_stock_qty": 0,
                     "expected_available_quantity": float(item.get("expected_available_quantity") or 0),
+                    "shortage_level": _shortage_level(
+                        float(item.get("shortage_quantity") or 0), float(item.get("expected_available_quantity") or 0)
+                    ),
                     "status": "pending",
                     "status_label": "待处理",
                     "assigned_user_id": todo.assigned_user_id,
@@ -909,6 +939,17 @@ def list_purchase_fulfillment_demands(
                         - Decimal(pending_sales.get(_stock_key(product_id=row.product_id), 0))
                         + Decimal(purchase_in_transit.get(_stock_key(product_id=row.product_id), 0))
                     )
+                ),
+                "shortage_level": _shortage_level(
+                    float(row.shortage_quantity or 0),
+                    float(
+                        (
+                            Decimal((product_inventory_map.get(row.product_id).quantity if product_inventory_map.get(row.product_id) else 0) or 0)
+                            - Decimal((product_inventory_map.get(row.product_id).reserved_quantity if product_inventory_map.get(row.product_id) else 0) or 0)
+                            - Decimal(pending_sales.get(_stock_key(product_id=row.product_id), 0))
+                            + Decimal(purchase_in_transit.get(_stock_key(product_id=row.product_id), 0))
+                        )
+                    ),
                 ),
                 "status": row.status,
                 "status_label": status_label(row.status),

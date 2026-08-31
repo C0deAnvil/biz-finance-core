@@ -72,6 +72,20 @@
         <el-table-column prop="shortage_quantity" label="缺口数量" width="120">
           <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
         </el-table-column>
+        <el-table-column label="原料状况" width="110">
+          <template #default="scope">
+            <el-tag v-if="scope.row.shortage_level === 'green'" type="success" effect="dark">绿·原料充足</el-tag>
+            <el-tag v-else-if="scope.row.shortage_level === 'yellow'" type="warning" effect="dark">黄·部分不足</el-tag>
+            <el-tag v-else-if="scope.row.shortage_level === 'red'" type="danger" effect="dark">红·原料不足</el-tag>
+            <el-tag v-else type="info" effect="plain">-</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="最大可产" width="110">
+          <template #default="scope">
+            <span v-if="scope.row.max_producible_quantity != null">{{ formatNumber(scope.row.max_producible_quantity) }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status_label" label="状态" width="120">
           <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag></template>
         </el-table-column>
@@ -118,6 +132,11 @@
         </el-form-item>
         <el-form-item label="计划数量"><el-input-number v-model="createForm.planned_quantity" :min="0.01" style="width: 100%" /></el-form-item>
         <el-form-item label="浮动比例"><el-input-number v-model="createForm.fluctuation_ratio" :min="0" :max="1" :step="0.01" style="width: 100%" /></el-form-item>
+        <el-form-item label="目标仓库">
+          <el-select v-model="createForm.warehouse_id" clearable placeholder="默认沧州成品仓" style="width: 100%">
+            <el-option v-for="item in finishedWarehouses" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="备注"><el-input v-model="createForm.notes" /></el-form-item>
       </el-form>
       <el-alert v-if="createForm.product_id && !currentBom" type="warning" :closable="false" show-icon class="mb-12">
@@ -359,7 +378,8 @@ const activeTaskTab = ref('ongoing')
 const completedStatuses = ['completed', 'cancelled', 'scrapped', 'partially_scrapped', 'reworked']
 const canManageTasks = computed(() => auth.user?.role_code === 'production' && pagePermission.can('create'))
 const showTaskTabs = computed(() => auth.user?.role_code !== 'quality')
-const createForm = reactive({ source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null })
+const createForm = reactive({ source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null })
+const finishedWarehouses = ref([])
 const materialRequestForm = reactive({ material_usages: [] })
 const completeForm = reactive({ produced_quantity: 0, scrap_quantity: 0, requires_quality: true, preliminary_acceptance_note: '', actual_usages: [] })
 const cancelForm = reactive({ reason: '' })
@@ -443,7 +463,7 @@ function canShowInboundAction(row) {
 }
 
 function resetCreateForm() {
-  Object.assign(createForm, { source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null })
+  Object.assign(createForm, { source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null })
   selectedSalesOrder.value = null
   activeDemand.value = null
 }
@@ -821,6 +841,7 @@ onMounted(async () => {
   products.value = await get('/api/master-data/products')
   boms.value = await get('/api/production/boms')
   salesOrders.value = await get('/api/sales/orders')
+  await loadFinishedWarehouses()
   await load()
 })
 </script>

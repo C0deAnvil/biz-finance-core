@@ -57,12 +57,23 @@
         <el-table-column prop="order_amount" label="订单金额" width="120"><template #default="scope">{{ formatNumber(scope.row.order_amount) }}</template></el-table-column>
         <el-table-column prop="other_fee_amount" label="其他费用" width="120"><template #default="scope">{{ formatNumber(scope.row.other_fee_amount) }}</template></el-table-column>
         <el-table-column prop="arrival_status_label" label="到货状态" width="120" />
+        <el-table-column label="发票" width="180">
+          <template #default="scope">
+            <template v-if="scope.row.invoice_no">{{ scope.row.invoice_no }}</template>
+            <el-tag v-else type="info" effect="plain" size="small">未登记</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="status_label" label="申请状态" width="120">
           <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag></template>
         </el-table-column>
         <el-table-column prop="requested_by_name" label="申请人" width="120" />
         <el-table-column prop="approved_by_name" label="审批人" width="120" />
         <el-table-column prop="created_at" label="创建时间" min-width="170"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="scope">
+            <el-button size="small" text type="primary" @click="openInvoiceDialog(scope.row)">登记发票</el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <AppPagination v-model:page="requestPagination.page" v-model:page-size="requestPagination.pageSize" :total="requestTotal" :page-sizes="pageSizes" />
     </PageSection>
@@ -209,6 +220,32 @@
         <el-button type="primary" @click="submitMergedRequest">提交申请</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="invoiceVisible" title="登记采购付款发票" width="560px">
+      <el-form v-if="activeInvoiceRequest" :model="invoiceForm" label-width="100px">
+        <el-form-item label="申请单号">
+          <span>{{ activeInvoiceRequest.request_no }}</span>
+          <span class="field-label" style="margin-left:12px">采购单 {{ activeInvoiceRequest.purchase_order_no || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="发票号">
+          <el-input v-model="invoiceForm.invoice_no" placeholder="请输入发票号码" />
+        </el-form-item>
+        <el-form-item label="发票金额">
+          <el-input-number v-model="invoiceForm.invoice_amount" :min="0" :precision="2" :controls="false" style="width:100%" placeholder="请输入发票金额" />
+        </el-form-item>
+        <el-form-item label="发票日期">
+          <el-input v-model="invoiceForm.invoice_date" placeholder="格式 YYYY-MM-DD，如 2026-08-31" />
+        </el-form-item>
+        <el-form-item label="发票附件">
+          <AttachmentUploader v-if="invoiceForm.invoice_attachment_id" business-type="purchase_order" :business-id="activeInvoiceRequest.purchase_order_id" :preset-types="['发票']" />
+          <span v-else class="field-label">请在付款申请附件中上传发票后填写附件ID</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="invoiceVisible = false">取消</el-button>
+        <el-button type="primary" :loading="invoiceSubmitting" @click="submitInvoice">保存发票信息</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -244,7 +281,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { get, post } from '../../api/client'
+import { get, post, put } from '../../api/client'
 import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
@@ -325,6 +362,40 @@ async function load() {
 
 function goOrder(orderId) {
   router.push({ path: '/purchases/orders', query: { focusId: String(orderId) } })
+}
+
+const invoiceVisible = ref(false)
+const activeInvoiceRequest = ref(null)
+const invoiceSubmitting = ref(false)
+const invoiceForm = reactive({ invoice_no: '', invoice_amount: null, invoice_date: '', invoice_attachment_id: null })
+
+function openInvoiceDialog(row) {
+  activeInvoiceRequest.value = row
+  invoiceForm.invoice_no = row.invoice_no || ''
+  invoiceForm.invoice_amount = row.invoice_amount ?? null
+  invoiceForm.invoice_date = row.invoice_date || ''
+  invoiceForm.invoice_attachment_id = row.invoice_attachment_id || null
+  invoiceVisible.value = true
+}
+
+async function submitInvoice() {
+  if (!activeInvoiceRequest.value || invoiceSubmitting.value) return
+  invoiceSubmitting.value = true
+  try {
+    await put(`/api/purchases/settlements/payment-requests/${activeInvoiceRequest.value.id}/invoice`, {
+      invoice_no: invoiceForm.invoice_no || null,
+      invoice_amount: invoiceForm.invoice_amount ?? null,
+      invoice_date: invoiceForm.invoice_date || null,
+      invoice_attachment_id: invoiceForm.invoice_attachment_id || null
+    })
+    ElMessage.success('发票信息已保存')
+    invoiceVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || '发票信息保存失败')
+  } finally {
+    invoiceSubmitting.value = false
+  }
 }
 
 function openRequestDialog(row = null) {

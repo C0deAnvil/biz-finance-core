@@ -218,6 +218,90 @@ class OperationLog(Base):
     user = relationship("User")
 
 
+class DocumentStatusSnapshot(TimestampMixin, Base):
+    """Current workflow status for any business document and status dimension."""
+
+    __tablename__ = "document_status_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_type",
+            "document_id",
+            "status_dimension",
+            name="uq_document_status_snapshot_dimension",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    document_type = Column(String(60), nullable=False)
+    document_id = Column(Integer, nullable=False)
+    status_dimension = Column(String(50), nullable=False)
+    current_stage = Column(String(60), nullable=False)
+    status_code = Column(String(60), nullable=False)
+    blocked_reason_code = Column(String(80), nullable=True)
+    blocked_reason = Column(Text, nullable=True)
+    status_version = Column(Integer, nullable=False, default=1)
+    status_updated_at = Column(DateTime, default=now_local, nullable=False)
+    updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    related_document_type = Column(String(60), nullable=True)
+    related_document_id = Column(Integer, nullable=True)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+
+class DocumentStatusHistory(Base):
+    """Immutable audit trail for workflow status transitions."""
+
+    __tablename__ = "document_status_history"
+
+    id = Column(Integer, primary_key=True)
+    document_type = Column(String(60), nullable=False)
+    document_id = Column(Integer, nullable=False)
+    status_dimension = Column(String(50), nullable=False)
+    from_stage = Column(String(60), nullable=True)
+    to_stage = Column(String(60), nullable=False)
+    from_status_code = Column(String(60), nullable=True)
+    to_status_code = Column(String(60), nullable=False)
+    reason_code = Column(String(80), nullable=True)
+    reason_text = Column(Text, nullable=True)
+    operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    operation_id = Column(String(100), nullable=True)
+    related_document_type = Column(String(60), nullable=True)
+    related_document_id = Column(Integer, nullable=True)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=now_local, nullable=False)
+
+    operator_user = relationship("User", foreign_keys=[operator_user_id])
+
+
+class DocumentRelation(TimestampMixin, Base):
+    """Polymorphic relation for one-to-many and many-to-many business documents."""
+
+    __tablename__ = "document_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_document_type",
+            "source_document_id",
+            "target_document_type",
+            "target_document_id",
+            "relation_type",
+            name="uq_document_relation_link",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    source_document_type = Column(String(60), nullable=False)
+    source_document_id = Column(Integer, nullable=False)
+    target_document_type = Column(String(60), nullable=False)
+    target_document_id = Column(Integer, nullable=False)
+    relation_type = Column(String(60), nullable=False)
+    quantity = Column(Numeric(18, 4), nullable=True)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
 class Attachment(TimestampMixin, Base):
     __tablename__ = "attachments"
 
@@ -250,9 +334,40 @@ class Customer(TimestampMixin, Base):
     unified_social_credit_code = Column(String(60), nullable=True, unique=True)
     source_type = Column(String(30), nullable=False, default="personal_development")
     archived_at = Column(DateTime, nullable=True)
+    ext_json = Column(JSON, nullable=True)
 
     created_by = relationship("User", foreign_keys=[created_by_id])
     owner_user = relationship("User", foreign_keys=[owner_user_id])
+
+
+class CustomerTag(TimestampMixin, Base):
+    __tablename__ = "customer_tags"
+    __table_args__ = (
+        UniqueConstraint("customer_id", "tag", name="uq_customer_tag"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    tag = Column(String(50), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    customer = relationship("Customer")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class CustomerFollowUp(TimestampMixin, Base):
+    __tablename__ = "customer_follow_ups"
+
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    follow_type = Column(String(30), nullable=False, default="call")
+    content = Column(Text, nullable=False)
+    next_follow_at = Column(DateTime, nullable=True)
+    status = Column(String(20), nullable=False, default="open")
+    followed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    customer = relationship("Customer")
+    followed_by = relationship("User", foreign_keys=[followed_by_id])
 
 
 class CustomerTransferRecord(TimestampMixin, Base):
@@ -424,6 +539,8 @@ class Warehouse(TimestampMixin, Base):
     name = Column(String(100), nullable=False, unique=True)
     location = Column(String(255), nullable=True)
     warehouse_type = Column(String(30), nullable=False)
+    qc_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    manager_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
 class Product(TimestampMixin, Base):
@@ -487,6 +604,11 @@ class Inventory(TimestampMixin, Base):
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
     quantity = Column(Numeric(18, 4), nullable=False, default=0)
     reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    in_production = Column(Numeric(18, 4), nullable=False, default=0)  # 在制
+    in_transit = Column(Numeric(18, 4), nullable=False, default=0)     # 在途
+    on_order = Column(Numeric(18, 4), nullable=False, default=0)       # 在订
+    available = Column(Numeric(18, 4), nullable=False, default=0)      # 可用(冗余计算)
+    ext_json = Column(JSON, nullable=True)
     avg_unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
 
     warehouse = relationship("Warehouse")
@@ -593,6 +715,7 @@ class SalesOrder(TimestampMixin, Base):
     shipped_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
+    ext_json = Column(JSON, nullable=True)
 
     customer = relationship("Customer")
     sales_user = relationship("User", foreign_keys=[sales_user_id])
@@ -652,6 +775,7 @@ class InventoryDispatchQueue(TimestampMixin, Base):
     sales_order = relationship("SalesOrder")
 
 
+
 class SalesReturn(TimestampMixin, Base):
     __tablename__ = "sales_returns"
 
@@ -679,7 +803,7 @@ class SalesReturnItem(TimestampMixin, Base):
     quantity = Column(Numeric(18, 4), nullable=False)
     batch_suffix = Column(String(30), nullable=True)
 
-
+#预计可用库存
 class FulfillmentDemand(TimestampMixin, Base):
     __tablename__ = "fulfillment_demands"
 
@@ -729,6 +853,8 @@ class PurchaseOrder(TimestampMixin, Base):
     contract_received = Column(Boolean, nullable=False, default=False)
     replenishment_source_type = Column(String(50), nullable=True)
     replenishment_source_id = Column(Integer, nullable=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
+    ext_json = Column(JSON, nullable=True)
 
     supplier = relationship("Supplier")
     purchaser = relationship("User", foreign_keys=[purchaser_user_id])
@@ -839,6 +965,10 @@ class PurchasePaymentRequest(TimestampMixin, Base):
     bank_receipt_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
     payment_method = Column(String(80), nullable=True)
     paid_at = Column(DateTime, nullable=True)
+    invoice_no = Column(String(80), nullable=True)
+    invoice_amount = Column(Numeric(18, 2), nullable=True)
+    invoice_date = Column(Date, nullable=True)
+    invoice_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
 
     purchase_order = relationship("PurchaseOrder")
     requested_by = relationship("User", foreign_keys=[requested_by_id])
@@ -882,6 +1012,7 @@ class ProductionTask(TimestampMixin, Base):
     task_no = Column(String(60), nullable=False, unique=True)
     source_type = Column(String(30), nullable=False, default="manual")
     sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
+    fulfillment_demand_id = Column(Integer, ForeignKey("fulfillment_demands.id"), nullable=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     parent_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=True)
     planned_quantity = Column(Numeric(18, 4), nullable=False)
@@ -897,8 +1028,11 @@ class ProductionTask(TimestampMixin, Base):
     notes = Column(Text, nullable=True)
     preliminary_acceptance_note = Column(Text, nullable=True)
     completion_recorded_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
+    ext_json = Column(JSON, nullable=True)
 
     product = relationship("Product")
+    fulfillment_demand = relationship("FulfillmentDemand", foreign_keys=[fulfillment_demand_id])
     completion_recorded_by = relationship("User", foreign_keys=[completion_recorded_by_id])
     usages = relationship(
         "ProductionMaterialUsage",
@@ -945,6 +1079,7 @@ class ProductionPlan(TimestampMixin, Base):
     period_end = Column(DateTime, nullable=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
+    fulfillment_demand_id = Column(Integer, ForeignKey("fulfillment_demands.id"), nullable=True)
     assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     planned_quantity = Column(Numeric(18, 4), nullable=False)
     scheduled_start_at = Column(DateTime, nullable=True)
@@ -961,6 +1096,7 @@ class ProductionPlan(TimestampMixin, Base):
 
     product = relationship("Product")
     sales_order = relationship("SalesOrder")
+    fulfillment_demand = relationship("FulfillmentDemand", foreign_keys=[fulfillment_demand_id])
     assigned_user = relationship("User", foreign_keys=[assigned_user_id])
     converted_task = relationship("ProductionTask", foreign_keys=[converted_task_id])
     created_by = relationship("User", foreign_keys=[created_by_id])

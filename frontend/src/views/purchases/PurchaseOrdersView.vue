@@ -59,6 +59,14 @@
         <el-table-column prop="shortage_quantity" label="缺口数量" width="120">
           <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
         </el-table-column>
+        <el-table-column label="短缺等级" width="110">
+          <template #default="scope">
+            <el-tag v-if="scope.row.shortage_level === 'green'" type="success" effect="dark">绿·充足</el-tag>
+            <el-tag v-else-if="scope.row.shortage_level === 'yellow'" type="warning" effect="dark">黄·部分不足</el-tag>
+            <el-tag v-else-if="scope.row.shortage_level === 'red'" type="danger" effect="dark">红·完全不足</el-tag>
+            <el-tag v-else type="info" effect="plain">-</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="status_label" label="状态" width="120">
           <template #default="scope">
             <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag>
