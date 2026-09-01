@@ -31,6 +31,21 @@
             <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="全链进度" min-width="240">
+          <template #default="scope">
+            <div class="mini-flow">
+              <div
+                v-for="(dim, idx) in (scope.row.flow_dims || [])"
+                :key="dim.key"
+                class="mini-node"
+                :class="miniNodeClass(dim)"
+                :title="dim.label + ': ' + (dim.stage || '未开始')"
+              >
+                <span>{{ dim.label }}</span>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="price_approval_status_label" label="改价审批" width="130">
           <template #default="scope">
             <el-tag v-if="scope.row.price_approval_status && scope.row.price_approval_status !== 'not_required'" :type="statusType(scope.row.price_approval_status)">
@@ -614,6 +629,15 @@ async function loadBaseOptions() {
   packagingOptions.value = (await get('/api/master-data/packaging-configs?active_only=true')) || []
 }
 
+const FLOW_DONE = new Set(['completed', 'done', 'passed', 'paid', 'cleared', 'approved', 'shipped', 'not_required', 'settled', 'received', 'arrived', 'inbound'])
+const FLOW_ACTIVE = new Set(['pending', 'in_progress', 'processing', 'waiting', 'partial', 'partial_paid', 'under_review', 'purchasing', 'producing', 'quality_pending'])
+
+function miniNodeClass(dim) {
+  if (FLOW_DONE.has(dim.stage)) return 'is-done'
+  if (FLOW_ACTIVE.has(dim.stage)) return 'is-active'
+  return 'is-pending'
+}
+
 function rowClassName({ row }) {
   return focusedOrderId.value === row.id ? 'is-focused-row' : ''
 }
@@ -962,13 +986,6 @@ async function submit() {
       ElMessage.success('订单已更新')
     } else {
       const result = await post('/api/sales/orders', payload)
-      if (result.split_created) {
-        await ElMessageBox.alert(
-          `客户订单 ${result.order_no} 存在库存不足，系统已建立分批次客户订单，第二批订单号为 ${result.split_child_order_no}。后续由采购或生产处理补货需求时，系统会继续同步通知销售。`,
-          '库存不足已自动拆单',
-          { type: 'warning', confirmButtonText: '知道了' }
-        )
-      }
       if (result.replenishment_created) {
         const demandText = (result.replenishment_demands || []).map((item) =>
           `${item.product_name} 缺口 ${formatNumber(item.shortage_quantity)}，已生成${item.fulfillment_mode_label}补货需求 ${item.demand_no}`
@@ -979,7 +996,7 @@ async function submit() {
           { type: 'success', confirmButtonText: '知道了' }
         )
       }
-      ElMessage.success(result.split_created ? `订单已创建并拆分子单：${result.split_child_order_no}` : `订单已创建：${result.order_no}`)
+      ElMessage.success(`订单已创建：${result.order_no}`)
     }
     dialogVisible.value = false
     resetForm()
@@ -1154,4 +1171,10 @@ watch(
 .flow-step.is-done { background: #f0f9eb; color: #67c23a; }
 .flow-step.is-current { background: #ecf5ff; color: #409eff; font-weight: 600; }
 .flow-tooltip-content { max-width: 280px; white-space: pre-line; line-height: 1.6; }
+
+.mini-flow { display: flex; gap: 3px; flex-wrap: wrap; }
+.mini-node { padding: 2px 6px; border-radius: 4px; font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.mini-node.is-done { background: #f0f9eb; color: #67C23A; }
+.mini-node.is-active { background: #ecf5ff; color: #185f93; font-weight: 600; }
+.mini-node.is-pending { background: #f4f4f5; color: #c0c4cc; }
 </style>

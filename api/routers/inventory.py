@@ -1006,38 +1006,38 @@ def mark_placement(
             },
         )
 
-    queue.placement_status = "placed"
+    queue.placement_status = "hidden"
+    queue.shipment_status = "pending"
     queue.placement_marked_by_id = current_user.id
     queue.placement_marked_at = now_local()
-    if queue.placement_status == "placed":
-        queue.placement_status = "hidden"
-        complete_todos(db, business_type="sales_order_placement", business_id=queue.sales_order_id)
-        if order is not None and order.status == "pending_shipment":
-            queue.shipment_status = "pending"
-            inventory_user_ids = _role_user_ids(db, "inventory")
-            existing_todo_user_ids = {
-                todo.assigned_user_id
-                for todo in db.execute(
-                    select(TodoItem).where(
-                        TodoItem.business_type == "sales_order",
-                        TodoItem.business_id == order.id,
-                        TodoItem.status != "completed",
-                    )
-                ).scalars().all()
-            }
-            for user_id in inventory_user_ids:
-                if user_id in existing_todo_user_ids:
-                    continue
-                create_todo(
-                    db,
-                    title=f"待发货客户订单 {order.order_no}",
-                    description="订单已完成置货，请库管安排出库发货。",
-                    module="inventory",
-                    assigned_user_id=user_id,
-                    business_type="sales_order",
-                    business_id=order.id,
-                    priority="high",
+    complete_todos(db, business_type="sales_order_placement", business_id=queue.sales_order_id)
+    # 置货完成即推进订单至待发货状态（取消/驳回/已完成等终态不强制变更）
+    if order is not None and order.status in {"pending_confirmation", "pending_shipment"}:
+        order.status = "pending_shipment"
+        inventory_user_ids = _role_user_ids(db, "inventory")
+        existing_todo_user_ids = {
+            todo.assigned_user_id
+            for todo in db.execute(
+                select(TodoItem).where(
+                    TodoItem.business_type == "sales_order",
+                    TodoItem.business_id == order.id,
+                    TodoItem.status != "completed",
                 )
+            ).scalars().all()
+        }
+        for user_id in inventory_user_ids:
+            if user_id in existing_todo_user_ids:
+                continue
+            create_todo(
+                db,
+                title=f"待发货客户订单 {order.order_no}",
+                description="订单已完成置货，请库管安排出库发货。",
+                module="inventory",
+                assigned_user_id=user_id,
+                business_type="sales_order",
+                business_id=order.id,
+                priority="high",
+            )
     db.commit()
     sync_sales_order_process_status(db, order, updated_by_id=current_user.id)
     return api_response(msg="置货状态已更新")

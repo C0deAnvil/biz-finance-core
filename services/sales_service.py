@@ -726,43 +726,6 @@ def _ensure_sales_order_material_replenishment_todos(
     )
 
 
-def _create_child_split_order(
-    db: Session,
-    *,
-    parent_order: SalesOrder,
-    payload: SalesOrderCreate,
-    items: list[dict],
-) -> SalesOrder | None:
-    if not items:
-        return None
-    child_order = SalesOrder(
-        order_no=next_business_no(db, "XS"),
-        parent_order_id=parent_order.id,
-        split_group_no=parent_order.split_group_no or parent_order.order_no,
-        split_phase=2,
-        customer_id=parent_order.customer_id,
-        sales_user_id=parent_order.sales_user_id,
-        operator_user_id=parent_order.operator_user_id,
-        consignee=payload.consignee,
-        consignee_phone=payload.consignee_phone,
-        delivery_address=payload.delivery_address,
-        payment_type=parent_order.payment_type,
-        status="pending_confirmation",
-        deposit_amount=0,
-        transport_fee=0,
-        packaging_fee=0,
-        total_amount=0,
-        cost_amount=0,
-        profit_amount=0,
-        order_remark=payload.order_remark,
-    )
-    db.add(child_order)
-    db.flush()
-    child_order.total_amount = _build_order_items(db, order_id=child_order.id, payload_items=items) + Decimal(child_order.transport_fee or 0)
-    _create_dispatch_queue(db, child_order.id)
-    return child_order
-
-
 def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
     if customer is None:
@@ -770,8 +733,9 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     if not payload.items:
         raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
 
+    # 不再拆单：整单保留全部明细，库存缺口统一通过生产/采购补货需求处理
     phase_one_items, phase_two_items = _build_split_items(db, payload.items)
-    effective_items = phase_one_items or [
+    effective_items = [
         {
             "product_id": item.product_id,
             "quantity": item.quantity,
@@ -811,34 +775,14 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     _create_dispatch_queue(db, order.id)
     _create_order_todos_and_notice(db, order=order, customer_name=customer.name, current_user=current_user)
 
-    child_order = _create_child_split_order(db, parent_order=order, payload=payload, items=phase_two_items)
-    if child_order is not None:
-        _create_order_todos_and_notice(db, order=child_order, customer_name=customer.name, current_user=current_user)
-        create_notification(
-            db,
-            title="客户订单已自动拆单",
-            content=f"客户订单 {order.order_no} 因库存不足已拆分，第二批订单号为 {child_order.order_no}。",
-            module="sales",
-            recipient_user_ids=[current_user.id],
-            created_by_id=current_user.id,
-            category="warning",
-        )
-
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
     has_available_batch = bool(phase_one_items)
     has_shortage_batch = bool(phase_two_items) or not has_available_batch
     if order.status != "pending_price_approval" and payment_type == "货到付款/分期付款" and has_available_batch:
         _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
 
-    if child_order is not None:
-        child_shortage_map = {
-            int(item["product_id"]): Decimal(item["quantity"] or 0)
-            for item in phase_two_items
-            if item.get("product_id") is not None
-        }
-        created_demands = _create_fulfillment_demands(db, order=child_order, current_user=current_user, shortage_override=child_shortage_map)
-    else:
-        created_demands = _create_fulfillment_demands(db, order=order, current_user=current_user)
+    # 缺口直接挂在整单上生成补货需求，不再另建拆分单据
+    created_demands = _create_fulfillment_demands(db, order=order, current_user=current_user)
 
     write_operation_log(
         db,
@@ -851,7 +795,7 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
             "status": order.status,
             "total_amount": float(order.total_amount),
             "item_count": len(effective_items),
-            "split_child_order_no": child_order.order_no if child_order else None,
+            "split_child_order_no": None,
         },
     )
     db.commit()
@@ -859,8 +803,8 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
         data={
             "id": order.id,
             "order_no": order.order_no,
-            "split_created": child_order is not None,
-            "split_child_order_no": child_order.order_no if child_order else None,
+            "split_created": False,
+            "split_child_order_no": None,
             "replenishment_created": bool(created_demands),
             "replenishment_demands": created_demands,
             "shipment_deferred_by_shortage": has_shortage_batch and not has_available_batch,
