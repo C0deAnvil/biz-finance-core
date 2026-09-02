@@ -2,7 +2,8 @@
   <PageSection title="客户订单管理" description="支持新建、修改、删除待确认订单，并展示拆单父子关系。">
     <template #actions>
       <el-button @click="load">刷新</el-button>
-      <el-button @click="exportTable">导出</el-button>
+      <el-button @click="exportTable">导出CSV</el-button>
+      <el-button @click="exportExcel">导出Excel</el-button>
       <el-button v-if="canManageOrders" type="primary" @click="openCreate">新增订单</el-button>
     </template>
 
@@ -1204,6 +1205,46 @@ function financeEditConfirmText(row) {
 
 function exportTable() {
   exportRowsToCsv('sales_orders', rows.value)
+}
+
+async function exportExcel() {
+  try {
+    const columns = [
+      { key: 'order_no', title: '订单号' },
+      { key: 'customer_name', title: '客户' },
+      { key: 'order_type_label', title: '类型' },
+      { key: 'total_amount', title: '金额' },
+      { key: 'payment_type_label', title: '付款方式' },
+      { key: 'status_label', title: '状态' },
+      { key: 'created_at', title: '创建时间' },
+      { key: 'expected_delivery_date', title: '期望发货' },
+    ]
+    const response = await fetch('/api/export/excel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ filename: 'sales_orders', sheet_name: '销售订单', columns, rows: rows.value }),
+    })
+    if (!response.ok) {
+      let msg = '导出失败'
+      try {
+        const payload = await response.json()
+        msg = payload.msg || msg
+      } catch {}
+      throw new Error(msg)
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'sales_orders.xlsx'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    ElMessage.error(e?.message || '导出失败')
+  }
 }
 
 onMounted(async () => {

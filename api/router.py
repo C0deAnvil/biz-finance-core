@@ -6,6 +6,7 @@ from api.routers.approvals import router as approvals_router
 from api.routers.auth import router as auth_router
 from api.routers.customer_ai import router as customer_ai_router
 from api.routers.dashboard import router as dashboard_router
+from api.routers.export import router as export_router
 from api.routers.files import router as files_router
 from api.routers.finance import router as finance_router
 from api.routers.inventory import router as inventory_router_list
@@ -39,4 +40,5 @@ api_router.include_router(realtime_router)
 api_router.include_router(reimbursements_router)
 api_router.include_router(finance_router)
 api_router.include_router(admin_router)
+api_router.include_router(export_router)
 api_router.include_router(files_router)
