@@ -261,11 +261,13 @@ def mark_placement(
                 msg=f"商品 {_order_item_name(item)} 置货数量超过待置货量(剩余 {float(remaining_quantity)})",
             )
         inventory = db.execute(
-            select(Inventory).where(
+            select(Inventory)
+            .where(
                 Inventory.warehouse_id == finished_warehouse_id,
                 Inventory.product_id == item.product_id,
                 Inventory.material_id.is_(None),
             )
+            .with_for_update()
         ).scalar_one_or_none()
         available_quantity = max(
             Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
@@ -533,11 +535,13 @@ def mark_shipment(
         if ship_quantity > remaining_quantity:
             raise HTTPException(status_code=409, detail=f"{_order_item_name(order_item)} 本次发货数量不能大于剩余待发数量")
         inventory = db.execute(
-            select(Inventory).where(
+            select(Inventory)
+            .where(
                 Inventory.warehouse_id == warehouse_id,
                 Inventory.product_id == order_item.product_id,
                 Inventory.material_id.is_(None),
             )
+            .with_for_update()
         ).scalar_one_or_none()
         available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0) if inventory else Decimal("0")
         if ship_quantity > available_quantity:

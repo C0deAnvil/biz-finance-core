@@ -301,11 +301,15 @@ def ensure_inventory_record(
     warehouse_id: int,
     product_id: int | None = None,
     material_id: int | None = None,
+    for_update: bool = False,
 ):
     conditions = [Inventory.warehouse_id == warehouse_id]
     conditions.append(Inventory.product_id == product_id if product_id is not None else Inventory.product_id.is_(None))
     conditions.append(Inventory.material_id == material_id if material_id is not None else Inventory.material_id.is_(None))
-    inventory = db.execute(select(Inventory).where(*conditions)).scalar_one_or_none()
+    query = select(Inventory).where(*conditions)
+    if for_update:
+        query = query.with_for_update()
+    inventory = db.execute(query).scalar_one_or_none()
     if inventory is None:
         inventory = Inventory(
             warehouse_id=warehouse_id,
@@ -587,11 +591,13 @@ def apply_inventory_change(
     related_id: int | None = None,
     created_by_id: int | None = None,
 ):
+    # 扣减路径加行级锁,防止并发超卖(入库路径无需锁)
     inventory = ensure_inventory_record(
         db,
         warehouse_id=warehouse_id,
         product_id=product_id,
         material_id=material_id,
+        for_update=quantity < 0,
     )
     previous_qty = Decimal(inventory.quantity or 0)
     previous_cost = Decimal(inventory.avg_unit_cost or 0)
