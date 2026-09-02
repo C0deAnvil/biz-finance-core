@@ -322,13 +322,27 @@ def _finance_kpis(db: Session) -> tuple[dict, list[dict]]:
 
 def _build_kpis(current_user: User, db: Session) -> tuple[dict, list[dict]]:
     role_code = current_user.role.code if current_user.role else ""
-    if role_code == "sales":
+    # 超级角色继承基础角色看板
+    SUPER_BASE = {"inventory_super": "inventory", "quality_super": "quality", "finance_super": "finance"}
+    base_role = SUPER_BASE.get(role_code, role_code)
+    if base_role == "sales":
         return _sales_kpis(current_user, db), []
-    if role_code == "purchase":
+    if base_role == "purchase":
         return _purchase_kpis(current_user, db), []
-    if role_code == "inventory":
+    if base_role == "inventory":
         return _inventory_kpis(current_user, db), []
-    if role_code in {"manager", "chairman", "finance", "system_admin"}:
+    if base_role == "quality":
+        # 质检:展示质检任务统计
+        task_count = db.execute(select(func.count(QualityTask.id))).scalar_one()
+        pending_count = db.execute(
+            select(func.count(QualityTask.id)).where(QualityTask.status == "pending")
+        ).scalar_one()
+        return {
+            "质检任务总数": int(task_count or 0),
+            "待质检任务": int(pending_count or 0),
+            "质检通过率": "-",
+        }, []
+    if base_role in {"manager", "chairman", "finance", "system_admin"}:
         return _finance_kpis(db)
     return {}, []
 
