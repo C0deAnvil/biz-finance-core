@@ -1,0 +1,16 @@
+# 统一行尾为 LF(Windows 检出时转 CRLF 由 git 自动处理)
+* text=auto eol=lf
+
+# 二进制文件不转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.xlsx binary
+*.zip binary
