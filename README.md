@@ -41,9 +41,14 @@
 - `seed.py`：基础主数据初始化
 - `database.py`：数据库连接与会话工厂
 - `api/`：后端路由层
+  - `api/routers/inventory/`：库存模块拆包（demands/transfers/queues/stocks + _common）
 - `schemas/`：Pydantic 请求与响应模型
 - `services/`：通用能力层与领域服务层
+  - `services/sales_service/`：销售拆包（orders/payments/returns + _common）
+  - `services/purchase_service/`：采购拆包（orders/payments/receipts + _common）
 - `alembic/`：数据库迁移脚本
+- `tests/`：pytest 测试套件（独立测试库 yecai_test）
+- `scripts/`：运维脚本（run_tests.py 等）
 - `uploads/`：本地附件目录
 - `frontend/`：Vue 前端项目
 - `frontend/src/shared/route-manifest.json`：前后端共享的菜单、路由、预热配置源
@@ -102,6 +107,24 @@ npm run dev
 - `finance01` / `ChangeMe123!`
 - `manager01` / `ChangeMe123!`
 - `chairman01` / `ChangeMe123!`
+- `sysadmin01` / `ChangeMe123!`
+
+### 超级角色账号（手动创建，非 seed）
+
+- `inventory_super01` / `ChangeMe123!`（库存超级：全仓库）
+- `quality_super01` / `ChangeMe123!`（质检超级：全仓库质检）
+- `finance_super01` / `ChangeMe123!`（财务超级：可接管任意付款）
+
+## 运行测试
+
+测试使用独立测试库 `yecai_test`（不污染开发库），首次运行自动建表+seed：
+
+```bash
+python scripts/run_tests.py          # 全部测试（含并发）
+python scripts/run_tests.py --fast   # 跳过并发测试
+```
+
+当前覆盖：登录/角色/主数据冒烟、库存接口回归、并发扣库存防超卖。
 
 ## 当前状态
 
@@ -110,6 +133,10 @@ npm run dev
 - 首页公共业务状态已抽到 `dashboard` store
 - 多个业务页的 `focusId` 聚焦逻辑已抽成复用 composable
 - 路由、菜单、预热配置已统一到共享清单
+- 大文件已拆包：`inventory.py`→`api/routers/inventory/`、`sales_service.py`→`services/sales_service/`、`purchase_service.py`→`services/purchase_service/`（URL 与导入路径零变化）
+- 库存扣减已加行级锁（`SELECT ... FOR UPDATE`）防并发超卖
+- 顶栏通知中心下拉面板 + 角色化工作台首页
+- 通用 Excel 导出接口 `/api/export/excel`
 
 ## 验证情况
 
@@ -123,6 +150,12 @@ python -m compileall api services schemas main.py config.py dependencies.py secu
 
 ```bash
 cd frontend && npm run build
+```
+
+- 自动化测试：
+
+```bash
+python scripts/run_tests.py
 ```
 
 ## 建议阅读顺序
