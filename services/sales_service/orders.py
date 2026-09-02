@@ -1,0 +1,694 @@
+"""销售域服务。"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, joinedload
+
+from models import (
+    BOM,
+    Customer,
+    Inventory,
+    InventoryDispatchQueue,
+    FulfillmentDemand,
+    PackagingConfig,
+    Product,
+    ReceivableRecord,
+    RefundRecord,
+    Role,
+    SalesOrder,
+    SalesOrderApproval,
+    SalesOrderItem,
+    SalesOrderPriceChangeLog,
+    SalesReceiptRequest,
+    SalesReturn,
+    SalesReturnItem,
+    TodoItem,
+    User,
+    Warehouse,
+)
+from responses import api_response
+from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
+from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
+from services.quality_workflow import create_return_reinspection_quality_task
+from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
+from services.request_trace import emit
+from services.workflow import create_inventory_operation_request
+from services.warehouse_lookup import get_finished_warehouse
+from services.inventory_dimensions import sync_inventory_dimensions
+from services.time_utils import now_local
+
+
+
+from services.sales_service._common import _build_order_items, _build_split_items, _create_dispatch_queue, _create_fulfillment_demands, _create_inventory_placement_todos, _create_order_todos_and_notice, _ensure_order_owner_or_admin, _finance_user_ids, _has_pending_finance_edit_confirmation, _load_order, _manager_chairman_user_ids, _resolve_sales_operator_user_id, _role_user_ids, _route_order_to_inventory_shipment
+
+def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
+    customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
+
+    # 不再拆单：整单保留全部明细，库存缺口统一通过生产/采购补货需求处理
+    phase_one_items, phase_two_items = _build_split_items(db, payload.items)
+    effective_items = [
+        {
+            "product_id": item.product_id,
+            "quantity": item.quantity,
+            "unit_price": item.unit_price,
+            "packaging_config_id": item.packaging_config_id,
+            "remark": item.remark,
+            "price_change_remark": getattr(item, "price_change_remark", None),
+        }
+        for item in payload.items
+    ]
+
+    operator_user_id = _resolve_sales_operator_user_id(db, payload.operator_user_id, current_user)
+    order = SalesOrder(
+        order_no=next_business_no(db, "XS"),
+        split_phase=1,
+        customer_id=payload.customer_id,
+        sales_user_id=current_user.id,
+        operator_user_id=operator_user_id,
+        consignee=payload.consignee,
+        consignee_phone=payload.consignee_phone,
+        delivery_address=payload.delivery_address,
+        payment_type=payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales"),
+        order_type=payload.order_type or "normal",
+        expected_delivery_date=payload.expected_delivery_date,
+        status="pending_confirmation",
+        deposit_amount=payload.deposit_amount,
+        transport_fee=payload.transport_fee,
+        packaging_fee=0,
+        total_amount=0,
+        cost_amount=0,
+        profit_amount=0,
+        order_remark=payload.order_remark,
+    )
+    db.add(order)
+    db.flush()
+    order.split_group_no = order.order_no
+
+    order.total_amount = _build_order_items(db, order_id=order.id, payload_items=effective_items) + Decimal(order.transport_fee or 0)
+    _create_dispatch_queue(db, order.id)
+    _create_order_todos_and_notice(db, order=order, customer_name=customer.name, current_user=current_user)
+
+    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    has_available_batch = bool(phase_one_items)
+    has_shortage_batch = bool(phase_two_items) or not has_available_batch
+    if order.status != "pending_price_approval" and payment_type == "货到付款/分期付款" and has_available_batch:
+        _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
+
+    # 缺口直接挂在整单上生成补货需求，不再另建拆分单据
+    created_demands = _create_fulfillment_demands(db, order=order, current_user=current_user)
+
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="create_order",
+        content=f"创建客户订单 {order.order_no}",
+        after_data={
+            "customer_id": order.customer_id,
+            "status": order.status,
+            "total_amount": float(order.total_amount),
+            "item_count": len(effective_items),
+            "split_child_order_no": None,
+        },
+    )
+    db.commit()
+    return api_response(
+        data={
+            "id": order.id,
+            "order_no": order.order_no,
+            "split_created": False,
+            "split_child_order_no": None,
+            "replenishment_created": bool(created_demands),
+            "replenishment_demands": created_demands,
+            "shipment_deferred_by_shortage": has_shortage_batch and not has_available_batch,
+        }
+    )
+
+
+def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, db: Session):
+    order = _load_order(db, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    _ensure_order_owner_or_admin(order, current_user)
+    if order.status not in {"pending_confirmation", "pending_price_approval", "rejected"}:
+        raise HTTPException(status_code=409, detail="仅待确认、待改价审批或已驳回订单允许修改")
+
+    customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
+
+    before_data = {
+        "customer_id": order.customer_id,
+        "status": order.status,
+        "total_amount": float(order.total_amount),
+        "item_count": len(order.items),
+    }
+
+    order.customer_id = payload.customer_id
+    order.operator_user_id = _resolve_sales_operator_user_id(db, payload.operator_user_id or order.operator_user_id, current_user)
+    order.consignee = payload.consignee
+    order.consignee_phone = payload.consignee_phone
+    order.delivery_address = payload.delivery_address
+    order.payment_type = payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales")
+    order.order_type = payload.order_type or "normal"
+    order.expected_delivery_date = payload.expected_delivery_date
+    order.deposit_amount = payload.deposit_amount
+    order.transport_fee = payload.transport_fee
+    order.packaging_fee = 0
+    order.order_remark = payload.order_remark
+    order.rejection_reason = None
+
+    for item in list(order.items):
+        db.delete(item)
+    db.flush()
+    for log in db.execute(
+        select(SalesOrderPriceChangeLog).where(
+            SalesOrderPriceChangeLog.sales_order_id == order.id,
+            SalesOrderPriceChangeLog.status == "pending",
+        )
+    ).scalars().all():
+        db.delete(log)
+    order.price_approval_status = "not_required"
+    order.price_approved_by_id = None
+    order.price_approved_at = None
+    complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
+    order.total_amount = _build_order_items(db, order_id=order.id, payload_items=payload.items) + Decimal(order.transport_fee or 0)
+    if order.price_approval_status != "pending":
+        order.status = "pending_confirmation"
+
+    create_notification(
+        db,
+        title="客户订单已更新",
+        content=f"客户订单 {order.order_no} 已更新，请按最新内容进行审批。",
+        module="sales",
+        recipient_user_ids=_role_user_ids(db, "finance", "chairman"),
+        created_by_id=current_user.id,
+        is_popup=False,
+    )
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="update_order",
+        content=f"更新客户订单 {order.order_no}",
+        before_data=before_data,
+        after_data={
+            "customer_id": order.customer_id,
+            "status": order.status,
+            "total_amount": float(order.total_amount),
+            "item_count": len(payload.items),
+        },
+    )
+    db.commit()
+    return api_response(data={"id": order.id, "order_no": order.order_no})
+
+
+def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: User, db: Session):
+    order = _load_order(db, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    if order.status != "pending_confirmation":
+        raise HTTPException(status_code=409, detail="当前订单状态不允许审批")
+    if order.price_approval_status == "pending":
+        raise HTTPException(status_code=409, detail="当前订单存在待审批改价，需财务审批通过后再推进")
+
+    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    actual_amount = Decimal(payload.actual_amount or payload.voucher_amount or 0)
+    deposit_amount = Decimal(order.deposit_amount or 0)
+    if payload.decision == "approved" and payment_type == "先付定金后付尾款" and actual_amount < deposit_amount:
+        raise HTTPException(status_code=409, detail="定金到账金额不足，不能通过审批")
+    if payload.decision == "approved" and payment_type == "全款发货" and actual_amount < Decimal(order.total_amount or 0):
+        raise HTTPException(status_code=409, detail="全款发货订单到账金额不足，不能通过审批")
+
+    db.add(
+        SalesOrderApproval(
+            sales_order_id=order.id,
+            approver_user_id=current_user.id,
+            decision=payload.decision,
+            voucher_amount=actual_amount,
+            note=payload.note,
+        )
+    )
+
+    queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)).scalar_one_or_none()
+    if queue is None:
+        queue = InventoryDispatchQueue(sales_order_id=order.id)
+        db.add(queue)
+
+    if payload.decision == "approved":
+        order.status = "pending_shipment"
+        order.approved_by_id = current_user.id
+        order.approved_at = now_local()
+        order.rejection_reason = None
+        _create_fulfillment_demands(db, order=order, current_user=current_user)
+        if queue.placement_status == "hidden":
+            queue.shipment_status = "pending"
+        else:
+            queue.placement_status = "pending"
+            queue.shipment_status = "waiting_approval"
+            complete_todos(db, business_type="sales_order", business_id=order.id)
+            _create_inventory_placement_todos(db, order=order)
+
+        if actual_amount > 0:
+            db.add(
+                ReceivableRecord(
+                    sales_order_id=order.id,
+                    amount=actual_amount,
+                    payment_stage="deposit" if payment_type == "先付定金后付尾款" else "full",
+                    received_at=order.approved_at,
+                    received_by_id=current_user.id,
+                    remark=f"订单确认到账：{payment_type}",
+                )
+            )
+            create_cash_flow(
+                db,
+                flow_type="incoming",
+                business_type="sales_order",
+                business_id=order.id,
+                related_no=order.order_no,
+                amount=actual_amount,
+                happened_at=order.approved_at,
+                remark=f"客户订单确认到账：{payment_type}",
+            )
+
+        inventory_user_ids = _role_user_ids(db, "inventory")
+        if queue.placement_status == "hidden":
+            existing_todo_user_ids = {
+                todo.assigned_user_id
+                for todo in db.execute(
+                    select(TodoItem).where(
+                        TodoItem.business_type == "sales_order",
+                        TodoItem.business_id == order.id,
+                        TodoItem.status != "completed",
+                    )
+                ).scalars().all()
+            }
+            for user_id in inventory_user_ids:
+                if user_id in existing_todo_user_ids:
+                    continue
+                create_todo(
+                    db,
+                    title=f"待发货客户订单 {order.order_no}",
+                    description="订单已完成置货，请库管安排出库发货。",
+                    module="inventory",
+                    assigned_user_id=user_id,
+                    business_type="sales_order",
+                    business_id=order.id,
+                    priority="high",
+                )
+        create_notification(
+            db,
+            title="客户订单审批通过",
+            content=f"客户订单 {order.order_no} 已确认到账并进入待发货阶段。",
+            module="sales",
+            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, *inventory_user_ids, *_finance_user_ids(db)])),
+            created_by_id=current_user.id,
+            category="success",
+        )
+    else:
+        order.status = "rejected"
+        order.rejection_reason = payload.note
+        queue.shipment_status = "rejected"
+        create_notification(
+            db,
+            title="客户订单已驳回",
+            content=f"客户订单 {order.order_no} 审批未通过，请根据驳回原因调整。",
+            module="sales",
+            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, *_finance_user_ids(db)])),
+            created_by_id=current_user.id,
+            category="warning",
+        )
+
+    complete_todos(db, business_type="sales_order_approval", business_id=order.id)
+    sync_inventory_dimensions(db)
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="approve_order",
+        content=f"审批客户订单 {order.order_no}",
+        after_data={
+            "decision": payload.decision,
+            "actual_amount": float(actual_amount),
+            "status": order.status,
+            "note": payload.note,
+        },
+    )
+    db.commit()
+    return api_response(data={"id": order.id, "status": order.status})
+
+
+def approve_sales_price_change(order_id: int, payload, current_user: User, db: Session):
+    order = _load_order(db, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    if order.price_approval_status != "pending" and order.status != "pending_price_approval":
+        raise HTTPException(status_code=409, detail="当前客户订单没有待审批的改价")
+    logs = db.execute(
+        select(SalesOrderPriceChangeLog).where(
+            SalesOrderPriceChangeLog.sales_order_id == order.id,
+            SalesOrderPriceChangeLog.status == "pending",
+        )
+    ).scalars().all()
+    if not logs:
+        raise HTTPException(status_code=409, detail="当前客户订单没有待审批的改价明细")
+
+    now = now_local()
+    if payload.decision == "approved":
+        order.price_approval_status = "approved"
+        order.price_approved_by_id = current_user.id
+        order.price_approved_at = now
+        if order.status == "pending_price_approval":
+            order.status = "pending_confirmation"
+        for row in logs:
+            row.status = "approved"
+            row.approved_by_id = current_user.id
+            row.approved_at = now
+        create_notification(
+            db,
+            title="销售改价审批通过",
+            content=f"客户订单 {order.order_no} 的销售改价已通过财务审批，可继续推进收款确认或发货流程。{payload.note or ''}",
+            module="sales",
+            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, order.operator_user_id, *_manager_chairman_user_ids(db)])),
+            created_by_id=current_user.id,
+            category="success",
+        )
+        if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "货到付款/分期付款":
+            _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
+    else:
+        order.price_approval_status = "rejected"
+        order.status = "rejected"
+        order.rejection_reason = payload.note or "销售改价审批未通过"
+        for row in logs:
+            row.status = "rejected"
+            row.approved_by_id = current_user.id
+            row.approved_at = now
+        create_notification(
+            db,
+            title="销售改价审批驳回",
+            content=f"客户订单 {order.order_no} 的销售改价被驳回，请销售调整订单。{payload.note or ''}",
+            module="sales",
+            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, order.operator_user_id, *_manager_chairman_user_ids(db)])),
+            created_by_id=current_user.id,
+            category="warning",
+        )
+
+    complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="approve_sales_price_change",
+        content=f"审批客户订单 {order.order_no} 的销售改价",
+        after_data={"decision": payload.decision, "status": order.status, "price_approval_status": order.price_approval_status},
+    )
+    db.commit()
+    return api_response(data={"id": order.id, "status": order.status, "price_approval_status": order.price_approval_status})
+
+
+def finance_edit_order(order_id: int, payload, current_user: User, db: Session):
+    order = _load_order(db, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    if order.status in {"shipped", "completed", "cancelled"} or order.shipped_at is not None:
+        raise HTTPException(status_code=409, detail="客户订单已发货、已完成或已取消，财务不能再修改")
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
+
+    customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(status_code=404, detail="客户不存在")
+
+    original_customer_name = order.customer.name if order.customer else None
+    original_operator_name = order.operator_user.full_name if order.operator_user else None
+
+    def _serialize_order_items(items):
+        return [
+            {
+                "product_id": item.product_id,
+                "product_name": item.product.name if item.product else None,
+                "product_code": item.product.product_code if item.product else None,
+                "display_specification": item.display_specification,
+                "packaging_config_id": item.packaging_config_id,
+                "packaging_name": item.packaging_config.packaging_name if item.packaging_config else None,
+                "kg_per_bag": float(item.kg_per_bag) if item.kg_per_bag is not None else None,
+                "bag_count": float(item.bag_count) if item.bag_count is not None else None,
+                "packaging_unit_price": float(item.packaging_unit_price or 0),
+                "packaging_fee": float(item.packaging_fee or 0),
+                "quantity": float(item.quantity or 0),
+                "unit_price": float(item.unit_price or 0),
+                "total_amount": float(item.total_amount or 0),
+                "remark": item.remark,
+            }
+            for item in items
+        ]
+
+    before_data = {
+        "order_id": order.id,
+        "order_no": order.order_no,
+        "customer_id": order.customer_id,
+        "customer_name": original_customer_name,
+        "operator_user_id": order.operator_user_id,
+        "operator_name": original_operator_name,
+        "consignee": order.consignee,
+        "consignee_phone": order.consignee_phone,
+        "delivery_address": order.delivery_address,
+        "payment_type": order.payment_type,
+        "deposit_amount": float(order.deposit_amount or 0),
+        "transport_fee": float(order.transport_fee or 0),
+        "packaging_fee": float(order.packaging_fee or 0),
+        "order_remark": order.order_remark,
+        "total_amount": float(order.total_amount or 0),
+        "items": _serialize_order_items(order.items),
+    }
+
+    order.customer_id = payload.customer_id
+    order.operator_user_id = _resolve_sales_operator_user_id(db, payload.operator_user_id or order.operator_user_id, order.sales_user or current_user)
+    order.consignee = payload.consignee
+    order.consignee_phone = payload.consignee_phone
+    order.delivery_address = payload.delivery_address
+    order.payment_type = payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales")
+    order.order_type = payload.order_type or "normal"
+    order.expected_delivery_date = payload.expected_delivery_date
+    order.deposit_amount = payload.deposit_amount
+    order.transport_fee = payload.transport_fee
+    order.packaging_fee = 0
+    order.order_remark = payload.order_remark
+    order.finance_edit_pending = True
+
+    shipped_qty_map = {item.id: Decimal(item.shipped_quantity or 0) for item in order.items}
+    if any(quantity > 0 for quantity in shipped_qty_map.values()):
+        raise HTTPException(status_code=409, detail="客户订单存在已出库明细，不能通过财务改单修改")
+
+    for item in list(order.items):
+        db.delete(item)
+    db.flush()
+    for log in db.execute(
+        select(SalesOrderPriceChangeLog).where(
+            SalesOrderPriceChangeLog.sales_order_id == order.id,
+            SalesOrderPriceChangeLog.status == "pending",
+        )
+    ).scalars().all():
+        db.delete(log)
+    complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
+    order.price_approval_status = "not_required"
+    order.price_approved_by_id = None
+    order.price_approved_at = None
+    order.total_amount = _build_order_items(
+        db,
+        order_id=order.id,
+        payload_items=payload.items,
+        enforce_price_remark=False,
+        create_price_approval=False,
+    ) + Decimal(order.transport_fee or 0)
+    updated_operator = db.execute(select(User).where(User.id == order.operator_user_id)).scalar_one_or_none()
+    if order.status == "pending_price_approval":
+        if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "货到付款/分期付款":
+            _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
+        else:
+            order.status = "pending_confirmation"
+
+    sales_confirm_ids = [order.sales_user_id, order.operator_user_id]
+    inventory_user_ids = _role_user_ids(db, "inventory")
+    complete_todos(db, business_type="sales_order_finance_edit_sales_confirm", business_id=order.id)
+    complete_todos(db, business_type="sales_order_finance_edit_inventory_confirm", business_id=order.id)
+
+    for user_id in list(dict.fromkeys([user_id for user_id in sales_confirm_ids if user_id])):
+        create_todo(
+            db,
+            title=f"确认财务修改客户订单 {order.order_no}",
+            description=f"财务已在发货前修改客户订单，请核对客户、金额、收货与商品明细后确认。{payload.edit_note or ''}",
+            module="sales",
+            assigned_user_id=user_id,
+            business_type="sales_order_finance_edit_sales_confirm",
+            business_id=order.id,
+            priority="high",
+        )
+    for user_id in inventory_user_ids:
+        create_todo(
+            db,
+            title=f"确认财务修改待发订单 {order.order_no}",
+            description=f"财务已在发货前修改客户订单，库存确认前该订单暂不能继续发货。{payload.edit_note or ''}",
+            module="inventory",
+            assigned_user_id=user_id,
+            business_type="sales_order_finance_edit_inventory_confirm",
+            business_id=order.id,
+            priority="high",
+        )
+
+    create_notification(
+        db,
+        title="客户订单已由财务修改",
+        content=f"客户订单 {order.order_no} 已由财务在发货前修改，请销售和库存分别确认后再推进后续流程。{payload.edit_note or ''}",
+        module="sales",
+        recipient_user_ids=list(dict.fromkeys([*sales_confirm_ids, *inventory_user_ids])),
+        created_by_id=current_user.id,
+        category="warning",
+    )
+    after_data = {
+        "order_id": order.id,
+        "order_no": order.order_no,
+        "customer_id": order.customer_id,
+        "customer_name": customer.name if customer else None,
+        "operator_user_id": order.operator_user_id,
+        "operator_name": updated_operator.full_name if updated_operator else None,
+        "consignee": order.consignee,
+        "consignee_phone": order.consignee_phone,
+        "delivery_address": order.delivery_address,
+        "payment_type": order.payment_type,
+        "deposit_amount": float(order.deposit_amount or 0),
+        "transport_fee": float(order.transport_fee or 0),
+        "packaging_fee": float(order.packaging_fee or 0),
+        "order_remark": order.order_remark,
+        "total_amount": float(order.total_amount or 0),
+        "finance_edit_pending": order.finance_edit_pending,
+        "note": payload.edit_note,
+        "items": _serialize_order_items(order.items),
+    }
+
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="finance_edit_order",
+        content=f"财务修改客户订单 {order.order_no}",
+        before_data=before_data,
+        after_data=after_data,
+    )
+    db.commit()
+    return api_response(data={"id": order.id, "order_no": order.order_no, "finance_edit_pending": order.finance_edit_pending})
+
+
+def confirm_finance_edit_order(order_id: int, current_user: User, db: Session, note: str | None = None):
+    order = _load_order(db, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    if not order.finance_edit_pending:
+        return api_response(data={"id": order.id, "finance_edit_pending": False}, msg="该订单无需确认财务修改")
+
+    role_code = current_user.role.code if current_user.role else ""
+    if role_code == "sales":
+        if current_user.id not in {order.sales_user_id, order.operator_user_id}:
+            raise HTTPException(status_code=403, detail="仅订单销售人员或经办人可确认该财务修改")
+        complete_todos(
+            db,
+            business_type="sales_order_finance_edit_sales_confirm",
+            business_id=order.id,
+            assigned_user_id=current_user.id,
+        )
+        confirm_type = "sales"
+    elif role_code == "inventory":
+        complete_todos(
+            db,
+            business_type="sales_order_finance_edit_inventory_confirm",
+            business_id=order.id,
+            assigned_user_id=current_user.id,
+        )
+        confirm_type = "inventory"
+    elif current_user.role and current_user.role.is_admin:
+        complete_todos(db, business_type="sales_order_finance_edit_sales_confirm", business_id=order.id)
+        complete_todos(db, business_type="sales_order_finance_edit_inventory_confirm", business_id=order.id)
+        confirm_type = "admin"
+    else:
+        raise HTTPException(status_code=403, detail="当前账号无权确认财务修改")
+
+    if not _has_pending_finance_edit_confirmation(db, order.id):
+        order.finance_edit_pending = False
+        create_notification(
+            db,
+            title="客户订单财务修改已确认完成",
+            content=f"客户订单 {order.order_no} 的财务修改已由销售和库存确认，可继续后续流程。",
+            module="sales",
+            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, order.operator_user_id, *_finance_user_ids(db), *_role_user_ids(db, "inventory")])),
+            created_by_id=current_user.id,
+            category="success",
+        )
+
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="confirm_finance_edit_order",
+        content=f"确认客户订单 {order.order_no} 的财务修改",
+        after_data={"confirm_type": confirm_type, "note": note, "finance_edit_pending": order.finance_edit_pending},
+    )
+    db.commit()
+    return api_response(data={"id": order.id, "finance_edit_pending": order.finance_edit_pending})
+
+
+def complete_order(order_id: int, current_user: User, db: Session):
+    order = db.execute(select(SalesOrder).where(SalesOrder.id == order_id)).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    _ensure_order_owner_or_admin(order, current_user)
+    if order.status != "shipped":
+        raise HTTPException(status_code=409, detail="仅已发货订单允许完结")
+
+    received_amount = db.execute(
+        select(func.coalesce(func.sum(ReceivableRecord.amount), 0)).where(ReceivableRecord.sales_order_id == order.id)
+    ).scalar_one()
+    if Decimal(received_amount or 0) < Decimal(order.total_amount or 0):
+        raise HTTPException(status_code=409, detail="当前订单回款未达订单金额，不能标记完结")
+
+    order.status = "completed"
+    order.completed_at = now_local()
+
+    queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)).scalar_one_or_none()
+    if queue is not None:
+        queue.shipment_status = "completed"
+        queue.placement_status = "hidden"
+
+    complete_todos(db, business_type="sales_order", business_id=order.id)
+    create_notification(
+        db,
+        title="客户订单已完成",
+        content=f"客户订单 {order.order_no} 已完成闭环。",
+        module="sales",
+        recipient_user_ids=[order.sales_user_id],
+        created_by_id=current_user.id,
+        category="success",
+    )
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="complete_order",
+        content=f"完结客户订单 {order.order_no}",
+        after_data={"status": order.status},
+    )
+    db.commit()
+    return api_response(data={"id": order.id, "status": order.status})
+
+
