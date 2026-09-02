@@ -274,8 +274,8 @@ const reworkVisible = ref(false)
 const scrapVisible = ref(false)
 const attachmentTargetId = ref(null)
 
-const canOperateQuality = computed(() => auth.user?.role_code === 'quality' && pagePermission.can('inspect'))
-const canUploadAttachments = computed(() => auth.user?.role_code === 'quality' && pagePermission.can('upload'))
+const canOperateQuality = computed(() => auth.isRole('quality') && pagePermission.can('inspect'))
+const canUploadAttachments = computed(() => auth.isRole('quality') && pagePermission.can('upload'))
 
 const filters = reactive({ status: '', keyword: '' })
 const createForm = reactive({ purchase_order_id: null, required_tests: 1, remark: '' })

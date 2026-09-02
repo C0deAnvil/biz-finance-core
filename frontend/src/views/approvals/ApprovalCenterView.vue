@@ -8,6 +8,17 @@
 
     <PageSection title="审批中心" description="统一处理待审批单据，详情均为只读态。">
       <template #actions>
+        <el-date-picker
+          v-model="historyRange"
+          type="daterange"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          value-format="YYYY-MM-DD"
+          :clearable="false"
+          style="width: 260px"
+          @change="onHistoryRangeChange"
+        />
         <el-button @click="load">刷新</el-button>
       </template>
       <el-table :data="pagedPendingRows" stripe :row-class-name="pendingRowClassName">
@@ -44,13 +55,16 @@
         <el-table-column prop="approval_type_label" label="审批类型" width="160" />
         <el-table-column prop="title" label="标题" min-width="220" />
         <el-table-column prop="module" label="模块" width="120" />
-        <el-table-column prop="status_label" label="结果" width="120">
+        <el-table-column prop="status_label" label="结果" width="110">
           <template #default="scope">
             <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="处理时间" min-width="180">
-          <template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template>
+        <el-table-column prop="approved_by_name" label="审批人" width="120">
+          <template #default="scope">{{ scope.row.approved_by_name || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="approved_at" label="审批时间" min-width="170">
+          <template #default="scope">{{ formatDateTime(scope.row.approved_at || scope.row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="scope">
@@ -311,13 +325,32 @@ function historyRowClassName({ row }) {
   return focusApprovalId.value && row.id === focusApprovalId.value ? 'is-focused-row' : ''
 }
 
+const historyRange = ref('')
+
+function defaultHistoryRange() {
+  const now = new Date()
+  const first = new Date(now.getFullYear(), now.getMonth(), 1)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${first.getFullYear()}-${pad(first.getMonth() + 1)}-${pad(first.getDate())} ~ ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+function onHistoryRangeChange(range) {
+  if (Array.isArray(range) && range.length === 2) {
+    load()
+  }
+}
+
 async function load() {
+  const [startDate, endDate] = Array.isArray(historyRange.value) && historyRange.value.length === 2
+    ? historyRange.value
+    : defaultHistoryRange().split(' ~ ')
   const [pendingData, historyData] = await Promise.all([
     get('/api/approvals/pending'),
-    get('/api/approvals/history')
+    get(`/api/approvals/history?start_date=${startDate}&end_date=${endDate}`)
   ])
   pendingRows.value = filterApprovalRows(pendingData)
-  historyRows.value = filterApprovalRows(historyData)
+  const historyPayload = historyData?.items ?? historyData
+  historyRows.value = filterApprovalRows(historyPayload)
   await applyFocus()
 }
 
@@ -450,7 +483,10 @@ async function handleDrawerDecision(decision) {
   await postDecision(decision, buildDecisionPayload(decision))
 }
 
-onMounted(load)
+onMounted(() => {
+  historyRange.value = defaultHistoryRange().split(' ~ ')
+  load()
+})
 
 watch(() => route.query.focusId, async () => {
   if (pendingRows.value.length || historyRows.value.length) {

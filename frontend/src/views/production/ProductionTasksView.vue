@@ -20,7 +20,11 @@
       </el-tabs>
 
       <el-table :data="pagedRows" stripe :row-class-name="rowClassName">
-        <el-table-column prop="task_no" label="任务号" width="150" />
+        <el-table-column prop="task_no" label="任务号" width="150">
+          <template #default="scope">
+            <span :style="scope.row.order_type_color ? { color: scope.row.order_type_color, fontWeight: 600 } : {}">{{ scope.row.task_no }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="product_name" label="产品" min-width="160" />
         <el-table-column prop="source_type" label="来源" width="120">
           <template #default="scope">{{ sourceLabel(scope.row.source_type) }}</template>
@@ -61,7 +65,11 @@
 
     <PageSection v-if="canManageTasks" title="待生产补货需求" description="销售订单库存不足且产品为生产型时，会在此生成待处理需求。">
       <el-table :data="fulfillmentDemands" stripe>
-        <el-table-column prop="demand_no" label="需求号" width="150" />
+        <el-table-column prop="demand_no" label="需求号" width="150">
+          <template #default="scope">
+            <span :style="scope.row.order_type_color ? { color: scope.row.order_type_color, fontWeight: 600 } : {}">{{ scope.row.demand_no }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="source_type" label="来源" width="130">
           <template #default="scope">{{ scope.row.source_type === 'low_stock_replenishment' ? '安全库存补货' : '客户订单缺货' }}</template>
         </el-table-column>
@@ -86,18 +94,46 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column prop="status_label" label="状态" width="120">
+        <el-table-column prop="status_label" label="状态" width="110">
           <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="process_note" label="处理说明" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="进度" width="120">
           <template #default="scope">
+            <el-tag :type="demandProgressTag(scope.row.progress_status)" effect="dark" size="small">{{ scope.row.progress_label || '-' }}</el-tag>
+            <div v-if="scope.row.related_no" class="demand-related">关联: {{ scope.row.related_no }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="process_note" label="处理说明" min-width="160" show-overflow-tooltip />
+        <el-table-column label="操作" width="240" fixed="right">
+          <template #default="scope">
+            <el-button v-if="scope.row.status === 'pending'" size="small" text type="primary" @click="openEditDemand(scope.row)">改数量</el-button>
             <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建任务</el-button>
-            <el-button size="small" text type="danger" @click="cancelDemand(scope.row)">取消创建</el-button>
+            <el-button v-if="scope.row.status === 'pending'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
     </PageSection>
+
+    <el-dialog v-model="editDemandVisible" title="调整补货需求数量" width="440px">
+      <el-form :model="editDemandForm" label-width="100px">
+        <el-form-item label="需求号">
+          <span>{{ editDemandForm.demand_no }}</span>
+        </el-form-item>
+        <el-form-item label="产品">
+          <span>{{ editDemandForm.product_name }}</span>
+        </el-form-item>
+        <el-form-item label="缺口数量" required>
+          <el-input-number v-model="editDemandForm.shortage_quantity" :min="0.01" :precision="2" style="width: 180px" />
+        </el-form-item>
+        <el-form-item label="说明">
+          <el-input v-model="editDemandForm.note" type="textarea" :rows="2" placeholder="调整原因(选填)" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDemandVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editDemandSubmitting" @click="submitEditDemand">保存</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="createVisible" title="新增生产任务" width="980px">
       <el-alert v-if="activeDemand" type="warning" :closable="false" show-icon class="mb-12">
@@ -157,6 +193,41 @@
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" @click="createTask">创建任务</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="rawDemandConfirmVisible" title="原料不足" width="680px">
+      <template v-if="rawDemandItems.length">
+        <el-alert type="warning" :closable="false" show-icon class="mb-12">
+          <template #title>
+            {{ rawDemandMode === 'standalone' ? '当前原料库存无法支持生产。是否提交原料补货需求?' : '原料库存不足,本次仅能安排部分生产。是否对剩余部分提交原料补货需求?' }}
+            数量默认等于剩余缺口,可修改。
+          </template>
+        </el-alert>
+        <el-table :data="rawDemandItems" border>
+          <el-table-column prop="material_name" label="原料" min-width="160" />
+          <el-table-column label="需要数量" width="100">
+            <template #default="scope">{{ formatNumber(scope.row.required_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="可用数量" width="100">
+            <template #default="scope">{{ formatNumber(scope.row.available_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="缺口数量" width="100">
+            <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="补货数量" width="140">
+            <template #default="scope">
+              <el-input-number v-model="scope.row.demand_quantity" :min="1" :precision="0" size="small" style="width: 120px" />
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button v-if="rawDemandMode === 'with_task'" @click="createTaskDirect">仅创建任务,不提原料</el-button>
+        <el-button @click="rawDemandConfirmVisible = false">取消</el-button>
+        <el-button type="primary" :loading="rawDemandSubmitting" @click="confirmRawDemand">
+          {{ rawDemandMode === 'standalone' ? '确认提原料补货' : '提交原料补货并创建任务' }}
+        </el-button>
       </template>
     </el-dialog>
 
@@ -346,7 +417,7 @@ import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { get, post } from '../../api/client'
+import { get, post, put } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import { useRouteFocus } from '../../composables/useRouteFocus'
 import { useLocalPagination } from '../../composables/useLocalPagination'
@@ -377,8 +448,8 @@ const activeTaskTab = ref('ongoing')
 
 const completedStatuses = ['completed', 'cancelled', 'scrapped', 'partially_scrapped', 'reworked']
 const canManageTasks = computed(() => auth.user?.role_code === 'production' && pagePermission.can('create'))
-const showTaskTabs = computed(() => auth.user?.role_code !== 'quality')
-const createForm = reactive({ source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null })
+const showTaskTabs = computed(() => !auth.isRole('quality'))
+const createForm = reactive({ source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null, create_raw_material_demands: false, raw_material_demands: [] })
 const finishedWarehouses = ref([])
 const materialRequestForm = reactive({ material_usages: [] })
 const completeForm = reactive({ produced_quantity: 0, scrap_quantity: 0, requires_quality: true, preliminary_acceptance_note: '', actual_usages: [] })
@@ -463,7 +534,7 @@ function canShowInboundAction(row) {
 }
 
 function resetCreateForm() {
-  Object.assign(createForm, { source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null })
+  Object.assign(createForm, { source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null, create_raw_material_demands: false, raw_material_demands: [] })
   selectedSalesOrder.value = null
   activeDemand.value = null
 }
@@ -611,6 +682,29 @@ async function createTask() {
     ElMessage.warning('请先选择已配置 BOM 的产品')
     return
   }
+  // 转任务时原料不足(部分生产)→ 询问是否提交原料补货需求
+  // 缺口按"剩余需求数量"计算:剩余部分 = 需求总量 - 本次生产量
+  if (createForm.fulfillment_demand_id && activeDemand.value) {
+    const demandShortage = Number(activeDemand.value.shortage_quantity || 0)
+    const planned = Number(createForm.planned_quantity || 0)
+    if (planned < demandShortage) {
+      const remaining = demandShortage - planned
+      try {
+        const shortageRows = await get(`/api/production/raw-material-shortage?product_id=${createForm.product_id}&planned_quantity=${remaining}`)
+        const shortageItems = (shortageRows || []).filter((it) => Number(it.shortage_quantity || 0) > 0)
+        if (shortageItems.length) {
+          openRawDemandConfirm('with_task', shortageItems)
+          return
+        }
+      } catch (e) {
+        // 查询失败不阻塞创建
+      }
+    }
+  }
+  await createTaskDirect()
+}
+
+async function createTaskDirect() {
   const result = await post('/api/production/tasks', {
     ...createForm,
     material_usages: createForm.material_usages.map((item) => ({
@@ -633,13 +727,71 @@ async function createTask() {
   await load()
 }
 
-function prefillDemand(row) {
-  resetCreateForm()
-  if (!canCreateDemandTask(row)) {
-    ElMessage.warning('当前原料库存暂时无法支持生产，请先处理采购补货待办')
+const rawDemandConfirmVisible = ref(false)
+const rawDemandSubmitting = ref(false)
+const rawDemandMode = ref('with_task')
+const rawDemandItems = ref([])
+
+function openRawDemandConfirm(mode, shortageItems) {
+  rawDemandMode.value = mode
+  rawDemandItems.value = (shortageItems || []).map((it) => ({
+    material_id: it.material_id,
+    material_name: it.material_name,
+    required_quantity: Number(it.required_quantity || 0),
+    available_quantity: Number(it.available_quantity || 0),
+    shortage_quantity: Number(it.shortage_quantity || 0),
+    demand_quantity: Number(it.shortage_quantity || 0),
+  }))
+  rawDemandConfirmVisible.value = true
+}
+
+async function confirmRawDemand() {
+  if (rawDemandSubmitting.value) return
+  const items = rawDemandItems.value
+    .filter((it) => Number(it.demand_quantity || 0) > 0)
+    .map((it) => ({ material_id: it.material_id, shortage_quantity: Number(it.demand_quantity || 0) }))
+  if (!items.length) {
+    ElMessage.warning('请填写补货数量')
     return
   }
+  rawDemandSubmitting.value = true
+  try {
+    if (rawDemandMode.value === 'standalone') {
+      const resp = await post(`/api/production/fulfillment-demands/${activeDemand.value.id}/raw-material-demands`, { items })
+      ElMessage.success(resp?.msg || '原料补货需求已提交')
+      rawDemandConfirmVisible.value = false
+      await load()
+    } else {
+      createForm.create_raw_material_demands = true
+      createForm.raw_material_demands = items
+      rawDemandConfirmVisible.value = false
+      await createTaskDirect()
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '提交失败')
+  } finally {
+    rawDemandSubmitting.value = false
+  }
+}
+
+function prefillDemand(row) {
+  resetCreateForm()
   activeDemand.value = row
+  if (!canCreateDemandTask(row)) {
+    // 原料完全不足:询问是否提交原料补货需求(需求标记待补料,原料到货后再转任务)
+    const shortageQuantity = Number(row.shortage_quantity || 1)
+    get(`/api/production/raw-material-shortage?product_id=${row.product_id}&planned_quantity=${shortageQuantity}`)
+      .then((shortageRows) => {
+        const shortageItems = (shortageRows || []).filter((it) => Number(it.shortage_quantity || 0) > 0)
+        if (shortageItems.length) {
+          openRawDemandConfirm('standalone', shortageItems)
+        } else {
+          ElMessage.warning('当前原料库存暂时无法支持生产，请先处理采购补货待办')
+        }
+      })
+      .catch(() => ElMessage.warning('当前原料库存暂时无法支持生产，请先处理采购补货待办'))
+    return
+  }
   createForm.source_type = row.sales_order_id ? 'sales_order' : 'manual'
   createForm.sales_order_id = row.sales_order_id || null
   createForm.product_id = row.product_id
@@ -651,6 +803,51 @@ function prefillDemand(row) {
   createForm.fulfillment_demand_id = row.source_type === 'low_stock_replenishment' ? null : row.id
   buildCreateMaterialUsages()
   createVisible.value = true
+}
+
+const editDemandVisible = ref(false)
+const editDemandSubmitting = ref(false)
+const editDemandForm = reactive({ id: null, demand_no: '', product_name: '', shortage_quantity: 0, note: '' })
+
+const DEMAND_PROGRESS_TAGS = {
+  pending: 'warning', purchasing: 'primary', ordered: 'primary', receiving: 'primary',
+  pending_payment: 'danger', raw_purchasing: 'warning', producing: 'primary',
+  pending_inbound: 'warning', completed: 'success', cancelled: 'info',
+}
+function demandProgressTag(status) {
+  return DEMAND_PROGRESS_TAGS[status] || 'info'
+}
+
+function openEditDemand(row) {
+  Object.assign(editDemandForm, {
+    id: row.id,
+    demand_no: row.demand_no,
+    product_name: row.product_name,
+    shortage_quantity: Number(row.shortage_quantity || 0),
+    note: '',
+  })
+  editDemandVisible.value = true
+}
+
+async function submitEditDemand() {
+  if (!editDemandForm.id || editDemandForm.shortage_quantity <= 0) {
+    ElMessage.warning('请填写大于 0 的缺口数量')
+    return
+  }
+  editDemandSubmitting.value = true
+  try {
+    await put(`/api/production/fulfillment-demands/${editDemandForm.id}`, {
+      shortage_quantity: editDemandForm.shortage_quantity,
+      note: editDemandForm.note || null,
+    })
+    ElMessage.success('补货需求数量已调整')
+    editDemandVisible.value = false
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.message || '调整失败')
+  } finally {
+    editDemandSubmitting.value = false
+  }
 }
 
 async function cancelDemand(row) {
@@ -847,6 +1044,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.demand-related { font-size: 12px; color: #909399; line-height: 18px; }
 .page-stack { display: flex; flex-direction: column; gap: 16px; }
 .summary-row { margin-bottom: 0; }
 .summary-label { color: #909399; margin-bottom: 8px; }

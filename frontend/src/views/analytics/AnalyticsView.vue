@@ -165,8 +165,15 @@ const metricDetail = ref(null)
 const loadingDetail = ref(false)
 const metricKeyword = ref('')
 
+function defaultMonthRange() {
+  const now = new Date()
+  const first = new Date(now.getFullYear(), now.getMonth(), 1)
+  const pad = (n) => String(n).padStart(2, '0')
+  return [`${first.getFullYear()}-${pad(first.getMonth() + 1)}-${pad(first.getDate())}`, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`]
+}
+
 const filters = reactive({
-  dateRange: [],
+  dateRange: defaultMonthRange(),
   chartType: '',
   topN: 8
 })
@@ -210,6 +217,8 @@ function selectMetric(metric) {
   }
   if (!metric.supports_date_range) {
     filters.dateRange = []
+  } else if (!filters.dateRange?.length) {
+    filters.dateRange = defaultMonthRange()
   }
   loadMetricDetail()
 }

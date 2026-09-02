@@ -265,7 +265,7 @@ function canApprove(row) {
 }
 
 function canRefund(row) {
-  return auth.user?.role_code === 'finance' && pagePermission.can('refund') && row.status === 'approved' && Number(row.refund_amount || 0) > 0
+  return auth.isRole('finance') && pagePermission.can('refund') && row.status === 'approved' && Number(row.refund_amount || 0) > 0
 }
 
 function openApproval(row, decision) {

@@ -48,6 +48,7 @@ from services.quality_workflow import (
     quality_sample_consumption,
     resolve_purchase_quality_context,
 )
+from services.organization import get_inventory_scope_warehouse_ids
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.workflow import create_inventory_operation_request
 from services.time_utils import now_local
@@ -383,6 +384,21 @@ def _sync_return_reinspection_status(
 def list_quality_tasks(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     repair_quality_workflows(db)
     tasks = db.execute(select(QualityTask).order_by(QualityTask.created_at.desc())).scalars().all()
+    # 普通质检员只能看所属仓库的任务;超级质检员看所有
+    if current_user.role.code == "quality":
+        scoped_warehouse_ids = get_inventory_scope_warehouse_ids(db, current_user)
+        if scoped_warehouse_ids is not None:
+            scoped_set = set(scoped_warehouse_ids)
+            filtered: list[QualityTask] = []
+            for task in tasks:
+                pt = None
+                if task.production_task_id:
+                    pt = db.execute(select(ProductionTask).where(ProductionTask.id == task.production_task_id)).scalar_one_or_none()
+                meta = parse_purchase_quality_meta(pt) if pt else {}
+                warehouse_id = meta.get("warehouse_id") or (pt.warehouse_id if pt else None)
+                if warehouse_id is None or warehouse_id in scoped_set:
+                    filtered.append(task)
+            tasks = filtered
     task_ids = [row.id for row in tasks]
     production_task_ids = [row.production_task_id for row in tasks]
 
@@ -1250,6 +1266,7 @@ def list_inbound_applications(current_user: User = Depends(get_current_user), db
     query = select(QualityInboundApplication).order_by(QualityInboundApplication.created_at.desc())
     if current_user.role.code == "quality":
         query = query.where(QualityInboundApplication.requested_by_id == current_user.id)
+    # 超级质检员:查看所有仓库的入库申请(不额外过滤)
     rows = db.execute(query).scalars().all()
     task_ids = [row.quality_task_id for row in rows]
     warehouse_ids = [row.warehouse_id for row in rows]

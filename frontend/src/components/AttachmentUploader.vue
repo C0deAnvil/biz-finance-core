@@ -16,11 +16,26 @@
     </el-form>
 
     <el-table :data="attachments" stripe v-if="attachments.length">
-      <el-table-column prop="attachment_type" label="类型" width="180" />
+      <el-table-column prop="attachment_type" label="类型" width="150" />
       <el-table-column prop="original_name" label="文件名" />
-      <el-table-column label="操作" width="160">
+      <el-table-column label="核验" width="110">
+        <template #default="scope">
+          <el-tag v-if="scope.row.verified_at" type="success" size="small">已核验</el-tag>
+          <el-tag v-else type="info" size="small">未核验</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="200">
         <template #default="scope">
           <el-button size="small" @click="openAttachment(scope.row.id)">查看</el-button>
+          <el-button
+            v-if="canVerify && !scope.row.verified_at"
+            size="small"
+            type="success"
+            plain
+            @click="verifyAttachment(scope.row)"
+          >
+            核验
+          </el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -43,9 +58,11 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
-import { get, upload } from '../api/client'
+import { useAuthStore } from '../stores/auth'
+
+import { get, post, upload } from '../api/client'
 
 const props = defineProps({
   businessType: { type: String, required: true },
@@ -57,6 +74,14 @@ const props = defineProps({
 const attachments = ref([])
 const attachmentType = ref('')
 const selectedFile = ref(null)
+const auth = useAuthStore()
+const canVerify = computed(() => auth.isRole('finance') || ['manager', 'chairman', 'system_admin'].includes(auth.user?.role_code || ''))
+
+async function verifyAttachment(row) {
+  await post(`/api/files/${row.id}/verify`)
+  ElMessage.success('附件已核验')
+  await loadAttachments()
+}
 
 function handleFileChange(event) {
   selectedFile.value = event.target.files[0]

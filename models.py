@@ -314,8 +314,11 @@ class Attachment(TimestampMixin, Base):
     relative_path = Column(String(500), nullable=False)
     mime_type = Column(String(120), nullable=True)
     uploaded_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    verified_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    verified_at = Column(DateTime, nullable=True)
 
-    uploaded_by = relationship("User")
+    uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
+    verified_by = relationship("User", foreign_keys=[verified_by_id])
 
 
 # ===== 主数据 =====
@@ -682,6 +685,20 @@ class InventoryOperationRequest(TimestampMixin, Base):
 
 
 # ===== 销售 =====
+# ===== 销售单据类型配置(颜色便于修改,后续下游单据同色传播) =====
+ORDER_TYPE_STYLES = {
+    "normal":    {"label": "普通", "color": "#909399", "tag_type": "info",    "sort": 0},
+    "urgent":    {"label": "加急", "color": "#F56C6C", "tag_type": "danger",  "sort": 1},
+    "custom":    {"label": "定制", "color": "#E6A23C", "tag_type": "warning", "sort": 2},
+    "important": {"label": "重要", "color": "#F56C6C", "tag_type": "danger",  "sort": 3},
+}
+
+
+def order_type_style(order_type: str | None) -> dict:
+    """取单据类型样式;未知类型回退普通。"""
+    return ORDER_TYPE_STYLES.get(order_type or "normal", ORDER_TYPE_STYLES["normal"])
+
+
 class SalesOrder(TimestampMixin, Base):
     __tablename__ = "sales_orders"
 
@@ -697,6 +714,8 @@ class SalesOrder(TimestampMixin, Base):
     consignee_phone = Column(String(30), nullable=False)
     delivery_address = Column(String(255), nullable=False)
     payment_type = Column(String(50), nullable=False)
+    order_type = Column(String(30), nullable=False, default="normal")
+    expected_delivery_date = Column(Date, nullable=True)
     status = Column(String(30), nullable=False, default="draft")
     total_amount = Column(Numeric(18, 2), nullable=False, default=0)
     deposit_amount = Column(Numeric(18, 2), nullable=False, default=0)
@@ -742,6 +761,7 @@ class SalesOrderItem(TimestampMixin, Base):
     display_specification = Column(String(120), nullable=True)
     remark = Column(String(255), nullable=True)
     shipped_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+    placed_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
 
     sales_order = relationship("SalesOrder", back_populates="items")
     product = relationship("Product")
@@ -809,7 +829,7 @@ class FulfillmentDemand(TimestampMixin, Base):
 
     id = Column(Integer, primary_key=True)
     demand_no = Column(String(60), nullable=False, unique=True)
-    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
     sales_order_item_id = Column(Integer, ForeignKey("sales_order_items.id"), nullable=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     fulfillment_mode = Column(String(30), nullable=False)
@@ -817,6 +837,7 @@ class FulfillmentDemand(TimestampMixin, Base):
     status = Column(String(30), nullable=False, default="pending")
     assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     processed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     cancel_reason = Column(Text, nullable=True)
     process_note = Column(Text, nullable=True)
     source_order_no = Column(String(60), nullable=True)
@@ -826,6 +847,37 @@ class FulfillmentDemand(TimestampMixin, Base):
     product = relationship("Product")
     assigned_user = relationship("User", foreign_keys=[assigned_user_id])
     processed_by = relationship("User", foreign_keys=[processed_by_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+# ===== 移库 =====
+class StockTransfer(TimestampMixin, Base):
+    __tablename__ = "stock_transfers"
+
+    id = Column(Integer, primary_key=True)
+    transfer_no = Column(String(60), nullable=False, unique=True)
+    source_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    target_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    status = Column(String(30), nullable=False, default="pending_outbound")
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    outbound_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    outbound_at = Column(DateTime, nullable=True)
+    quality_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    quality_at = Column(DateTime, nullable=True)
+    quality_result = Column(String(30), nullable=True)
+    completed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    reject_reason = Column(Text, nullable=True)
+    remark = Column(Text, nullable=True)
+
+    source_warehouse = relationship("Warehouse", foreign_keys=[source_warehouse_id])
+    target_warehouse = relationship("Warehouse", foreign_keys=[target_warehouse_id])
+    product = relationship("Product")
+    material = relationship("Material")
+    created_by = relationship("User", foreign_keys=[created_by_id])
 
 
 # ===== 采购 =====
@@ -951,6 +1003,7 @@ class PurchasePaymentRequest(TimestampMixin, Base):
     requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     completed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    assigned_finance_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     requested_amount = Column(Numeric(18, 2), nullable=False, default=0)
     order_amount = Column(Numeric(18, 2), nullable=False, default=0)
     other_fee_amount = Column(Numeric(18, 2), nullable=False, default=0)

@@ -11,10 +11,11 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_db
-from dependencies import get_current_user
+from dependencies import get_current_user, require_roles
 from models import Attachment, PurchaseOrder, Role, SalesOrder, User
 from responses import api_response
 from services.core import create_notification
+from services.time_utils import now_local
 
 router = APIRouter(prefix='/files', tags=['附件'])
 
@@ -200,6 +201,29 @@ async def upload_file(
     return api_response(data={'id': attachment.id, 'relative_path': attachment.relative_path})
 
 
+@router.post('/{attachment_id}/verify')
+def verify_attachment(
+    attachment_id: int,
+    current_user: User = Depends(require_roles("finance", "finance_super", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """财务核验附件(发票/合同等):记录核验人与核验时间。"""
+    row = db.execute(select(Attachment).where(Attachment.id == attachment_id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    row.verified_by_id = current_user.id
+    row.verified_at = now_local()
+    db.commit()
+    return api_response(
+        msg="附件已核验",
+        data={
+            "id": row.id,
+            "verified_by_id": row.verified_by_id,
+            "verified_at": row.verified_at.isoformat() if row.verified_at else None,
+        },
+    )
+
+
 @router.get('/{attachment_id}')
 def get_attachment(attachment_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     attachment = db.execute(select(Attachment).where(Attachment.id == attachment_id)).scalar_one_or_none()
@@ -225,6 +249,9 @@ def list_attachments(business_type: str, business_id: int, current_user: User = 
                 'attachment_type': row.attachment_type,
                 'original_name': row.original_name,
                 'relative_path': row.relative_path,
+                'verified_by_id': row.verified_by_id,
+                'verified_at': row.verified_at.isoformat() if row.verified_at else None,
+                'uploaded_by_id': row.uploaded_by_id,
             }
             for row in rows
         ]

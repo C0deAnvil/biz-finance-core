@@ -9,6 +9,7 @@ from database import get_db
 from dependencies import get_current_user, require_roles
 from models import (
     Customer,
+    FulfillmentDemand,
     Inventory,
     InventoryDispatchQueue,
     InventoryOperationRequest,
@@ -23,8 +24,11 @@ from models import (
     PurchaseReceiptItem,
     Role,
     OperationLog,
+    ReceivableRecord,
+    order_type_style,
     SalesOrderItem,
     SalesOrder,
+    StockTransfer,
     StockTakeItem,
     StockTakeTask,
     TodoItem,
@@ -32,9 +36,11 @@ from models import (
     Warehouse,
 )
 from responses import api_response
-from schemas.inventory import InventoryManualOperationCreateRequest, InventoryOperationApprovalRequest, InventoryOperationHandleRequest, InventoryOperationRejectRequest, StockTakeCreate, StockTakeSubmit
-from schemas.sales import QueueActionRequest, SalesShipmentRequest
+from schemas.inventory import InventoryManualOperationCreateRequest, InventoryOperationApprovalRequest, InventoryOperationHandleRequest, InventoryOperationRejectRequest, StockTakeCreate, StockTakeSubmit, StockTransferCreateRequest, TransferQualityRequest
+from schemas.production import FulfillmentDemandManualCreateRequest, SalesOrderReplenishmentCreateRequest
+from schemas.sales import PlacementActionRequest, QueueActionRequest, SalesShipmentRequest
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
+from services.replenishment_service import create_manual_fulfillment_demand, ensure_fulfillment_demand_routing, resolve_demand_progress
 from services.display import clean_display_text, inventory_request_category_label, status_label, transaction_type_label
 from services.display import payment_type_label
 from services.organization import get_inventory_scope_warehouse_ids, user_in_scope, warehouse_in_scope
@@ -46,7 +52,7 @@ from services.workflow import (
 )
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
-from services.sales_service import ensure_sales_order_fulfillment_demands
+from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
 from services.inventory_dimensions import sync_inventory_dimensions
 
@@ -283,6 +289,10 @@ def _serialize_shipment_queue(row: InventoryDispatchQueue, db: Session, current_
         "order_id": row.sales_order_id,
         "order_no": order.order_no,
         "customer_name": order.customer.name if order.customer else None,
+        "order_type": order.order_type,
+        "order_type_label": order_type_style(order.order_type)["label"],
+        "order_type_color": order_type_style(order.order_type)["color"],
+        "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
         "status": row.shipment_status,
         "order_status": order.status,
         "finance_edit_pending": bool(order.finance_edit_pending),
@@ -295,21 +305,117 @@ def _serialize_shipment_queue(row: InventoryDispatchQueue, db: Session, current_
     }
 
 
+def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
+    """实时计算置货状态(不落库):
+    - green: 所有商品可用库存 >= 待置货量
+    - yellow: 部分商品有可用库存(可部分置货)
+    - red: 所有商品均无可用库存 或 无法继续部分置货
+    同时返回每个明细的待置货/已置货/可用库存。
+    """
+    finished_warehouse_id = _finished_warehouse_id(db)
+    product_ids = [item.product_id for item in order.items if item.product_id]
+    inventory_rows = (
+        db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == finished_warehouse_id,
+                Inventory.product_id.in_(product_ids),
+                Inventory.material_id.is_(None),
+            )
+        ).scalars().all()
+        if product_ids
+        else []
+    )
+    available_map = {
+        row.product_id: max(Decimal(row.quantity or 0) - Decimal(row.reserved_quantity or 0), Decimal("0"))
+        for row in inventory_rows
+    }
+    items = []
+    any_available = False
+    all_enough = True
+    for item in order.items:
+        ordered = Decimal(item.quantity or 0)
+        placed = Decimal(item.placed_quantity or 0)
+        shipped = Decimal(item.shipped_quantity or 0)
+        remaining_to_place = max(ordered - placed - shipped, Decimal("0"))
+        available = available_map.get(item.product_id, Decimal("0"))
+        if remaining_to_place <= 0:
+            item_status = "done"
+        elif available >= remaining_to_place:
+            item_status = "enough"
+            any_available = True
+        elif available > 0:
+            item_status = "partial"
+            any_available = True
+            all_enough = False
+        else:
+            item_status = "none"
+            all_enough = False
+        items.append(
+            {
+                "sales_order_item_id": item.id,
+                "product_id": item.product_id,
+                "product_name": _order_item_name(item),
+                "product_code": item.product.product_code if item.product else None,
+                "display_specification": item.display_specification,
+                "ordered_quantity": float(ordered),
+                "placed_quantity": float(placed),
+                "shipped_quantity": float(shipped),
+                "remaining_to_place": float(remaining_to_place),
+                "available_quantity": float(available),
+                "shortage_quantity": float(max(remaining_to_place - available, Decimal("0"))),
+                "item_status": item_status,
+            }
+        )
+    if all_enough:
+        stock_status = "green"
+    elif any_available:
+        stock_status = "yellow"
+    else:
+        stock_status = "red"
+    return {"stock_status": stock_status, "items": items}
+
+
+def _placement_blocked_reason(db: Session, order: SalesOrder, stock_status: str) -> str | None:
+    """置货被阻止的原因(库存不足 / 定金未付),无阻止时返回 None。"""
+    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    if payment_type == "先付定金后付尾款":
+        received = db.execute(
+            select(func.coalesce(func.sum(ReceivableRecord.amount), 0)).where(
+                ReceivableRecord.sales_order_id == order.id,
+                ReceivableRecord.payment_stage == "deposit",
+            )
+        ).scalar_one()
+        deposit = Decimal(order.deposit_amount or 0)
+        if Decimal(received or 0) < deposit:
+            return f"需先收取定金 ¥{float(deposit)} 后方可置货(已收 ¥{float(received or 0)})"
+    if stock_status == "red":
+        return "成品库存不足,无法置货;请先提交补货需求"
+    return None
+
+
 def _serialize_placement_queue(row: InventoryDispatchQueue, db: Session, current_user: User) -> dict:
     order = row.sales_order
     process_status = sync_sales_order_process_status(db, order)
+    stock = _placement_stock_status(db, order)
+    blocked_reason = _placement_blocked_reason(db, order, stock["stock_status"])
     return {
         'queue_id': row.id,
         'order_id': row.sales_order_id,
         'order_no': order.order_no,
         'customer_name': order.customer.name if order.customer else None,
+        'order_type': order.order_type,
+        'order_type_label': order_type_style(order.order_type)["label"],
+        'order_type_color': order_type_style(order.order_type)["color"],
+        'expected_delivery_date': order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
         'status': row.placement_status,
         'order_status': order.status,
         'finance_edit_pending': bool(order.finance_edit_pending),
         'finance_edit_confirm_state': _finance_edit_confirm_state(db, order.id, current_user),
+        'stock_status': stock["stock_status"],
+        'blocked_reason': blocked_reason,
+        'items': stock["items"],
         'current_stage': process_status['current_stage'],
         'current_stage_label': process_status['current_stage_label'],
-        'blocked_reason': process_status['blocked_reason'],
         'dimensions': process_status['dimensions'],
     }
 
@@ -342,6 +448,10 @@ def _serialize_sales_order_as_shipment_queue(order: SalesOrder, db: Session, cur
         "order_id": order.id,
         "order_no": order.order_no,
         "customer_name": order.customer.name if order.customer else None,
+        "order_type": order.order_type,
+        "order_type_label": order_type_style(order.order_type)["label"],
+        "order_type_color": order_type_style(order.order_type)["color"],
+        "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
         "status": "pending",
         "order_status": order.status,
         "finance_edit_pending": bool(order.finance_edit_pending),
@@ -783,6 +893,351 @@ def _apply_stock_take_submission(task: StockTakeTask, payload: StockTakeSubmit |
     return {"task_id": task.id, "difference_count": difference_count, "status": task.status}
 
 
+def _transfer_status_label(status: str) -> str:
+    return {
+        "pending_outbound": "待出库",
+        "pending_quality": "待质检",
+        "pending_inbound": "待入库",
+        "completed": "已完成",
+        "returned": "已退回",
+    }.get(status, status)
+
+
+@router.post("/fulfillment-demands")
+def create_manual_demand(
+    payload: FulfillmentDemandManualCreateRequest,
+    current_user: User = Depends(require_roles("inventory", "production", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """库管/生产手动提补货需求(自动按产品类型路由到采购/生产)。"""
+    product = db.execute(select(Product).where(Product.id == payload.product_id)).scalar_one_or_none()
+    if product is None:
+        raise HTTPException(status_code=404, detail="产品不存在")
+    if not product.is_active:
+        raise HTTPException(status_code=409, detail="产品已停用,不能提补货需求")
+    try:
+        demand = create_manual_fulfillment_demand(
+            db,
+            product=product,
+            shortage_quantity=Decimal(str(payload.shortage_quantity)),
+            remark=payload.remark,
+            current_user=current_user,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    db.commit()
+    return api_response(
+        data={
+            "id": demand.id,
+            "demand_no": demand.demand_no,
+            "product_id": product.id,
+            "product_name": product.name,
+            "shortage_quantity": float(demand.shortage_quantity),
+            "fulfillment_mode": demand.fulfillment_mode,
+            "status": demand.status,
+        },
+        msg=f"补货需求 {demand.demand_no} 已提交,已通知{'采购' if demand.fulfillment_mode == 'trade' else '生产'}处理",
+    )
+
+
+@router.get("/fulfillment-demands")
+def list_my_fulfillment_demands(
+    current_user: User = Depends(require_roles("inventory", "production", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """库管/生产查看自己提交的补货需求(含进度状态)。"""
+    rows = db.execute(
+        select(FulfillmentDemand)
+        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
+        .where(FulfillmentDemand.created_by_id == current_user.id)
+        .order_by(FulfillmentDemand.created_at.desc(), FulfillmentDemand.id.desc())
+    ).unique().scalars().all()
+    items = []
+    for row in rows:
+        progress = resolve_demand_progress(db, row)
+        items.append(
+            {
+                "id": row.id,
+                "demand_no": row.demand_no,
+                "product_id": row.product_id,
+                "product_name": row.product.name if row.product else None,
+                "shortage_quantity": float(row.shortage_quantity or 0),
+                "fulfillment_mode": row.fulfillment_mode,
+                "fulfillment_mode_label": "采购" if row.fulfillment_mode == "trade" else "生产",
+                "sales_order_id": row.sales_order_id,
+                "sales_order_no": row.sales_order.order_no if row.sales_order else None,
+                "status": row.status,
+                "status_label": "待补料" if row.status == "pending_material" else status_label(row.status),
+                "progress_status": progress.get("progress_status"),
+                "progress_label": progress.get("progress_label"),
+                "related_no": progress.get("related_no"),
+                "related_status_label": progress.get("related_status_label"),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+        )
+    return api_response(data=items)
+
+
+@router.post("/transfers")
+def create_stock_transfer(
+    payload: StockTransferCreateRequest,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """发起移库:源仓库出库,目标仓库质检后入库。"""
+    source_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.source_warehouse_id)).scalar_one_or_none()
+    target_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.target_warehouse_id)).scalar_one_or_none()
+    if source_warehouse is None or target_warehouse is None:
+        raise HTTPException(status_code=404, detail="仓库不存在")
+    if source_warehouse.id == target_warehouse.id:
+        raise HTTPException(status_code=409, detail="源仓库与目标仓库不能相同")
+    if not warehouse_in_scope(db, current_user, source_warehouse.id):
+        raise HTTPException(status_code=403, detail="当前账号无权操作源仓库")
+    quantity = Decimal(str(payload.quantity))
+    if quantity <= 0:
+        raise HTTPException(status_code=409, detail="移库数量必须大于 0")
+    if payload.product_id and payload.material_id:
+        raise HTTPException(status_code=409, detail="商品与原料只能二选一")
+    if not payload.product_id and not payload.material_id:
+        raise HTTPException(status_code=409, detail="请选择商品或原料")
+
+    inventory = db.execute(
+        select(Inventory).where(
+            Inventory.warehouse_id == source_warehouse.id,
+            Inventory.product_id == payload.product_id,
+            Inventory.material_id == payload.material_id,
+        )
+    ).scalar_one_or_none()
+    if inventory is None:
+        raise HTTPException(status_code=404, detail="源仓库无对应库存")
+    available_quantity = max(Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0), Decimal("0"))
+    if quantity > available_quantity:
+        raise HTTPException(status_code=409, detail=f"源仓库可用库存不足(可用 {float(available_quantity)})")
+
+    transfer = StockTransfer(
+        transfer_no=next_business_no(db, "YK"),
+        source_warehouse_id=source_warehouse.id,
+        target_warehouse_id=target_warehouse.id,
+        product_id=payload.product_id,
+        material_id=payload.material_id,
+        quantity=quantity,
+        status="pending_outbound",
+        created_by_id=current_user.id,
+        remark=payload.remark,
+    )
+    db.add(transfer)
+    db.commit()
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="inventory",
+        action="create_stock_transfer",
+        content=f"发起移库 {transfer.transfer_no}({source_warehouse.name}→{target_warehouse.name} {float(quantity)})",
+        after_data={"transfer_no": transfer.transfer_no, "status": transfer.status},
+    )
+    return api_response(data={"id": transfer.id, "transfer_no": transfer.transfer_no}, msg=f"移库单 {transfer.transfer_no} 已创建")
+
+
+@router.get("/transfers")
+def list_stock_transfers(
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "quality", "quality_super", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """移库列表:普通库管看自己发起或自己仓库的;超级/质检看全部。"""
+    query = (
+        select(StockTransfer)
+        .options(
+            joinedload(StockTransfer.source_warehouse),
+            joinedload(StockTransfer.target_warehouse),
+            joinedload(StockTransfer.product),
+            joinedload(StockTransfer.material),
+            joinedload(StockTransfer.created_by),
+        )
+        .order_by(StockTransfer.created_at.desc())
+    )
+    role_code = current_user.role.code if current_user.role else ""
+    if role_code == "inventory":
+        scoped_ids = get_inventory_scope_warehouse_ids(db, current_user)
+        if scoped_ids is not None:
+            query = query.where(
+                or_(
+                    StockTransfer.source_warehouse_id.in_(scoped_ids),
+                    StockTransfer.target_warehouse_id.in_(scoped_ids),
+                    StockTransfer.created_by_id == current_user.id,
+                )
+            )
+    rows = db.execute(query).unique().scalars().all()
+    return api_response(
+        data=[
+            {
+                "id": row.id,
+                "transfer_no": row.transfer_no,
+                "source_warehouse_id": row.source_warehouse_id,
+                "source_warehouse_name": row.source_warehouse.name if row.source_warehouse else None,
+                "target_warehouse_id": row.target_warehouse_id,
+                "target_warehouse_name": row.target_warehouse.name if row.target_warehouse else None,
+                "product_id": row.product_id,
+                "material_id": row.material_id,
+                "item_name": (row.product.name if row.product else None) or (row.material.name if row.material else None),
+                "quantity": float(row.quantity),
+                "status": row.status,
+                "status_label": _transfer_status_label(row.status),
+                "created_by_name": row.created_by.full_name if row.created_by else None,
+                "quality_result": row.quality_result,
+                "reject_reason": row.reject_reason,
+                "remark": row.remark,
+                "outbound_at": row.outbound_at.isoformat() if row.outbound_at else None,
+                "quality_at": row.quality_at.isoformat() if row.quality_at else None,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    )
+
+
+@router.post("/transfers/{transfer_id}/outbound")
+def confirm_transfer_outbound(
+    transfer_id: int,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """源仓库出库确认:扣减源仓库库存。"""
+    transfer = db.execute(select(StockTransfer).where(StockTransfer.id == transfer_id)).scalar_one_or_none()
+    if transfer is None:
+        raise HTTPException(status_code=404, detail="移库单不存在")
+    if transfer.status != "pending_outbound":
+        raise HTTPException(status_code=409, detail="当前移库单状态不允许出库")
+    if not warehouse_in_scope(db, current_user, transfer.source_warehouse_id):
+        raise HTTPException(status_code=403, detail="当前账号无权操作源仓库")
+    inventory = db.execute(
+        select(Inventory).where(
+            Inventory.warehouse_id == transfer.source_warehouse_id,
+            Inventory.product_id == transfer.product_id,
+            Inventory.material_id == transfer.material_id,
+        )
+    ).scalar_one_or_none()
+    if inventory is None:
+        raise HTTPException(status_code=404, detail="源仓库无对应库存")
+    available_quantity = max(Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0), Decimal("0"))
+    if Decimal(transfer.quantity) > available_quantity:
+        raise HTTPException(status_code=409, detail=f"源仓库可用库存不足(可用 {float(available_quantity)})")
+    apply_inventory_change(
+        db,
+        warehouse_id=transfer.source_warehouse_id,
+        product_id=transfer.product_id,
+        material_id=transfer.material_id,
+        quantity=-Decimal(transfer.quantity),
+        unit_cost=Decimal(inventory.avg_unit_cost or 0),
+        transaction_type="stock_transfer_out",
+        related_type="stock_transfer",
+        related_id=transfer.id,
+        created_by_id=current_user.id,
+    )
+    transfer.status = "pending_quality"
+    transfer.outbound_by_id = current_user.id
+    transfer.outbound_at = now_local()
+    db.commit()
+    return api_response(msg=f"移库单 {transfer.transfer_no} 已出库,等待目标仓库质检")
+
+
+@router.post("/transfers/{transfer_id}/quality")
+def submit_transfer_quality(
+    transfer_id: int,
+    payload: TransferQualityRequest,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "quality", "quality_super", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """目标仓库质检:通过→待入库;不通过→退回源仓库。"""
+    transfer = db.execute(select(StockTransfer).where(StockTransfer.id == transfer_id)).scalar_one_or_none()
+    if transfer is None:
+        raise HTTPException(status_code=404, detail="移库单不存在")
+    if transfer.status != "pending_quality":
+        raise HTTPException(status_code=409, detail="当前移库单状态不允许质检")
+    if not warehouse_in_scope(db, current_user, transfer.target_warehouse_id):
+        raise HTTPException(status_code=403, detail="当前账号无权操作目标仓库")
+    transfer.quality_by_id = current_user.id
+    transfer.quality_at = now_local()
+    transfer.quality_result = payload.result
+    if payload.result == "passed":
+        transfer.status = "pending_inbound"
+    else:
+        # 质检不通过:回滚源仓库库存,退回发起方
+        source_inventory = db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == transfer.source_warehouse_id,
+                Inventory.product_id == transfer.product_id,
+                Inventory.material_id == transfer.material_id,
+            )
+        ).scalar_one_or_none()
+        apply_inventory_change(
+            db,
+            warehouse_id=transfer.source_warehouse_id,
+            product_id=transfer.product_id,
+            material_id=transfer.material_id,
+            quantity=Decimal(transfer.quantity),
+            unit_cost=Decimal(source_inventory.avg_unit_cost or 0) if source_inventory else Decimal("0"),
+            transaction_type="stock_transfer_return",
+            related_type="stock_transfer",
+            related_id=transfer.id,
+            created_by_id=current_user.id,
+        )
+        transfer.status = "returned"
+        transfer.reject_reason = payload.reject_reason
+        create_notification(
+            db,
+            title="移库质检不通过",
+            content=f"移库单 {transfer.transfer_no} 质检不通过:{payload.reject_reason or '未填写原因'},库存已退回源仓库。",
+            module="inventory",
+            recipient_user_ids=[transfer.created_by_id],
+            created_by_id=current_user.id,
+            category="warning",
+        )
+    db.commit()
+    return api_response(msg="质检通过,等待目标仓库入库" if payload.result == "passed" else "质检不通过,已退回源仓库")
+
+
+@router.post("/transfers/{transfer_id}/inbound")
+def confirm_transfer_inbound(
+    transfer_id: int,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """目标仓库入库确认:增加目标仓库库存。"""
+    transfer = db.execute(select(StockTransfer).where(StockTransfer.id == transfer_id)).scalar_one_or_none()
+    if transfer is None:
+        raise HTTPException(status_code=404, detail="移库单不存在")
+    if transfer.status != "pending_inbound":
+        raise HTTPException(status_code=409, detail="当前移库单状态不允许入库")
+    if not warehouse_in_scope(db, current_user, transfer.target_warehouse_id):
+        raise HTTPException(status_code=403, detail="当前账号无权操作目标仓库")
+    source_inventory = db.execute(
+        select(Inventory).where(
+            Inventory.warehouse_id == transfer.source_warehouse_id,
+            Inventory.product_id == transfer.product_id,
+            Inventory.material_id == transfer.material_id,
+        )
+    ).scalar_one_or_none()
+    unit_cost = Decimal(source_inventory.avg_unit_cost or 0) if source_inventory else Decimal("0")
+    apply_inventory_change(
+        db,
+        warehouse_id=transfer.target_warehouse_id,
+        product_id=transfer.product_id,
+        material_id=transfer.material_id,
+        quantity=Decimal(transfer.quantity),
+        unit_cost=unit_cost,
+        transaction_type="stock_transfer_in",
+        related_type="stock_transfer",
+        related_id=transfer.id,
+        created_by_id=current_user.id,
+    )
+    transfer.status = "completed"
+    transfer.completed_by_id = current_user.id
+    transfer.completed_at = now_local()
+    db.commit()
+    return api_response(msg=f"移库单 {transfer.transfer_no} 已完成入库")
+
+
 @router.get("/queues")
 def list_dispatch_queues(
     placement_page: int = Query(default=1, ge=1),
@@ -890,18 +1345,7 @@ def list_dispatch_queues(
     )
     return api_response(
         data={
-            "placement": [
-                {
-                    "queue_id": row.id,
-                    "order_id": row.sales_order_id,
-                    "order_no": row.sales_order.order_no,
-                    "customer_name": row.sales_order.customer.name,
-                    "status": row.placement_status,
-                    "finance_edit_pending": bool(row.sales_order.finance_edit_pending),
-                    "finance_edit_confirm_state": _finance_edit_confirm_state(db, row.sales_order_id, current_user),
-                }
-                for row in rows
-            ],
+            "placement": [_serialize_placement_queue(row, db, current_user) for row in rows],
             "shipment": shipment_rows,
             "sales_orders": [_serialize_inventory_sales_order_summary(order, db, current_user) for order in sales_order_rows],
             "pagination": {
@@ -944,7 +1388,7 @@ def get_inventory_sales_order_detail(
 @router.post("/queues/{queue_id}/placement")
 def mark_placement(
     queue_id: int,
-    payload: QueueActionRequest,
+    payload: PlacementActionRequest,
     current_user: User = Depends(require_roles("inventory")),
     db: Session = Depends(get_db),
 ):
@@ -963,16 +1407,32 @@ def mark_placement(
     if order is None:
         raise HTTPException(status_code=404, detail="置货对应的客户订单不存在")
 
-    ensure_sales_order_fulfillment_demands(db, order, current_user)
-    shortage_rows = []
+    # 1. 定金校验:先付定金后付尾款且定金未足额 -> 禁止置货
+    blocked_reason = _placement_blocked_reason(db, order, "green")
+    if blocked_reason:
+        return api_response(code=409, msg=blocked_reason, data={"code": "placement_blocked", "message": blocked_reason})
+
+    # 2. 分批次置货:按明细提交置货数量
     finished_warehouse_id = _finished_warehouse_id(db)
-    for item in order.items:
+    item_map = {item.id: item for item in order.items}
+    shortage_rows = []
+    placed_any = False
+    for p in payload.items:
+        item = item_map.get(p.sales_order_item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"订单明细 {p.sales_order_item_id} 不存在")
         remaining_quantity = max(
-            Decimal(item.quantity or 0) - Decimal(item.shipped_quantity or 0),
+            Decimal(item.quantity or 0) - Decimal(item.placed_quantity or 0) - Decimal(item.shipped_quantity or 0),
             Decimal("0"),
         )
-        if remaining_quantity <= 0:
+        place_qty = Decimal(p.placed_quantity or 0)
+        if place_qty <= 0:
             continue
+        if place_qty > remaining_quantity:
+            return api_response(
+                code=409,
+                msg=f"商品 {_order_item_name(item)} 置货数量超过待置货量(剩余 {float(remaining_quantity)})",
+            )
         inventory = db.execute(
             select(Inventory).where(
                 Inventory.warehouse_id == finished_warehouse_id,
@@ -986,34 +1446,86 @@ def mark_placement(
             else Decimal("0"),
             Decimal("0"),
         )
-        if available_quantity < remaining_quantity:
+        if place_qty > available_quantity:
             shortage_rows.append(
                 {
                     "product_id": item.product_id,
                     "product_name": _order_item_name(item),
-                    "required_quantity": float(remaining_quantity),
+                    "required_quantity": float(place_qty),
                     "available_quantity": float(available_quantity),
-                    "shortage_quantity": float(remaining_quantity - available_quantity),
+                    "shortage_quantity": float(place_qty - available_quantity),
                 }
             )
+            continue
+        item.placed_quantity = Decimal(item.placed_quantity or 0) + place_qty
+        if inventory is not None:
+            inventory.reserved_quantity = Decimal(inventory.reserved_quantity or 0) + place_qty
+        placed_any = True
+
     if shortage_rows:
-        raise HTTPException(
-            status_code=409,
-            detail={
+        db.commit()
+        # 需求:置货后库存不足→询问是否提补货需求(不自动生成),缺口明细交给前端弹窗确认
+        return api_response(
+            code=409,
+            msg="部分商品库存不足,已置入可置货部分;是否提补货需求?",
+            data={
                 "code": "finished_product_stock_shortage",
-                "message": "成品库存不足，暂不能完成置货；已生成生产/采购处理需求",
+                "message": "部分商品库存不足,已置入可置货部分;是否提补货需求?",
                 "shortages": shortage_rows,
+                "demand_required": True,
             },
         )
 
-    queue.placement_status = "hidden"
-    queue.shipment_status = "pending"
-    queue.placement_marked_by_id = current_user.id
-    queue.placement_marked_at = now_local()
-    complete_todos(db, business_type="sales_order_placement", business_id=queue.sales_order_id)
-    # 置货完成即推进订单至待发货状态（取消/驳回/已完成等终态不强制变更）
-    if order is not None and order.status in {"pending_confirmation", "pending_shipment"}:
-        order.status = "pending_shipment"
+    # 3. 置货后剩余缺口自动生成补货需求(生产型/贸易型),不阻塞本次置货
+    remaining_shortages = []
+    for it in order.items:
+        remaining = max(Decimal(it.quantity or 0) - Decimal(it.placed_quantity or 0) - Decimal(it.shipped_quantity or 0), Decimal("0"))
+        if remaining <= 0:
+            continue
+        inv = db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == finished_warehouse_id,
+                Inventory.product_id == it.product_id,
+                Inventory.material_id.is_(None),
+            )
+        ).scalar_one_or_none()
+        avail = max(Decimal(inv.quantity or 0) - Decimal(inv.reserved_quantity or 0) if inv is not None else Decimal("0"), Decimal("0"))
+        if avail < remaining:
+            remaining_shortages.append({
+                "product_id": it.product_id,
+                "product_name": _order_item_name(it),
+                "required_quantity": float(remaining),
+                "available_quantity": float(avail),
+                "shortage_quantity": float(remaining - avail),
+            })
+    if remaining_shortages:
+        db.commit()
+        # 需求:置货后仍有缺口→询问是否提补货需求(不自动生成)
+        return api_response(
+            code=409,
+            msg="本次置货已完成,订单仍有库存缺口;是否提补货需求?",
+            data={
+                "code": "finished_product_stock_shortage",
+                "message": "本次置货已完成,订单仍有库存缺口;是否提补货需求?",
+                "shortages": remaining_shortages,
+                "demand_required": True,
+            },
+        )
+
+    # 4. 判断是否全部置货完成
+    all_placed = all(
+        max(Decimal(it.quantity or 0) - Decimal(it.placed_quantity or 0) - Decimal(it.shipped_quantity or 0), Decimal("0")) <= 0
+        for it in order.items
+    )
+    if all_placed:
+        queue.placement_status = "hidden"
+        queue.shipment_status = "pending"
+        queue.placement_marked_by_id = current_user.id
+        queue.placement_marked_at = now_local()
+        complete_todos(db, business_type="sales_order_placement", business_id=queue.sales_order_id)
+        # 置货完成即推进订单至待发货状态（取消/驳回/已完成等终态不强制变更）
+        if order.status in {"pending_confirmation", "pending_shipment"}:
+            order.status = "pending_shipment"
         inventory_user_ids = _role_user_ids(db, "inventory")
         existing_todo_user_ids = {
             todo.assigned_user_id
@@ -1041,6 +1553,52 @@ def mark_placement(
     db.commit()
     sync_sales_order_process_status(db, order, updated_by_id=current_user.id)
     return api_response(msg="置货状态已更新")
+
+
+@router.post("/queues/{queue_id}/replenishment-demands")
+def create_queue_replenishment_demands(
+    queue_id: int,
+    payload: SalesOrderReplenishmentCreateRequest,
+    current_user: User = Depends(require_roles("inventory")),
+    db: Session = Depends(get_db),
+):
+    """置货后库存不足时,由库管确认后批量提补货需求(数量默认缺口,可修改)。"""
+    if not warehouse_in_scope(db, current_user, _finished_warehouse_id(db)):
+        raise HTTPException(status_code=403, detail="当前账号无权处理成品仓置货任务")
+    queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.id == queue_id)).scalar_one_or_none()
+    if queue is None:
+        raise HTTPException(status_code=404, detail="置货队列不存在")
+    order = db.execute(
+        select(SalesOrder)
+        .options(selectinload(SalesOrder.items).joinedload(SalesOrderItem.product))
+        .where(SalesOrder.id == queue.sales_order_id)
+    ).unique().scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="置货对应的客户订单不存在")
+    item_map = {item.id: item for item in order.items}
+    product_item_map = {item.product_id: item for item in order.items}
+    shortage_override: dict[int, Decimal] = {}
+    for p in payload.items:
+        item = item_map.get(p.sales_order_item_id) if p.sales_order_item_id else product_item_map.get(p.product_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"订单明细/产品 {p.sales_order_item_id or p.product_id} 不存在")
+        # 同一产品多行明细时按产品聚合,取最大缺口
+        shortage_override[item.product_id] = max(
+            shortage_override.get(item.product_id, Decimal("0")),
+            Decimal(str(p.shortage_quantity)),
+        )
+    created = _create_fulfillment_demands(
+        db,
+        order=order,
+        current_user=current_user,
+        shortage_override=shortage_override,
+    )
+    db.commit()
+    sync_sales_order_process_status(db, order, updated_by_id=current_user.id)
+    return api_response(
+        msg=f"已提 {len(created)} 条补货需求",
+        data={"demands": created},
+    )
 
 
 @router.post("/queues/{queue_id}/shipment")
@@ -1074,7 +1632,7 @@ def mark_shipment(
 
     # ---- 发货条件检查：财务收款 / 质检 / 库存 / 置货 ----
     process_status = sync_sales_order_process_status(db, order)
-    dimensions = {d["status_dimension"]: d for d in process_status.get("dimensions", [])}
+    dimensions = {d.get("dimension") or d.get("status_dimension"): d for d in process_status.get("dimensions", [])}
 
     def _dim_stage(name: str) -> str:
         return (dimensions.get(name) or {}).get("current_stage") or ""
@@ -1083,7 +1641,24 @@ def mark_shipment(
     quality_stage = _dim_stage("quality")
     inbound_stage = _dim_stage("inbound")
     blocked_conditions: list[str] = []
-    if finance_stage not in ("paid", "cleared", "partial_paid", "approved", "received", "complete", "completed"):
+
+    # 财务收款条件按付款方式差异化:
+    # 全款发货 → 需收齐全款;先付定金后付尾款 → 需收齐定金;货到付款/分期 → 不阻止
+    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    received_amount = _sales_received_amount(db, order.id)
+    if payment_type == "全款发货":
+        if received_amount < Decimal(order.total_amount or 0):
+            blocked_conditions.append(
+                f"全款发货需收齐全款 ¥{float(order.total_amount or 0):g}，已收 ¥{float(received_amount):g}"
+            )
+    elif payment_type == "先付定金后付尾款":
+        # 需求:定金单需尾款付清才能发货(收齐定金+尾款=全款)
+        if received_amount < Decimal(order.total_amount or 0):
+            blocked_conditions.append(
+                f"先付定金后付尾款需尾款付清(全款 ¥{float(order.total_amount or 0):g}，已收 ¥{float(received_amount):g})"
+            )
+    # 货到付款/分期付款:发货前不校验收款
+    if finance_stage in ("rejected", "pending_finance_check") and not blocked_conditions:
         blocked_conditions.append("财务收款条件未满足")
     if quality_stage not in ("passed", "qualified", "completed", "not_required", "done", "complete", "approved"):
         blocked_conditions.append("质检条件未满足")
@@ -1153,6 +1728,11 @@ def mark_shipment(
             related_id=order.id,
             created_by_id=current_user.id,
         )
+        if inventory is not None:
+            inventory.reserved_quantity = max(
+                Decimal(inventory.reserved_quantity or 0) - ship_quantity,
+                Decimal("0"),
+            )
         order_item.shipped_quantity = Decimal(order_item.shipped_quantity or 0) + ship_quantity
         total_shipped_this_time += ship_quantity
 

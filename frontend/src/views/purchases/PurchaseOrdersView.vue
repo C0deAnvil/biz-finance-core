@@ -13,7 +13,11 @@
     </el-tabs>
 
     <el-table :data="pagedRows" stripe :row-class-name="rowClassName">
-      <el-table-column prop="order_no" label="采购单号" width="150" />
+      <el-table-column prop="order_no" label="采购单号" width="150">
+        <template #default="scope">
+          <span :style="scope.row.order_type_color ? { color: scope.row.order_type_color, fontWeight: 600 } : {}">{{ scope.row.order_no }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="supplier_name" label="供应商" min-width="180" />
       <el-table-column prop="operator_name" label="经办人" width="120" />
       <el-table-column prop="payment_type_label" label="付款方式" min-width="160" />
@@ -46,7 +50,11 @@
 
     <PageSection v-if="canManageOrders" title="待采购补货需求" description="贸易型产品库存不足、生产领料原料库存不足时，会在此生成待采购需求。">
       <el-table :data="fulfillmentDemands" stripe>
-        <el-table-column prop="demand_no" label="需求号" width="150" />
+        <el-table-column prop="demand_no" label="需求号" width="150">
+          <template #default="scope">
+            <span :style="scope.row.order_type_color ? { color: scope.row.order_type_color, fontWeight: 600 } : {}">{{ scope.row.demand_no }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="source_type" label="来源" width="140">
           <template #default="scope">{{ demandSourceLabel(scope.row) }}</template>
         </el-table-column>
@@ -67,17 +75,24 @@
             <el-tag v-else type="info" effect="plain">-</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status_label" label="状态" width="120">
+        <el-table-column prop="status_label" label="状态" width="100">
           <template #default="scope">
             <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="process_note" label="处理说明" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="进度" width="120">
+          <template #default="scope">
+            <el-tag :type="demandProgressTag(scope.row.progress_status)" effect="dark" size="small">{{ scope.row.progress_label || '-' }}</el-tag>
+            <div v-if="scope.row.related_no" class="demand-related">关联: {{ scope.row.related_no }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="process_note" label="处理说明" min-width="160" show-overflow-tooltip />
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="info" @click="viewDemand(scope.row)">详情</el-button>
+            <el-button v-if="scope.row.status === 'pending' && scope.row.demand_type === 'trade_product'" size="small" text type="primary" @click="openEditDemand(scope.row)">改数量</el-button>
             <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建采购单</el-button>
-            <el-button v-if="scope.row.demand_type !== 'raw_material'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消创建</el-button>
+            <el-button v-if="scope.row.status === 'pending' && scope.row.demand_type !== 'raw_material'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -276,6 +291,23 @@
       <template #footer>
         <el-button @click="thresholdVisible = false">关闭</el-button>
         <el-button v-if="canManageSettings" type="primary" @click="saveThreshold">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="editDemandVisible" title="调整补货需求数量" width="440px">
+      <el-form :model="editDemandForm" label-width="100px">
+        <el-form-item label="需求号"><span>{{ editDemandForm.demand_no }}</span></el-form-item>
+        <el-form-item label="产品/原料"><span>{{ editDemandForm.item_name }}</span></el-form-item>
+        <el-form-item label="缺口数量" required>
+          <el-input-number v-model="editDemandForm.shortage_quantity" :min="0.01" :precision="2" style="width: 180px" />
+        </el-form-item>
+        <el-form-item label="说明">
+          <el-input v-model="editDemandForm.note" type="textarea" :rows="2" placeholder="调整原因(选填)" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDemandVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editDemandSubmitting" @click="submitEditDemand">保存</el-button>
       </template>
     </el-dialog>
 
@@ -702,6 +734,51 @@ function viewDemand(row) {
   demandDetailVisible.value = true
 }
 
+const editDemandVisible = ref(false)
+const editDemandSubmitting = ref(false)
+const editDemandForm = reactive({ id: null, demand_no: '', item_name: '', shortage_quantity: 0, note: '' })
+
+const DEMAND_PROGRESS_TAGS = {
+  pending: 'warning', purchasing: 'primary', ordered: 'primary', receiving: 'primary',
+  pending_payment: 'danger', raw_purchasing: 'warning', producing: 'primary',
+  pending_inbound: 'warning', completed: 'success', cancelled: 'info',
+}
+function demandProgressTag(status) {
+  return DEMAND_PROGRESS_TAGS[status] || 'info'
+}
+
+function openEditDemand(row) {
+  Object.assign(editDemandForm, {
+    id: row.id,
+    demand_no: row.demand_no,
+    item_name: row.item_name || row.product_name || row.material_name || '-',
+    shortage_quantity: Number(row.shortage_quantity || 0),
+    note: '',
+  })
+  editDemandVisible.value = true
+}
+
+async function submitEditDemand() {
+  if (!editDemandForm.id || editDemandForm.shortage_quantity <= 0) {
+    ElMessage.warning('请填写大于 0 的缺口数量')
+    return
+  }
+  editDemandSubmitting.value = true
+  try {
+    await put(`/api/purchases/fulfillment-demands/${editDemandForm.id}`, {
+      shortage_quantity: editDemandForm.shortage_quantity,
+      note: editDemandForm.note || null,
+    })
+    ElMessage.success('补货需求数量已调整')
+    editDemandVisible.value = false
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.message || '调整失败')
+  } finally {
+    editDemandSubmitting.value = false
+  }
+}
+
 async function cancelDemand(row) {
   const reason = window.prompt('请输入取消原因')
   if (!reason || reason.trim().length < 2) {
@@ -863,6 +940,7 @@ watch(
 </script>
 
 <style scoped>
+.demand-related { font-size: 12px; color: #909399; line-height: 18px; }
 .status-tabs { margin-bottom: 12px; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
 .mt-16 { margin-top: 16px; }

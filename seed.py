@@ -241,9 +241,8 @@ def init_seed_data(db: Session, default_password: str):
             _grant_role_modules(db, seeded_user, role_map[role_code])
 
     warehouse_seed = [
-        ("WH-FG", "成品中心仓", "A厂区1号库", "finished"),
-        ("WH-RM", "原料中心仓", "A厂区2号库", "raw"),
-        ("WH-QC", "待检暂存仓", "A厂区质检暂存区", "quality"),
+        ("CANGZHOU_FINISHED", "沧州仓库", "沧州", "finished"),
+        ("LANGFANG_RAW", "廊坊仓库", "廊坊", "raw"),
     ]
     for code, name, location, warehouse_type in warehouse_seed:
         warehouse = db.execute(select(Warehouse).where(Warehouse.code == code)).scalar_one_or_none()

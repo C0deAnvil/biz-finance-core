@@ -4,6 +4,7 @@ export const APP_TITLE = '业财一体化系统'
 
 const loaderMap = {
   '/dashboard': () => import('../views/dashboards/DashboardView.vue'),
+  '/flow-board': () => import('../views/dashboards/OrderFlowBoardView.vue'),
   '/approvals': () => import('../views/approvals/ApprovalCenterView.vue'),
   '/customers': () => import('../views/master/CustomersView.vue'),
   '/suppliers': () => import('../views/master/SuppliersView.vue'),
@@ -20,6 +21,7 @@ const loaderMap = {
   '/supplier-ai': () => import('../views/analytics/SupplierAIView.vue'),
   '/sales/logistics': () => import('../views/logistics/LogisticsView.vue'),
   '/inventory/queues': () => import('../views/inventory/InventoryQueuesView.vue'),
+  '/inventory/transfers': () => import('../views/inventory/StockTransfersView.vue'),
   '/inventory/stocks': () => import('../views/inventory/InventoryStocksView.vue'),
   '/inventory/stock-takes': () => import('../views/inventory/StockTakeView.vue'),
   '/inventory/logistics': () => import('../views/logistics/LogisticsView.vue'),

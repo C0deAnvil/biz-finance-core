@@ -6,9 +6,103 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from models import BOM, FulfillmentDemand, Inventory, Material, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderItem, Role, SalesOrder, SalesOrderItem, TodoItem, User, Warehouse
+from models import BOM, FulfillmentDemand, Inventory, Material, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderItem, Role, SalesOrder, SalesOrderItem, TodoItem, User, Warehouse
 from services.core import create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.display import status_label
 from services.request_trace import emit
+
+# ===== 补货需求进度状态机(实时推导,不落库) =====
+# 状态集:待处理/采购中/生产中/原料采购中/已下单/待收货/待财务付款/待入库/已完成/已取消
+DEMAND_PROGRESS_LABELS = {
+    "pending": "待处理",
+    "purchasing": "采购中",
+    "ordered": "已下单",
+    "receiving": "待收货",
+    "pending_payment": "待财务付款",
+    "raw_purchasing": "原料采购中",
+    "producing": "生产中",
+    "pending_inbound": "待入库",
+    "completed": "已完成",
+    "cancelled": "已取消",
+}
+
+
+def _demand_related_purchase_order(db: Session, demand_id: int) -> PurchaseOrder | None:
+    return db.execute(
+        select(PurchaseOrder).where(
+            PurchaseOrder.replenishment_source_type == "fulfillment_demand",
+            PurchaseOrder.replenishment_source_id == demand_id,
+        )
+    ).scalar_one_or_none()
+
+
+def _demand_related_production_task(db: Session, demand_id: int) -> ProductionTask | None:
+    return db.execute(
+        select(ProductionTask).where(ProductionTask.fulfillment_demand_id == demand_id)
+    ).scalar_one_or_none()
+
+
+def _purchase_order_paid_amount(db: Session, order: PurchaseOrder) -> Decimal:
+    rows = db.execute(
+        select(PayableRecord).where(PayableRecord.purchase_order_id == order.id)
+    ).scalars().all()
+    return sum(
+        (Decimal(row.order_amount or 0) for row in rows if row.status in {"paid", "partial_settled", "settled"}),
+        Decimal("0"),
+    )
+
+
+def resolve_demand_progress(db: Session, demand: FulfillmentDemand) -> dict:
+    """实时推导补货需求进度状态。
+
+    贸易型:待处理 → 采购中 → 已下单 → 待收货 → 待财务付款 → 已完成
+    生产型:待处理 → 原料采购中 → 生产中 → 待入库 → 已完成
+    """
+    if demand.status == "cancelled":
+        return {"progress_status": "cancelled", "progress_label": "已取消", "related_no": None, "related_status": None, "related_status_label": None}
+    if demand.status == "pending_material":
+        return {"progress_status": "pending_material", "progress_label": "待补料", "related_no": None, "related_status": None, "related_status_label": None}
+    if demand.status != "converted":
+        return {"progress_status": "pending", "progress_label": "待处理", "related_no": None, "related_status": None, "related_status_label": None}
+
+    if demand.fulfillment_mode == "trade":
+        po = _demand_related_purchase_order(db, demand.id)
+        if po is None:
+            return {"progress_status": "pending", "progress_label": "待处理", "related_no": None, "related_status": None, "related_status_label": None}
+        po_label = status_label(po.status)
+        if po.status in {"draft", "pending_approval", "rejected"}:
+            return {"progress_status": "purchasing", "progress_label": "采购中", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+        if po.status == "purchasing":
+            return {"progress_status": "ordered", "progress_label": "已下单", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+        if po.status in {"partial_received", "pending_purchase_confirm"}:
+            return {"progress_status": "receiving", "progress_label": "待收货", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+        if po.status == "fully_received":
+            paid = _purchase_order_paid_amount(db, po)
+            if paid >= Decimal(po.total_amount or 0):
+                return {"progress_status": "completed", "progress_label": "已完成", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+            return {"progress_status": "pending_payment", "progress_label": "待财务付款", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+        if po.status == "completed":
+            return {"progress_status": "completed", "progress_label": "已完成", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+        if po.status == "cancelled":
+            return {"progress_status": "pending", "progress_label": "待处理", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+        return {"progress_status": "purchasing", "progress_label": "采购中", "related_no": po.order_no, "related_status": po.status, "related_status_label": po_label}
+
+    # 生产型
+    task = _demand_related_production_task(db, demand.id)
+    if task is None:
+        return {"progress_status": "pending", "progress_label": "待处理", "related_no": None, "related_status": None, "related_status_label": None}
+    task_label = status_label(task.status)
+    if task.status in {"pending_material", "pending_material_approval", "pending_material_outbound"}:
+        return {"progress_status": "raw_purchasing", "progress_label": "原料采购中", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
+    if task.status in {"material_issued", "in_production", "reworked"}:
+        return {"progress_status": "producing", "progress_label": "生产中", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
+    if task.status in {"waiting_quality", "ready_for_inbound"}:
+        return {"progress_status": "pending_inbound", "progress_label": "待入库", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
+    if task.status == "completed":
+        return {"progress_status": "completed", "progress_label": "已完成", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
+    if task.status in {"scrapped", "partially_scrapped", "cancelled"}:
+        return {"progress_status": "pending", "progress_label": "待处理", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
+    return {"progress_status": "producing", "progress_label": "生产中", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
 
 
 def role_user_ids(db: Session, *role_codes: str) -> list[int]:
@@ -46,12 +140,19 @@ def ensure_fulfillment_demand_routing(
     if recipient_ids and demand.assigned_user_id not in recipient_ids:
         demand.assigned_user_id = recipient_ids[0]
 
-    order_no = order.order_no if order else (demand.source_order_no or str(demand.sales_order_id))
+    if order is not None:
+        order_no = order.order_no
+    elif demand.source_order_no:
+        order_no = demand.source_order_no
+    elif demand.sales_order_id:
+        order_no = str(demand.sales_order_id)
+    else:
+        order_no = "手动补货"
     product_name = product.name if product else str(demand.product_id)
     action_label = "创建采购单" if demand.fulfillment_mode == "trade" else "创建生产任务"
     title = f"待处理补货需求 {demand.demand_no}"
     description = (
-        f"客户订单 {order_no} 的产品 {product_name} 缺口 {float(demand.shortage_quantity or 0)}，"
+        f"来源: {order_no} 的产品 {product_name} 缺口 {float(demand.shortage_quantity or 0)}，"
         f"请{action_label}或填写取消原因。"
     )
     for user_id in recipient_ids:
@@ -80,7 +181,7 @@ def ensure_fulfillment_demand_routing(
         db,
         title="新增履约补货需求",
         content=(
-            f"客户订单 {order_no} 的产品 {product_name} 库存不足，"
+            f"来源 {order_no} 的产品 {product_name} 库存不足，"
             f"已生成{'采购' if demand.fulfillment_mode == 'trade' else '生产'}待办。"
         ),
         module=assigned_role,
@@ -173,6 +274,55 @@ def material_expected_available_quantity(db: Session, *, material_id: int, inven
     return available_quantity + in_transit_quantity
 
 
+def create_manual_fulfillment_demand(
+    db: Session,
+    *,
+    product: Product,
+    shortage_quantity: Decimal,
+    remark: str | None,
+    current_user: User,
+) -> FulfillmentDemand:
+    """库管/生产手动提补货需求(无客户订单来源)。"""
+    if shortage_quantity <= 0:
+        raise ValueError("补货数量必须大于 0")
+    fulfillment_mode = product.fulfillment_mode if product else "production"
+    demand = FulfillmentDemand(
+        demand_no=next_business_no(db, "BH"),
+        sales_order_id=None,
+        sales_order_item_id=None,
+        product_id=product.id,
+        fulfillment_mode=fulfillment_mode,
+        shortage_quantity=shortage_quantity,
+        status="pending",
+        assigned_user_id=None,
+        created_by_id=current_user.id,
+        source_order_no=None,
+        process_note=remark,
+    )
+    db.add(demand)
+    db.flush()
+    ensure_fulfillment_demand_routing(
+        db,
+        demand=demand,
+        order=None,
+        product=product,
+        current_user=current_user,
+    )
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="inventory",
+        action="create_manual_fulfillment_demand",
+        content=f"手动创建补货需求 {demand.demand_no}({product.name} {float(shortage_quantity)})",
+        after_data={
+            "demand_no": demand.demand_no,
+            "fulfillment_mode": fulfillment_mode,
+            "shortage_quantity": float(shortage_quantity),
+        },
+    )
+    return demand
+
+
 def create_sales_shortage_demand(
     db: Session,
     *,
@@ -195,6 +345,7 @@ def create_sales_shortage_demand(
         shortage_quantity=shortage_quantity,
         status="pending",
         assigned_user_id=None,
+        created_by_id=current_user.id,
         source_order_no=order.order_no,
     )
     db.add(demand)

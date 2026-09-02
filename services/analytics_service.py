@@ -1058,11 +1058,14 @@ def _visible_metrics(current_user: User, *, keyword: str | None = None) -> list[
     normalized = (keyword or "").strip().lower()
     visible = []
     role_code = current_user.role.code if current_user.role else ""
+    # 超级角色继承基础角色可见性
+    SUPER_BASE = {"inventory_super": "inventory", "quality_super": "quality", "finance_super": "finance"}
+    visible_role_codes = {role_code, SUPER_BASE.get(role_code, "")} - {""}
     for metric in METRIC_DEFINITION_MAP.values():
         if _is_all_access_user(current_user):
             allowed = True
         else:
-            allowed = role_code in metric.departments
+            allowed = bool(visible_role_codes.intersection(metric.departments))
         if not allowed:
             continue
         if normalized:

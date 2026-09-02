@@ -20,7 +20,7 @@
         <template #default="scope">{{ formatNumber(scope.row.stock?.available_quantity) }}</template>
       </el-table-column>
       <el-table-column prop="price" label="单价" width="120" />
-      <el-table-column prop="fulfillment_mode_label" label="履约模式" width="120" />
+      <el-table-column prop="fulfillment_mode_label" label="产品类型" width="120" />
       <el-table-column prop="safety_stock_qty" label="安全库存" width="120" />
       <el-table-column prop="purchase_threshold_qty" label="采购阈值" width="120" />
       <el-table-column prop="is_active" label="状态" width="100">
@@ -66,7 +66,7 @@
         </el-row>
         <el-row :gutter="12">
           <el-col :span="12">
-            <el-form-item label="履约模式">
+            <el-form-item label="产品类型">
               <el-select v-model="form.fulfillment_mode" style="width: 100%">
                 <el-option label="生产型" value="production" />
                 <el-option label="贸易型" value="trade" />

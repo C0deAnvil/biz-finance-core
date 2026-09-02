@@ -32,6 +32,12 @@ def metric_detail(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 需求:统计默认展示本月数据;未传时间段时按本月1号~今天
+    today = date.today()
+    if date_from is None:
+        date_from = today.replace(day=1)
+    if date_to is None:
+        date_to = today
     try:
         data = get_metric_detail(
             db,

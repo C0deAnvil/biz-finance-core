@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -86,6 +86,34 @@ def _chairman_user_ids(db: Session) -> list[int]:
 
 def _finance_user_ids(db: Session) -> list[int]:
     return resolve_workflow_recipients(db, "finance", workflow="finance_workflow")
+
+
+def _round_robin_finance_user_id(db: Session) -> int | None:
+    """未指定财务时,轮询分配:选当前待处理付款申请最少的普通财务。"""
+    finance_user_ids = [
+        row.id
+        for row in db.execute(
+            select(User)
+            .join(Role, User.role_id == Role.id)
+            .where(
+                User.is_active.is_(True),
+                Role.code.in_(["finance", "finance_super"]),
+            )
+        ).scalars().all()
+    ]
+    if not finance_user_ids:
+        return None
+    pending_counts = dict(
+        db.execute(
+            select(PurchasePaymentRequest.assigned_finance_user_id, func.count(PurchasePaymentRequest.id))
+            .where(
+                PurchasePaymentRequest.assigned_finance_user_id.in_(finance_user_ids),
+                PurchasePaymentRequest.status.in_(["pending", "pending_finance_payment", "pending_completion"]),
+            )
+            .group_by(PurchasePaymentRequest.assigned_finance_user_id)
+        ).all()
+    )
+    return min(finance_user_ids, key=lambda uid: (pending_counts.get(uid, 0), uid))
 
 
 def _resolve_purchase_operator_user_id(db: Session, operator_user_id: int | None, current_user: User) -> int:
@@ -300,6 +328,7 @@ def _create_purchase_payment_request_row(
     payment_detail_remark: str | None,
     merge_no: str | None = None,
     preset_status: str = "pending_chairman_approval",
+    assigned_finance_user_id: int | None = None,
     approved_by_id: int | None = None,
     approved_at: datetime | None = None,
     manager_remark: str | None = None,
@@ -319,6 +348,7 @@ def _create_purchase_payment_request_row(
         approved_by_id=approved_by_id,
         approved_at=approved_at,
         manager_remark=manager_remark,
+        assigned_finance_user_id=assigned_finance_user_id,
     )
     db.add(request)
     db.flush()
@@ -1297,6 +1327,7 @@ def submit_purchase_payment_request(payload: PurchasePaymentRequestCreate, curre
         raise HTTPException(status_code=409, detail="申请总金额必须等于订单金额加其他费用")
     _validate_payment_amounts(db, order, Decimal(payload.order_amount or 0), Decimal(payload.other_fee_amount or 0))
 
+    assigned_finance_user_id = payload.assigned_finance_user_id or _round_robin_finance_user_id(db)
     request = _create_purchase_payment_request_row(
         db,
         order=order,
@@ -1305,6 +1336,7 @@ def submit_purchase_payment_request(payload: PurchasePaymentRequestCreate, curre
         order_amount=Decimal(payload.order_amount or 0),
         other_fee_amount=Decimal(payload.other_fee_amount or 0),
         payment_detail_remark=payload.payment_detail_remark,
+        assigned_finance_user_id=assigned_finance_user_id,
     )
 
     chairman_user_ids = _chairman_user_ids(db)
@@ -1651,8 +1683,17 @@ def register_purchase_payment_request(request_id: int, payload: PurchasePaymentA
     if request.status != "pending_finance_payment":
         raise HTTPException(status_code=409, detail="当前付款申请状态不允许登记出账")
     role_code = current_user.role.code if current_user.role else ""
-    if role_code not in {"finance", "system_admin"}:
+    if role_code not in {"finance", "finance_super", "system_admin"}:
         raise HTTPException(status_code=403, detail="当前账号无权登记采购出账")
+    # 指定财务校验:普通财务只能处理分配给自己的;超级财务可接管任何未处理付款
+    if (
+        request.assigned_finance_user_id
+        and request.assigned_finance_user_id != current_user.id
+        and role_code not in {"finance_super", "system_admin"}
+    ):
+        assigned_user = db.execute(select(User).where(User.id == request.assigned_finance_user_id)).scalar_one_or_none()
+        assigned_name = assigned_user.full_name if assigned_user else f"#{request.assigned_finance_user_id}"
+        raise HTTPException(status_code=403, detail=f"该付款已指定由 {assigned_name} 处理,不能越权登记")
 
     actual_amount = Decimal(payload.actual_amount or 0)
     if actual_amount <= 0:
@@ -1757,8 +1798,17 @@ def register_purchase_payment_requests_batch(
     if len(set(request_ids)) != len(request_ids):
         raise HTTPException(status_code=409, detail="合并登记中存在重复付款申请")
     role_code = current_user.role.code if current_user.role else ""
-    if role_code not in {"finance", "system_admin"}:
+    if role_code not in {"finance", "finance_super", "system_admin"}:
         raise HTTPException(status_code=403, detail="当前账号无权登记采购出账")
+    # 指定财务校验:普通财务只能处理分配给自己的;超级财务可接管任何未处理付款
+    if (
+        request.assigned_finance_user_id
+        and request.assigned_finance_user_id != current_user.id
+        and role_code not in {"finance_super", "system_admin"}
+    ):
+        assigned_user = db.execute(select(User).where(User.id == request.assigned_finance_user_id)).scalar_one_or_none()
+        assigned_name = assigned_user.full_name if assigned_user else f"#{request.assigned_finance_user_id}"
+        raise HTTPException(status_code=403, detail=f"该付款已指定由 {assigned_name} 处理,不能越权登记")
 
     requests = db.execute(
         select(PurchasePaymentRequest).where(PurchasePaymentRequest.id.in_(request_ids))

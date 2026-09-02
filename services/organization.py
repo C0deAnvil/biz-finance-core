@@ -202,6 +202,8 @@ def get_inventory_scope_warehouse_ids(db: Session, current_user: User) -> list[i
     if is_system_admin(current_user) or is_master_data_admin(current_user):
         return None
     role_code = current_user.role.code if current_user.role else None
+    if role_code == "inventory_super":
+        return None  # 库存超级:所有仓库
     if role_code != "inventory" or current_user.department_id is None:
         return None
     department_map, _ = _department_structures(db)

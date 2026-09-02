@@ -63,8 +63,9 @@
         </el-table-column>
         <el-table-column prop="status_label" label="状态" width="140" />
         <el-table-column prop="detail" label="事务详情" min-width="240" show-overflow-tooltip />
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="scope">
+            <el-button size="small" text type="primary" @click="openAttachments(scope.row)">附件</el-button>
             <DelayedActionButton
               v-if="canManager && scope.row.status === 'pending_manager_approval'"
               size="small"
@@ -129,8 +130,9 @@
         <el-table-column prop="status_label" label="状态" width="140" />
         <el-table-column prop="chairman_remark" label="董事长意见" min-width="160" show-overflow-tooltip />
         <el-table-column prop="finance_remark" label="财务备注" min-width="160" show-overflow-tooltip />
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="scope">
+            <el-button size="small" text type="primary" @click="openAttachments(scope.row)">附件</el-button>
             <DelayedActionButton
               v-if="canChairman && ['pending', 'pending_chairman_approval'].includes(scope.row.status)"
               size="small"
@@ -205,6 +207,23 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="attachmentVisible" title="报销单附件" width="720px">
+      <template v-if="attachmentReimbursement">
+        <el-alert type="info" :closable="false" show-icon class="mb-12">
+          <template #title>报销单 {{ attachmentReimbursement.reimbursement_no }}：可上传发票、凭证等附件(支持多张),财务可核验发票。</template>
+        </el-alert>
+        <AttachmentUploader
+          :key="attachmentReimbursement.id"
+          business-type="reimbursement"
+          :business-id="attachmentReimbursement.id"
+          :preset-types="['发票', '报销凭证', '其他']"
+        />
+      </template>
+      <template #footer>
+        <el-button @click="attachmentVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="payVisible" title="财务出账" width="620px">
       <el-form :model="payForm" label-width="110px">
         <el-form-item label="报销单号"><el-input :model-value="activeRow?.reimbursement_no || '-'" disabled /></el-form-item>
@@ -246,6 +265,7 @@ import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { get, post, upload } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
+import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import DelayedActionButton from '../../components/DelayedActionButton.vue'
 import PageSection from '../../components/PageSection.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
@@ -259,6 +279,14 @@ const options = reactive({ categories: [] })
 const reportFilters = reactive({ dateRange: [], applicantUserId: null })
 const createVisible = ref(false)
 const matterVisible = ref(false)
+const attachmentVisible = ref(false)
+const attachmentReimbursement = ref(null)
+
+function openAttachments(row) {
+  attachmentReimbursement.value = row
+  attachmentVisible.value = true
+}
+
 const payVisible = ref(false)
 const activeRow = ref(null)
 const form = reactive({ expense_category: 'management', expense_subcategory: '', amount: 0, occurred_at: '', reason: '', business_matter_id: null })

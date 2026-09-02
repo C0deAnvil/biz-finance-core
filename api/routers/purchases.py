@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, Notification, NotificationRecipient, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse
+from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, Notification, NotificationRecipient, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse, order_type_style
 from models import FulfillmentDemand
 from responses import api_response
+from schemas.production import FulfillmentDemandUpdateRequest
 from schemas.purchases import (
     PurchasePaymentInvoiceUpdate,
     PurchaseApprovalRequest,
@@ -25,6 +26,7 @@ from schemas.purchases import (
 )
 from services.display import clean_display_text, format_legacy_remark, payment_type_label, return_type_label, status_label
 from services.organization import get_inventory_scope_warehouse_ids, get_scoped_user_ids, user_in_scope, warehouse_in_scope
+from services.replenishment_service import resolve_demand_progress
 from services.purchase_service import (
     update_purchase_payment_invoice as update_purchase_payment_invoice_service,
     approve_purchase_order as approve_purchase_order_service,
@@ -167,12 +169,21 @@ def list_purchase_orders(
     )
     paid_amount_map = _paid_amount_map(payables)
     paid_order_amount_map = _paid_order_amount_map(payables)
+    # 颜色继承:关联销售单的 order_type 颜色
+    sales_order_ids = [row.sales_order_id for row in rows if row.sales_order_id]
+    sales_order_type_map = {
+        so.id: so.order_type
+        for so in db.execute(select(SalesOrder).where(SalesOrder.id.in_(sales_order_ids or [-1]))).scalars().all()
+    } if sales_order_ids else {}
     return api_response(
         data={
             "items": [
             {
                 "id": row.id,
                 "order_no": row.order_no,
+                "order_type": sales_order_type_map.get(row.sales_order_id) if row.sales_order_id else None,
+                "order_type_color": order_type_style(sales_order_type_map.get(row.sales_order_id)).get("color") if row.sales_order_id else None,
+                "order_type_label": order_type_style(sales_order_type_map.get(row.sales_order_id)).get("label") if row.sales_order_id else None,
                 "supplier_name": row.supplier.name if row.supplier else None,
                 "operator_user_id": row.operator_user_id,
                 "operator_name": row.operator_user.full_name if row.operator_user else None,
@@ -593,8 +604,19 @@ def list_purchase_settlements(
         .order_by(NotificationRecipient.created_at.desc(), NotificationRecipient.id.desc())
     ).scalars().all()
 
+    finance_user_rows = db.execute(
+        select(User)
+        .join(Role, User.role_id == Role.id)
+        .where(User.is_active.is_(True), Role.code.in_(["finance", "finance_super"]))
+        .order_by(User.id.asc())
+    ).scalars().all()
+
     return api_response(
         data={
+            "finance_users": [
+                {"id": row.id, "full_name": row.full_name, "role_code": row.role.code if row.role else None}
+                for row in finance_user_rows
+            ],
             "summary": {
                 "order_count": len(orders),
                 "completed_order_count": len(completed_orders),
@@ -684,7 +706,7 @@ def list_purchase_fulfillment_demands(
     query = (
         select(FulfillmentDemand)
         .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
-        .where(FulfillmentDemand.fulfillment_mode == "trade", FulfillmentDemand.status == "pending")
+        .where(FulfillmentDemand.fulfillment_mode == "trade")
         .order_by(FulfillmentDemand.created_at.desc(), FulfillmentDemand.id.desc())
     )
     if current_user.role.code == "purchase":
@@ -793,6 +815,10 @@ def list_purchase_fulfillment_demands(
                 ),
                 "status": "pending",
                 "status_label": "待处理",
+                "progress_status": "pending",
+                "progress_label": "待处理",
+                "related_no": None,
+                "related_status_label": None,
                 "assigned_user_id": todo.assigned_user_id,
                 "process_note": raw_description.split("|replenishment:", 1)[0],
                 "cancel_reason": None,
@@ -838,6 +864,10 @@ def list_purchase_fulfillment_demands(
                 "shortage_level": _shortage_level(float(shortage_quantity), float(expected_available_quantity)),
                 "status": "pending",
                 "status_label": "待处理",
+                "progress_status": "pending",
+                "progress_label": "待处理",
+                "related_no": None,
+                "related_status_label": None,
                 "assigned_user_id": todo.assigned_user_id,
                 "process_note": todo.description,
                 "cancel_reason": None,
@@ -906,6 +936,10 @@ def list_purchase_fulfillment_demands(
                     ),
                     "status": "pending",
                     "status_label": "待处理",
+                    "progress_status": "pending",
+                    "progress_label": "待处理",
+                    "related_no": None,
+                    "related_status_label": None,
                     "assigned_user_id": todo.assigned_user_id,
                     "process_note": raw_description.split(marker, 1)[0],
                     "cancel_reason": None,
@@ -921,6 +955,9 @@ def list_purchase_fulfillment_demands(
                 "demand_no": row.demand_no,
                 "sales_order_id": row.sales_order_id,
                 "sales_order_no": row.sales_order.order_no if row.sales_order else None,
+                "order_type": row.sales_order.order_type if row.sales_order else None,
+                "order_type_color": order_type_style(row.sales_order.order_type).get("color") if row.sales_order else None,
+                "order_type_label": order_type_style(row.sales_order.order_type).get("label") if row.sales_order else None,
                 "production_task_id": None,
                 "production_task_no": None,
                 "production_product_name": None,
@@ -953,6 +990,10 @@ def list_purchase_fulfillment_demands(
                 ),
                 "status": row.status,
                 "status_label": status_label(row.status),
+                "progress_status": resolve_demand_progress(db, row)["progress_status"],
+                "progress_label": resolve_demand_progress(db, row)["progress_label"],
+                "related_no": resolve_demand_progress(db, row)["related_no"],
+                "related_status_label": resolve_demand_progress(db, row)["related_status_label"],
                 "assigned_user_id": row.assigned_user_id,
                 "process_note": row.process_note,
                 "cancel_reason": row.cancel_reason,
@@ -1010,6 +1051,36 @@ def supplier_options_for_item(
         )
     options.sort(key=lambda item: (item["latest_price"] is None, item["latest_price"] or 0, item["supplier_name"] or ""))
     return api_response(data=options)
+
+
+@router.put("/fulfillment-demands/{demand_id}")
+def update_purchase_fulfillment_demand(
+    demand_id: int,
+    payload: FulfillmentDemandUpdateRequest,
+    current_user: User = Depends(require_roles("purchase", "inventory", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    row = db.execute(select(FulfillmentDemand).where(FulfillmentDemand.id == demand_id)).scalar_one_or_none()
+    if row is None or row.fulfillment_mode != "trade":
+        raise HTTPException(status_code=404, detail="补货需求不存在")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="仅待处理的补货需求可修改数量")
+    old_qty = float(row.shortage_quantity or 0)
+    row.shortage_quantity = Decimal(str(payload.shortage_quantity))
+    if payload.note:
+        row.process_note = f"数量调整: {old_qty} → {float(row.shortage_quantity)}。{payload.note}"
+    else:
+        row.process_note = f"数量调整: {old_qty} → {float(row.shortage_quantity)}。"
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="purchase",
+        action="update_fulfillment_demand",
+        content=f"调整采购补货需求 {row.demand_no} 数量 {old_qty} → {float(row.shortage_quantity)}",
+        after_data={"demand_id": row.id, "shortage_quantity": float(row.shortage_quantity)},
+    )
+    db.commit()
+    return api_response(data={"id": row.id, "demand_no": row.demand_no, "shortage_quantity": float(row.shortage_quantity)})
 
 
 @router.post("/fulfillment-demands/{demand_id}/cancel")

@@ -152,6 +152,11 @@
         <el-form-item label="付款说明">
           <el-input v-model="requestForm.payment_detail_remark" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item label="指定财务">
+          <el-select v-model="requestForm.assigned_finance_user_id" clearable placeholder="不指定则系统轮询分配" style="width: 100%">
+            <el-option v-for="u in financeUsers" :key="u.id" :label="u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
         <div v-if="selectedOrder" class="mt-16">
           <AttachmentUploader business-type="purchase_order" :business-id="selectedOrder.id" :preset-types="['合同', '发票', '付款凭证', '到货单']" />
         </div>
@@ -305,8 +310,10 @@ const requestForm = reactive({
   order_amount: 0,
   other_fee_amount: 0,
   requested_amount: 0,
-  payment_detail_remark: ''
+  payment_detail_remark: '',
+  assigned_finance_user_id: null
 })
+const financeUsers = ref([])
 const mergedRequestForm = reactive({
   supplier_id: null,
   payment_detail_remark: '',
@@ -341,6 +348,7 @@ function resetRequestForm() {
   requestForm.order_amount = 0
   requestForm.other_fee_amount = 0
   requestForm.requested_amount = 0
+  requestForm.assigned_finance_user_id = null
   requestForm.payment_detail_remark = ''
 }
 
@@ -353,6 +361,9 @@ function resetMergedRequestForm() {
 async function load() {
   const data = await get('/api/purchases/settlements')
   Object.assign(summary, data.summary || {})
+  if (data.finance_users && data.finance_users.length) {
+    financeUsers.value = data.finance_users
+  }
   notifications.value = data.notifications || []
   orders.value = data.orders || []
   paymentRequests.value = data.payment_requests || []
@@ -448,7 +459,8 @@ async function submitRequest() {
       order_amount: Number(requestForm.order_amount || 0),
       other_fee_amount: Number(requestForm.other_fee_amount || 0),
       requested_amount: Number(requestForm.requested_amount || 0),
-      payment_detail_remark: requestForm.payment_detail_remark
+      payment_detail_remark: requestForm.payment_detail_remark,
+      assigned_finance_user_id: requestForm.assigned_finance_user_id || null
     })
     ElMessage.success('采购付款申请已提交')
     requestVisible.value = false

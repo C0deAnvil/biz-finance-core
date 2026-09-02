@@ -14,7 +14,26 @@
 
     <el-table :data="pagedRows" stripe :row-class-name="rowClassName" @selection-change="selection = $event">
       <el-table-column type="selection" width="55" />
-      <el-table-column prop="order_no" label="订单号" width="150" />
+      <el-table-column prop="order_no" label="订单号" width="150">
+        <template #default="scope">
+          <span :style="{ color: orderTypeStyle(scope.row.order_type).color, fontWeight: scope.row.order_type !== 'normal' ? 700 : 500 }">
+            {{ scope.row.order_no }}
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="order_type_label" label="类型" width="90">
+        <template #default="scope">
+          <el-tag :type="orderTypeStyle(scope.row.order_type).tagType" effect="light" size="small">
+            {{ scope.row.order_type_label || orderTypeStyle(scope.row.order_type).label }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="expected_delivery_date" label="期望发货" width="110">
+        <template #default="scope">
+          <span v-if="scope.row.expected_delivery_date" :style="{ color: orderTypeStyle(scope.row.order_type).color }">{{ scope.row.expected_delivery_date }}</span>
+          <span v-else class="text-muted">-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="split_phase" label="批次" width="80">
         <template #default="scope">第{{ scope.row.split_phase || 1 }}批</template>
       </el-table-column>
@@ -96,6 +115,20 @@
                 <el-option label="全款发货" value="全款发货" />
                 <el-option label="货到付款/分期付款" value="货到付款/分期付款" />
               </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="单据类型">
+              <el-select v-model="form.order_type" style="width: 100%">
+                <el-option v-for="(st, key) in ORDER_TYPE_STYLES" :key="key" :label="st.label" :value="key">
+                  <span :style="{ color: st.color, fontWeight: 600 }">{{ st.label }}</span>
+                </el-option>
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="期望发货日期">
+              <el-date-picker v-model="form.expected_delivery_date" type="date" value-format="YYYY-MM-DD" placeholder="选填" style="width: 100%" clearable />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -315,6 +348,10 @@
         <el-descriptions-item label="客户">{{ detail.customer?.name }}</el-descriptions-item>
         <el-descriptions-item label="经办人">{{ detail.operator_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="付款方式">{{ detail.payment_type_label || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
+        <el-descriptions-item label="单据类型">
+          <el-tag :type="orderTypeStyle(detail.order_type).tagType" effect="light" size="small">{{ detail.order_type_label || orderTypeStyle(detail.order_type).label }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="期望发货日期">{{ detail.expected_delivery_date || '-' }}</el-descriptions-item>
         <el-descriptions-item label="改价审批">{{ detail.price_approval_status_label || '-' }}</el-descriptions-item>
         <el-descriptions-item label="财务修改确认">{{ financeEditConfirmText(detail) }}</el-descriptions-item>
         <el-descriptions-item label="收货人">{{ detail.consignee }}</el-descriptions-item>
@@ -376,6 +413,30 @@
         <el-table-column prop="remark" label="改价备注" min-width="180" show-overflow-tooltip />
         <el-table-column prop="status_label" label="审批状态" width="120" />
       </el-table>
+      <div v-if="detail?.related_documents?.length" class="detail-toolbar mt-16">
+        <span>全链看板(关联单据)</span>
+        <span class="toolbar-tip">子单据状态实时反映到本订单</span>
+      </div>
+      <el-table v-if="detail?.related_documents?.length" :data="detail.related_documents" stripe class="mt-12">
+        <el-table-column label="单据类型" width="110">
+          <template #default="scope">
+            <el-tag size="small" effect="plain">{{ scope.row.document_type_label }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="document_no" label="单号" min-width="150" />
+        <el-table-column prop="product_name" label="产品/供应商" min-width="140">
+          <template #default="scope">{{ scope.row.product_name || scope.row.supplier_name || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="数量/金额" width="110">
+          <template #default="scope">{{ formatNumber(scope.row.quantity) }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="130">
+          <template #default="scope">
+            <el-tag :type="relatedDocTag(scope.row)" size="small">{{ scope.row.status_label }}</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+
       <div class="drawer-actions mt-16">
         <el-button @click="detailVisible = false">关闭</el-button>
         <el-button v-if="detail && canConfirmFinanceEdit(detail)" type="warning" @click="confirmFinanceEdit(detail)">确认财务修改</el-button>
@@ -478,6 +539,17 @@ import { exportRowsToCsv } from '../../utils/export'
 import { formatDateTime, formatNumber, paymentTypeLabel, statusLabel, statusType } from '../../utils/format'
 
 const auth = useAuthStore()
+
+// 销售单据类型配置(与后端 models.py ORDER_TYPE_STYLES 保持一致,颜色便于修改)
+const ORDER_TYPE_STYLES = {
+  normal:    { label: '普通', color: '#909399', tagType: 'info' },
+  urgent:    { label: '加急', color: '#F56C6C', tagType: 'danger' },
+  custom:    { label: '定制', color: '#E6A23C', tagType: 'warning' },
+  important: { label: '重要', color: '#F56C6C', tagType: 'danger' },
+}
+function orderTypeStyle(key) {
+  return ORDER_TYPE_STYLES[key] || ORDER_TYPE_STYLES.normal
+}
 const { route, focusedId: focusedOrderId, applyFocus: applyRouteFocus } = useRouteFocus()
 const rows = ref([])
 const customers = ref([])
@@ -519,6 +591,8 @@ const emptyForm = () => ({
   consignee_phone: '',
   delivery_address: '',
   payment_type: '先付定金后付尾款',
+  order_type: 'normal',
+  expected_delivery_date: null,
   deposit_amount: 0,
   transport_fee: 0,
   order_remark: '',
@@ -656,6 +730,14 @@ function canApprovePrice(row) {
 }
 function canFinanceEdit(row) {
   return canFinanceEditOrders.value && row && !['shipped', 'completed', 'cancelled'].includes(row.status)
+}
+
+function relatedDocTag(row) {
+  const status = row?.status || ''
+  if (['completed', 'converted', 'approved', 'passed', 'qualified'].includes(status)) return 'success'
+  if (['cancelled', 'rejected', 'scrapped', 'failed'].includes(status)) return 'danger'
+  if (['pending', 'pending_material', 'pending_approval', 'waiting_quality', 'ready_for_inbound', 'in_production', 'purchasing'].includes(status)) return 'warning'
+  return 'info'
 }
 
 function canConfirmFinanceEdit(row) {
@@ -966,6 +1048,8 @@ function validateOrderPayload() {
     consignee_phone: String(form.consignee_phone || '').trim(),
     delivery_address: String(form.delivery_address || '').trim(),
     payment_type: form.payment_type,
+    order_type: form.order_type || 'normal',
+    expected_delivery_date: form.expected_delivery_date || null,
     deposit_amount: Number(form.deposit_amount || 0),
     transport_fee: Number(form.transport_fee || 0),
     order_remark: String(form.order_remark || '').trim(),
@@ -1072,6 +1156,8 @@ async function editOrder(row) {
     consignee_phone: order.consignee_phone,
     delivery_address: order.delivery_address,
     payment_type: order.payment_type,
+    order_type: order.order_type || 'normal',
+    expected_delivery_date: order.expected_delivery_date || null,
     deposit_amount: order.deposit_amount,
     transport_fee: order.transport_fee,
     order_remark: order.order_remark || '',

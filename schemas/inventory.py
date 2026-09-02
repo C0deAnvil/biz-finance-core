@@ -51,3 +51,17 @@ class InventoryManualOperationCreateRequest(BaseModel):
 
 class InventoryOperationRejectRequest(BaseModel):
     reject_reason: str = Field(..., min_length=2, max_length=500)
+
+
+class StockTransferCreateRequest(BaseModel):
+    source_warehouse_id: int
+    target_warehouse_id: int
+    product_id: int | None = None
+    material_id: int | None = None
+    quantity: float = Field(..., gt=0)
+    remark: str | None = Field(default=None, max_length=500)
+
+
+class TransferQualityRequest(BaseModel):
+    result: str = Field(..., pattern="^(passed|failed)$")
+    reject_reason: str | None = Field(default=None, max_length=500)

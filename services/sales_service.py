@@ -487,7 +487,7 @@ def _create_fulfillment_demands(
     for item in order.items:
         available_quantity = inventory_map.get(item.product_id, Decimal("0"))
         remaining_order_quantity = max(
-            Decimal(item.quantity or 0) - Decimal(item.shipped_quantity or 0),
+            Decimal(item.quantity or 0) - Decimal(item.placed_quantity or 0) - Decimal(item.shipped_quantity or 0),
             Decimal("0"),
         )
         shortage_quantity = (
@@ -758,6 +758,8 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
         consignee_phone=payload.consignee_phone,
         delivery_address=payload.delivery_address,
         payment_type=payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales"),
+        order_type=payload.order_type or "normal",
+        expected_delivery_date=payload.expected_delivery_date,
         status="pending_confirmation",
         deposit_amount=payload.deposit_amount,
         transport_fee=payload.transport_fee,
@@ -839,6 +841,8 @@ def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, d
     order.consignee_phone = payload.consignee_phone
     order.delivery_address = payload.delivery_address
     order.payment_type = payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales")
+    order.order_type = payload.order_type or "normal"
+    order.expected_delivery_date = payload.expected_delivery_date
     order.deposit_amount = payload.deposit_amount
     order.transport_fee = payload.transport_fee
     order.packaging_fee = 0
@@ -1155,6 +1159,8 @@ def finance_edit_order(order_id: int, payload, current_user: User, db: Session):
     order.consignee_phone = payload.consignee_phone
     order.delivery_address = payload.delivery_address
     order.payment_type = payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales")
+    order.order_type = payload.order_type or "normal"
+    order.expected_delivery_date = payload.expected_delivery_date
     order.deposit_amount = payload.deposit_amount
     order.transport_fee = payload.transport_fee
     order.packaging_fee = 0

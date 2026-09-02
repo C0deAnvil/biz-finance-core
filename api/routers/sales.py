@@ -2,16 +2,17 @@ import re
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import Customer, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
+from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
 from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.organization import get_scoped_user_ids, user_in_scope
+from services.document_status import sync_sales_order_process_status
 from services.sales_service import (
     approve_order as approve_order_service,
     approve_sales_price_change as approve_sales_price_change_service,
@@ -124,6 +125,102 @@ def _enrich_finance_edit_snapshot_data(db: Session, data: dict, order: SalesOrde
     return result
 
 
+def _order_related_documents(db: Session, order_id: int) -> list[dict]:
+    """销售订单全链看板:从 document_relations 查所有关联子单据,组装状态树。"""
+    relations = db.execute(
+        select(DocumentRelation)
+        .where(
+            or_(
+                and_(DocumentRelation.source_document_type == "sales_order", DocumentRelation.source_document_id == order_id),
+                and_(DocumentRelation.target_document_type == "sales_order", DocumentRelation.target_document_id == order_id),
+            )
+        )
+        .order_by(DocumentRelation.id.asc())
+    ).scalars().all()
+    nodes: list[dict] = []
+    demand_ids = [r.target_document_id for r in relations if r.target_document_type == "fulfillment_demand"]
+    task_ids = [r.target_document_id for r in relations if r.target_document_type == "production_task"]
+    po_ids = [r.target_document_id for r in relations if r.target_document_type == "purchase_order"]
+    quality_ids = [r.target_document_id for r in relations if r.target_document_type == "quality_task"]
+    demands = {
+        row.id: row
+        for row in db.execute(select(FulfillmentDemand).where(FulfillmentDemand.id.in_(demand_ids or [-1]))).scalars().all()
+    } if demand_ids else {}
+    tasks = {
+        row.id: row
+        for row in db.execute(select(ProductionTask).where(ProductionTask.id.in_(task_ids or [-1]))).scalars().all()
+    } if task_ids else {}
+    purchase_orders = {
+        row.id: row
+        for row in db.execute(select(PurchaseOrder).where(PurchaseOrder.id.in_(po_ids or [-1]))).scalars().all()
+    } if po_ids else {}
+    quality_tasks = {
+        row.id: row
+        for row in db.execute(select(QualityTask).where(QualityTask.id.in_(quality_ids or [-1]))).scalars().all()
+    } if quality_ids else {}
+
+    for relation in relations:
+        target_type = relation.target_document_type
+        target_id = relation.target_document_id
+        if target_type == "fulfillment_demand" and target_id in demands:
+            demand = demands[target_id]
+            nodes.append(
+                {
+                    "document_type": "fulfillment_demand",
+                    "document_type_label": "补货需求",
+                    "document_id": demand.id,
+                    "document_no": demand.demand_no,
+                    "status": demand.status,
+                    "status_label": "待补料" if demand.status == "pending_material" else status_label(demand.status),
+                    "quantity": float(demand.shortage_quantity or 0),
+                    "product_name": demand.product.name if demand.product else None,
+                    "fulfillment_mode": demand.fulfillment_mode,
+                }
+            )
+        elif target_type == "production_task" and target_id in tasks:
+            task = tasks[target_id]
+            nodes.append(
+                {
+                    "document_type": "production_task",
+                    "document_type_label": "生产任务",
+                    "document_id": task.id,
+                    "document_no": task.task_no,
+                    "status": task.status,
+                    "status_label": status_label(task.status),
+                    "quantity": float(task.planned_quantity or 0),
+                    "product_name": task.product.name if task.product else None,
+                }
+            )
+        elif target_type == "purchase_order" and target_id in purchase_orders:
+            po = purchase_orders[target_id]
+            nodes.append(
+                {
+                    "document_type": "purchase_order",
+                    "document_type_label": "采购订单",
+                    "document_id": po.id,
+                    "document_no": po.order_no,
+                    "status": po.status,
+                    "status_label": status_label(po.status),
+                    "quantity": float(po.total_amount or 0),
+                    "supplier_name": po.supplier.name if po.supplier else None,
+                }
+            )
+        elif target_type == "quality_task" and target_id in quality_tasks:
+            q = quality_tasks[target_id]
+            nodes.append(
+                {
+                    "document_type": "quality_task",
+                    "document_type_label": "质检任务",
+                    "document_id": q.id,
+                    "document_no": q.quality_no,
+                    "status": q.status,
+                    "status_label": status_label(q.status),
+                    "product_name": None,
+                }
+            )
+    return nodes
+
+
 def _finance_edit_snapshot(db: Session, order: SalesOrder) -> dict | None:
     row = (
         db.execute(
@@ -202,6 +299,134 @@ def _extract_receipt_merge_no(remark: str | None) -> str | None:
     return match.group("merge_no") if match else None
 
 
+@router.get("/flow-board")
+def order_flow_board(
+    tab: str = Query(default="all", pattern="^(all|reviewing|shipping|completed)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """全链订单看板：聚合每个客户订单的 财务/置货/生产/采购/质检/入库/发货 状态。"""
+    query = (
+        select(SalesOrder)
+        .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user))
+        .order_by(SalesOrder.created_at.desc())
+    )
+    scoped_user_ids = get_scoped_user_ids(db, current_user, "sales")
+    if scoped_user_ids is not None:
+        if current_user.id not in scoped_user_ids:
+            scoped_user_ids = [*scoped_user_ids, current_user.id]
+        query = query.where(SalesOrder.sales_user_id.in_(scoped_user_ids))
+    tab_filters = {
+        "reviewing": SalesOrder.status.in_(["pending_confirmation", "pending_price_approval", "rejected"]),
+        "shipping": SalesOrder.status.in_(["pending_shipment", "shipped"]),
+        "completed": SalesOrder.status.in_(["completed", "cancelled"]),
+        "all": True,
+    }
+    query = query.where(tab_filters[tab])
+    total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+    rows = db.execute(query.offset((page - 1) * page_size).limit(page_size)).scalars().all()
+    order_ids = [row.id for row in rows]
+
+    # 修复缺失的全链快照：对没有快照的订单实时同步生成（历史订单一次性补齐）
+    existing_snapshot_ids = {
+        r[0] for r in db.execute(
+            select(DocumentStatusSnapshot.document_id).where(
+                DocumentStatusSnapshot.document_type == "sales_order",
+                DocumentStatusSnapshot.document_id.in_(order_ids or [-1]),
+            )
+        ).all()
+    }
+    missing_order_ids = [oid for oid in order_ids if oid not in existing_snapshot_ids]
+    if missing_order_ids:
+        for oid in missing_order_ids:
+            missing_order = next((r for r in rows if r.id == oid), None)
+            if missing_order is not None:
+                try:
+                    sync_sales_order_process_status(db, missing_order)
+                except Exception:
+                    pass
+        db.commit()
+
+    # 批量读全链状态快照
+    snapshots = (
+        db.execute(
+            select(DocumentStatusSnapshot).where(
+                DocumentStatusSnapshot.document_type == "sales_order",
+                DocumentStatusSnapshot.document_id.in_(order_ids or [-1]),
+            )
+        ).scalars().all()
+        if order_ids
+        else []
+    )
+    snapshot_map: dict[int, dict[str, dict]] = {}
+    for snap in snapshots:
+        snapshot_map.setdefault(snap.document_id, {})[snap.status_dimension] = {
+            "stage": snap.current_stage,
+            "code": snap.status_code,
+            "reason": snap.blocked_reason,
+            "updated_at": snap.status_updated_at.isoformat() if snap.status_updated_at else None,
+        }
+
+    receivables = (
+        db.execute(select(ReceivableRecord).where(ReceivableRecord.sales_order_id.in_(order_ids)).order_by(ReceivableRecord.id.desc())).scalars().all()
+        if order_ids
+        else []
+    )
+    received_amount_map = _received_amount_map(receivables)
+
+    DIM_ORDER = ["approval", "finance", "placement", "production", "procurement", "quality", "inbound", "shipment"]
+    DIM_LABELS = {
+        "approval": "审批", "finance": "财务", "placement": "置货", "production": "生产",
+        "procurement": "采购", "quality": "质检", "inbound": "入库", "shipment": "发货",
+    }
+    items = []
+    for row in rows:
+        dims = snapshot_map.get(row.id, {})
+        stages = {d: (dims.get(d) or {}).get("stage", "") for d in DIM_ORDER}
+        # 汇总当前环节：取第一个未完成的关键环节
+        current_stage = "created"
+        for d in DIM_ORDER:
+            s = stages.get(d, "")
+            if s and s not in ("completed", "done", "passed", "paid", "cleared", "approved", "shipped", "not_required", "settled", "received"):
+                current_stage = d
+                break
+        else:
+            current_stage = "completed" if row.status == "completed" else "shipment"
+
+        items.append({
+            "id": row.id,
+            "order_no": row.order_no,
+            "customer_name": row.customer.name if row.customer else None,
+            "sales_user": row.sales_user.full_name if row.sales_user else None,
+            "status": row.status,
+            "status_label": status_label(row.status),
+            "total_amount": float(row.total_amount),
+            "received_amount": float(received_amount_map.get(row.id, Decimal("0"))),
+            "settlement_status": _settlement_status(Decimal(row.total_amount or 0), received_amount_map.get(row.id, Decimal("0"))),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "current_stage": current_stage,
+            "current_stage_label": DIM_LABELS.get(current_stage, "已完成"),
+            "dimensions": [
+                {
+                    "key": d,
+                    "label": DIM_LABELS[d],
+                    "stage": stages.get(d, ""),
+                    "reason": (dims.get(d) or {}).get("reason"),
+                    "updated_at": (dims.get(d) or {}).get("updated_at"),
+                }
+                for d in DIM_ORDER
+            ],
+        })
+    return api_response(
+        data={
+            "items": items,
+            "pagination": {"page": page, "page_size": page_size, "total": total},
+        }
+    )
+
+
 @router.get("/orders")
 def list_orders(
     tab: str = Query(default="reviewing", pattern="^(reviewing|shipping|completed|all)$"),
@@ -240,6 +465,35 @@ def list_orders(
         else []
     )
     received_amount_map = _received_amount_map(receivables)
+
+    # 全链状态快照（供列表迷你进度条展示）
+    snapshots = (
+        db.execute(
+            select(DocumentStatusSnapshot).where(
+                DocumentStatusSnapshot.document_type == "sales_order",
+                DocumentStatusSnapshot.document_id.in_(order_ids or [-1]),
+            )
+        ).scalars().all()
+        if order_ids
+        else []
+    )
+    snapshot_map: dict[int, dict[str, str]] = {}
+    for snap in snapshots:
+        snapshot_map.setdefault(snap.document_id, {})[snap.status_dimension] = snap.current_stage
+
+    DIM_ORDER = ["approval", "finance", "placement", "production", "procurement", "quality", "inbound", "shipment"]
+    DIM_LABELS = {
+        "approval": "审批", "finance": "财务", "placement": "置货", "production": "生产",
+        "procurement": "采购", "quality": "质检", "inbound": "入库", "shipment": "发货",
+    }
+
+    def _flow_dims(order_id: int) -> list[dict]:
+        dims = snapshot_map.get(order_id, {})
+        return [
+            {"key": d, "label": DIM_LABELS[d], "stage": dims.get(d, "")}
+            for d in DIM_ORDER
+        ]
+
     return api_response(
         data={
             "items": [
@@ -264,12 +518,17 @@ def list_orders(
                 "finance_edit_confirm_state": _finance_edit_confirm_state(db, row.id, current_user),
                 "payment_type": row.payment_type,
                 "payment_type_label": payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales"),
+                "order_type": row.order_type,
+                "order_type_label": order_type_style(row.order_type)["label"],
+                "order_type_color": order_type_style(row.order_type)["color"],
+                "expected_delivery_date": row.expected_delivery_date.isoformat() if row.expected_delivery_date else None,
                 "total_amount": float(row.total_amount),
                 "deposit_amount": float(row.deposit_amount),
                 "received_amount": float(received_amount_map.get(row.id, Decimal("0"))),
                 "remaining_amount": float(max(Decimal(row.total_amount or 0) - received_amount_map.get(row.id, Decimal("0")), Decimal("0"))),
                 "settlement_status": _settlement_status(Decimal(row.total_amount or 0), received_amount_map.get(row.id, Decimal("0"))),
                 "settlement_status_label": status_label(_settlement_status(Decimal(row.total_amount or 0), received_amount_map.get(row.id, Decimal("0")))),
+                "flow_dims": _flow_dims(row.id),
                 "is_completed_order": row.status == "completed",
                 "can_mark_completed": row.status == "shipped" and _settlement_status(Decimal(row.total_amount or 0), received_amount_map.get(row.id, Decimal("0"))) == "settled",
                 "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -330,6 +589,10 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             "consignee_phone": order.consignee_phone,
             "delivery_address": order.delivery_address,
             "order_remark": order.order_remark,
+            "order_type": order.order_type,
+            "order_type_label": order_type_style(order.order_type)["label"],
+            "order_type_color": order_type_style(order.order_type)["color"],
+            "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
             "payment_type": order.payment_type,
             "payment_type_label": payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales"),
             "total_amount": float(order.total_amount),
@@ -339,6 +602,7 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             "settlement_status": settlement_status,
             "settlement_status_label": status_label(settlement_status),
             "flow_steps": sales_flow_steps(order, settlement_status=settlement_status),
+            "related_documents": _order_related_documents(db, order.id),
             "transport_fee": float(order.transport_fee),
             "packaging_fee": float(order.packaging_fee),
             "finance_edit_snapshot": _finance_edit_snapshot(db, order),

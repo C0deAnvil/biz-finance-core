@@ -328,7 +328,7 @@ const filters = reactive({ warehouseId: null, itemType: '', keyword: '', alertOn
 const operationForm = reactive({ items: [], handled_remark: '', adjust_reason: '', quantity_difference_remark: '' })
 const manualForm = reactive({ warehouse_id: null, source_no: '', remark: '', items: [] })
 const rejectForm = reactive({ reject_reason: '' })
-const canManualOperate = computed(() => auth.user?.role_code === 'inventory')
+const canManualOperate = computed(() => auth.isRole('inventory'))
 const canApproveInventoryOperation = (row) => Boolean(
   row && ['manager', 'system_admin'].includes(auth.user?.role_code) && row.status === 'pending_manager_approval'
 )

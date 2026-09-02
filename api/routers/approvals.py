@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -16,11 +17,13 @@ from models import (
     ProductionMaterialUsage,
     ProductionTask,
     PurchaseOrder,
+    PurchaseOrderApproval,
     PurchaseOrderItem,
     SalesReceiptRequest,
     QualityTask,
     ReceivableRecord,
     SalesOrder,
+    SalesOrderApproval,
     SalesOrderItem,
     SalesReturn,
     SalesReturnItem,
@@ -136,6 +139,8 @@ def _base_item(
     can_reject: bool,
     action_route: str | None = None,
     action_query: dict | None = None,
+    approved_by_name: str | None = None,
+    approved_at=None,
 ) -> dict:
     return {
         "id": _build_approval_id(approval_type, business_id),
@@ -147,6 +152,8 @@ def _base_item(
         "status": status,
         "status_label": status_label(status),
         "created_at": created_at.isoformat() if created_at else None,
+        "approved_by_name": approved_by_name,
+        "approved_at": approved_at.isoformat() if approved_at else None,
         "can_approve": can_approve,
         "can_reject": can_reject,
         "action_route": action_route,
@@ -155,17 +162,70 @@ def _base_item(
     }
 
 
+def _user_name(db: Session, user_id: int | None) -> str | None:
+    """按用户ID查姓名(审批人展示用)。"""
+    if not user_id:
+        return None
+    row = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    return row.full_name if row else None
+
+
+def _latest_sales_order_approver(db: Session, order_id: int) -> tuple[str | None, object]:
+    """查销售订单最新一次审批的审批人姓名与时间(审批明细表优先)。"""
+    row = db.execute(
+        select(SalesOrderApproval)
+        .where(SalesOrderApproval.sales_order_id == order_id)
+        .order_by(SalesOrderApproval.id.desc())
+    ).scalars().first()
+    if row is None:
+        return None, None
+    return _user_name(db, row.approver_user_id), row.approved_at
+
+
+def _latest_purchase_order_approver(db: Session, order_id: int) -> tuple[str | None, object]:
+    """查采购订单最新一次审批的审批人姓名与时间(审批明细表优先)。"""
+    row = db.execute(
+        select(PurchaseOrderApproval)
+        .where(PurchaseOrderApproval.purchase_order_id == order_id)
+        .order_by(PurchaseOrderApproval.id.desc())
+    ).scalars().first()
+    if row is None:
+        return None, None
+    return _user_name(db, row.approver_user_id), row.approved_at
+
+
+def _time_range_filter(start_date: str | None, end_date: str | None, column) -> list:
+    """按 YYYY-MM-DD 字符串构造时间范围过滤条件(含当天)。"""
+    conditions = []
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            conditions.append(column >= start_dt)
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+            conditions.append(column < end_dt)
+        except ValueError:
+            pass
+    return conditions
+
+
 def _pending_sales_orders(current_user: User, db: Session) -> list[dict]:
     return []
 
 
-def _history_sales_orders(current_user: User, db: Session) -> list[dict]:
+def _history_sales_orders(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "sales_order"):
         return []
     rows = db.execute(
         select(SalesOrder)
         .options(joinedload(SalesOrder.customer))
-        .where(SalesOrder.status.in_(["pending_shipment", "rejected", "shipped", "completed"]))
+        .where(
+            SalesOrder.status.in_(["pending_shipment", "rejected", "shipped", "completed"]),
+            *_time_range_filter(start_date, end_date, SalesOrder.updated_at),
+        )
     ).scalars().all()
     return [
         _base_item(
@@ -175,6 +235,8 @@ def _history_sales_orders(current_user: User, db: Session) -> list[dict]:
             title=f"销售订单 {row.order_no}",
             status=row.status,
             created_at=row.updated_at,
+            approved_by_name=(_latest_sales_order_approver(db, row.id)[0] or _user_name(db, row.approved_by_id)),
+            approved_at=(_latest_sales_order_approver(db, row.id)[1] or row.approved_at or row.updated_at),
             can_approve=False,
             can_reject=False,
             summary={
@@ -252,11 +314,16 @@ def _pending_purchase_payment_requests(current_user: User, db: Session) -> list[
     ]
 
 
-def _history_purchase_payment_requests(current_user: User, db: Session) -> list[dict]:
+def _history_purchase_payment_requests(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "purchase_payment_request"):
         return []
     rows = db.execute(
-        select(PurchasePaymentRequest).where(PurchasePaymentRequest.status.in_(["rejected", "pending_finance_payment", "pending_completion", "completed", "pending_chairman_approval"]))
+        select(PurchasePaymentRequest)
+        .options(joinedload(PurchasePaymentRequest.approved_by))
+        .where(
+            PurchasePaymentRequest.status.in_(["rejected", "pending_finance_payment", "pending_completion", "completed", "pending_chairman_approval"]),
+            *_time_range_filter(start_date, end_date, PurchasePaymentRequest.updated_at),
+        )
     ).scalars().all()
     return [
         _base_item(
@@ -266,6 +333,8 @@ def _history_purchase_payment_requests(current_user: User, db: Session) -> list[
             title=f"采购付款申请 {row.request_no}",
             status=row.status,
             created_at=row.updated_at,
+            approved_by_name=row.approved_by.full_name if row.approved_by else None,
+            approved_at=row.approved_at or row.updated_at,
             can_approve=False,
             can_reject=False,
             summary={
@@ -310,10 +379,17 @@ def _pending_sales_receipt_requests(current_user: User, db: Session) -> list[dic
     ]
 
 
-def _history_sales_receipt_requests(current_user: User, db: Session) -> list[dict]:
+def _history_sales_receipt_requests(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "sales_receipt_request"):
         return []
-    rows = db.execute(select(SalesReceiptRequest).where(SalesReceiptRequest.status.in_(["approved", "rejected", "receipt_abnormal", "pending_finance_check"]))).scalars().all()
+    rows = db.execute(
+        select(SalesReceiptRequest)
+        .options(joinedload(SalesReceiptRequest.approved_by))
+        .where(
+            SalesReceiptRequest.status.in_(["approved", "rejected", "receipt_abnormal", "pending_finance_check"]),
+            *_time_range_filter(start_date, end_date, SalesReceiptRequest.updated_at),
+        )
+    ).scalars().all()
     return [
         _base_item(
             approval_type="sales_receipt_request",
@@ -322,6 +398,8 @@ def _history_sales_receipt_requests(current_user: User, db: Session) -> list[dic
             title=f"销售收款确认 {row.request_no}",
             status=row.status,
             created_at=row.updated_at,
+            approved_by_name=row.approved_by.full_name if row.approved_by else None,
+            approved_at=row.approved_at or row.updated_at,
             can_approve=False,
             can_reject=False,
             summary={
@@ -335,13 +413,16 @@ def _history_sales_receipt_requests(current_user: User, db: Session) -> list[dic
     ]
 
 
-def _history_purchase_orders(current_user: User, db: Session) -> list[dict]:
+def _history_purchase_orders(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "purchase_order"):
         return []
     rows = db.execute(
         select(PurchaseOrder)
         .options(joinedload(PurchaseOrder.supplier))
-        .where(PurchaseOrder.status.in_(["purchasing", "rejected", "partial_received", "fully_received", "cancelled"]))
+        .where(
+            PurchaseOrder.status.in_(["purchasing", "rejected", "partial_received", "fully_received", "cancelled"]),
+            *_time_range_filter(start_date, end_date, PurchaseOrder.updated_at),
+        )
     ).scalars().all()
     return [
         _base_item(
@@ -351,6 +432,8 @@ def _history_purchase_orders(current_user: User, db: Session) -> list[dict]:
             title=f"采购订单 {row.order_no}",
             status=row.status,
             created_at=row.updated_at,
+            approved_by_name=(_latest_purchase_order_approver(db, row.id)[0] or _user_name(db, row.approved_by_id)),
+            approved_at=(_latest_purchase_order_approver(db, row.id)[1] or row.approved_at or row.updated_at),
             can_approve=False,
             can_reject=False,
             summary={
@@ -389,10 +472,16 @@ def _pending_sales_returns(current_user: User, db: Session) -> list[dict]:
     ]
 
 
-def _history_sales_returns(current_user: User, db: Session) -> list[dict]:
+def _history_sales_returns(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "sales_return"):
         return []
-    rows = db.execute(select(SalesReturn).where(SalesReturn.status.in_(["approved", "rejected", "refunded"]))).scalars().all()
+    rows = db.execute(
+        select(SalesReturn)
+        .where(
+            SalesReturn.status.in_(["approved", "rejected", "refunded"]),
+            *_time_range_filter(start_date, end_date, SalesReturn.updated_at),
+        )
+    ).scalars().all()
     return [
         _base_item(
             approval_type="sales_return",
@@ -401,6 +490,8 @@ def _history_sales_returns(current_user: User, db: Session) -> list[dict]:
             title=f"销售{return_type_label(row.return_type)} {row.return_no}",
             status=row.status,
             created_at=row.updated_at,
+            approved_by_name=_user_name(db, row.approved_by_id),
+            approved_at=row.approved_at or row.updated_at,
             can_approve=False,
             can_reject=False,
             summary={
@@ -454,7 +545,7 @@ def _pending_material_requests(current_user: User, db: Session) -> list[dict]:
     ]
 
 
-def _history_material_requests(current_user: User, db: Session) -> list[dict]:
+def _history_material_requests(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     role_code = _role_code(current_user)
     if role_code == "production":
         query = (
@@ -468,6 +559,7 @@ def _history_material_requests(current_user: User, db: Session) -> list[dict]:
                 ProductionMaterialUsage.special_request_status == "not_required",
                 ProductionMaterialUsage.inventory_approval_status.in_(["approved", "rejected"]),
                 ProductionTask.created_by_id == current_user.id,
+                *_time_range_filter(start_date, end_date, ProductionMaterialUsage.updated_at),
             )
         )
     elif role_code in {"inventory", "manager", "chairman", "system_admin"}:
@@ -480,6 +572,7 @@ def _history_material_requests(current_user: User, db: Session) -> list[dict]:
             .where(
                 ProductionMaterialUsage.special_request_status == "not_required",
                 ProductionMaterialUsage.inventory_approval_status.in_(["approved", "rejected"]),
+                *_time_range_filter(start_date, end_date, ProductionMaterialUsage.updated_at),
             )
         )
     else:
@@ -493,6 +586,8 @@ def _history_material_requests(current_user: User, db: Session) -> list[dict]:
             title=f"领料审批 {row.production_task.task_no}",
             status=row.inventory_approval_status,
             created_at=row.updated_at,
+            approved_by_name=_user_name(db, row.inventory_approved_by_id or row.manager_approved_by_id),
+            approved_at=row.inventory_approved_at or row.manager_approved_at or row.updated_at,
             can_approve=False,
             can_reject=False,
             summary={
@@ -552,14 +647,17 @@ def _pending_special_requests(current_user: User, db: Session) -> list[dict]:
     ]
 
 
-def _history_special_requests(current_user: User, db: Session) -> list[dict]:
+def _history_special_requests(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     query = (
         select(ProductionMaterialUsage)
         .options(
             joinedload(ProductionMaterialUsage.production_task).joinedload(ProductionTask.product),
             joinedload(ProductionMaterialUsage.material),
         )
-        .where(ProductionMaterialUsage.special_request_status.in_(["approved", "rejected"]))
+        .where(
+            ProductionMaterialUsage.special_request_status.in_(["approved", "rejected"]),
+            *_time_range_filter(start_date, end_date, ProductionMaterialUsage.updated_at),
+        )
     )
     role_code = _role_code(current_user)
     if role_code == "production":
@@ -575,6 +673,8 @@ def _history_special_requests(current_user: User, db: Session) -> list[dict]:
             title=f"特殊领用 {row.production_task.task_no}",
             status=row.special_request_status,
             created_at=row.updated_at,
+            approved_by_name=_user_name(db, row.inventory_approved_by_id or row.manager_approved_by_id),
+            approved_at=row.inventory_approved_at or row.manager_approved_at or row.updated_at,
             can_approve=False,
             can_reject=False,
             summary={
@@ -620,13 +720,16 @@ def _pending_business_matters(current_user: User, db: Session) -> list[dict]:
     ]
 
 
-def _history_business_matters(current_user: User, db: Session) -> list[dict]:
+def _history_business_matters(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "business_matter"):
         return []
     rows = db.execute(
         select(BusinessMatter)
         .options(joinedload(BusinessMatter.applicant), joinedload(BusinessMatter.manager_user))
-        .where(BusinessMatter.status.in_(["approved", "rejected", "converted"]))
+        .where(
+            BusinessMatter.status.in_(["approved", "rejected", "converted"]),
+            *_time_range_filter(start_date, end_date, BusinessMatter.updated_at),
+        )
     ).scalars().all()
     return [
         _base_item(
@@ -636,6 +739,8 @@ def _history_business_matters(current_user: User, db: Session) -> list[dict]:
             title=f"事务申请 {row.matter_no}",
             status=row.status,
             created_at=row.updated_at,
+            approved_by_name=row.manager_user.full_name if row.manager_user else None,
+            approved_at=row.approved_at or row.updated_at,
             can_approve=False,
             can_reject=False,
             summary={
@@ -683,13 +788,16 @@ def _pending_reimbursements(current_user: User, db: Session) -> list[dict]:
     ]
 
 
-def _history_reimbursements(current_user: User, db: Session) -> list[dict]:
+def _history_reimbursements(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "reimbursement"):
         return []
     rows = db.execute(
         select(Reimbursement)
         .options(joinedload(Reimbursement.applicant), joinedload(Reimbursement.chairman_user), joinedload(Reimbursement.finance_user))
-        .where(Reimbursement.status.in_(["approved", "rejected", "paid"]))
+        .where(
+            Reimbursement.status.in_(["approved", "rejected", "paid"]),
+            *_time_range_filter(start_date, end_date, Reimbursement.updated_at),
+        )
     ).scalars().all()
     return [
         _base_item(
@@ -699,6 +807,8 @@ def _history_reimbursements(current_user: User, db: Session) -> list[dict]:
             title=f"报销申请 {row.reimbursement_no}",
             status=row.status,
             created_at=row.updated_at,
+            approved_by_name=(row.chairman_user.full_name if row.chairman_user else None) or (row.finance_user.full_name if row.finance_user else None),
+            approved_at=row.approved_at or row.updated_at,
             can_approve=False,
             can_reject=False,
             summary={
@@ -1174,22 +1284,33 @@ def list_pending_approvals(current_user: User = Depends(get_current_user), db: S
 
 
 @router.get("/history")
-def list_approval_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_approval_history(
+    start_date: str | None = Query(default=None, description="开始日期 YYYY-MM-DD,默认本月1号"),
+    end_date: str | None = Query(default=None, description="结束日期 YYYY-MM-DD,默认今天"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # 默认本月:本月1号 ~ 今天
+    today = datetime.now()
+    if not start_date:
+        start_date = today.replace(day=1).strftime("%Y-%m-%d")
+    if not end_date:
+        end_date = today.strftime("%Y-%m-%d")
     data = _dedupe_approval_rows(
         [
-            *_history_sales_orders(current_user, db),
-            *_history_purchase_orders(current_user, db),
-            *_history_purchase_payment_requests(current_user, db),
-            *_history_sales_receipt_requests(current_user, db),
-            *_history_sales_returns(current_user, db),
-            *_history_material_requests(current_user, db),
-            *_history_special_requests(current_user, db),
-            *_history_business_matters(current_user, db),
-            *_history_reimbursements(current_user, db),
+            *_history_sales_orders(current_user, db, start_date, end_date),
+            *_history_purchase_orders(current_user, db, start_date, end_date),
+            *_history_purchase_payment_requests(current_user, db, start_date, end_date),
+            *_history_sales_receipt_requests(current_user, db, start_date, end_date),
+            *_history_sales_returns(current_user, db, start_date, end_date),
+            *_history_material_requests(current_user, db, start_date, end_date),
+            *_history_special_requests(current_user, db, start_date, end_date),
+            *_history_business_matters(current_user, db, start_date, end_date),
+            *_history_reimbursements(current_user, db, start_date, end_date),
         ]
     )
-    data.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return api_response(data=data)
+    data.sort(key=lambda item: item.get("approved_at") or item.get("created_at") or "", reverse=True)
+    return api_response(data={"items": data, "start_date": start_date, "end_date": end_date})
 
 
 @router.get("/{approval_id}")

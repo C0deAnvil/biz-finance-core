@@ -157,7 +157,7 @@ const createForm = reactive({
   items: []
 })
 
-const canCreate = computed(() => auth.user?.role_code === 'inventory')
+const canCreate = computed(() => auth.isRole('inventory'))
 const completedCount = computed(() => rows.value.filter((item) => item.status === 'completed').length)
 const differenceCount = computed(() => rows.value.reduce((sum, item) => sum + Number(item.difference_count || 0), 0))
 

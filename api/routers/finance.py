@@ -64,8 +64,8 @@ from services.workflow_repair import repair_sales_receipt_workflows
 
 
 router = APIRouter(prefix="/finance", tags=["finance"])
-FINANCE_READ_ROLES = ("finance", "manager", "chairman", "system_admin")
-FINANCE_POSTING_ROLES = ("finance", "system_admin")
+FINANCE_READ_ROLES = ("finance", "finance_super", "manager", "chairman", "system_admin")
+FINANCE_POSTING_ROLES = ("finance", "finance_super", "system_admin")
 PAYMENT_RECORDED_STATUSES = {"paid", "partial_settled", "settled"}
 RECEIPT_MERGE_NO_PATTERN = re.compile(r"合并收款批次[:：]\s*(?P<merge_no>[A-Za-z0-9-]+)")
 

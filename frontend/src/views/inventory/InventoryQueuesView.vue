@@ -4,25 +4,58 @@
       <el-col :span="12">
         <PageSection title="待置货列表" description="销售订单待确认时显示，便于库存提前置货。">
           <template #actions>
+            <el-button type="primary" plain @click="openManualDemand">提补货需求</el-button>
+            <el-button plain @click="openMyDemands">我的补货需求</el-button>
             <el-button @click="load">刷新</el-button>
           </template>
-          <el-table :data="pagedPlacementRows" stripe>
-            <el-table-column prop="order_no" label="订单号" width="140">
+          <el-table :data="pagedPlacementRows" stripe :row-class-name="placementRowClass">
+            <el-table-column prop="order_no" label="订单号" width="150">
               <template #default="scope">
                 <el-button text type="primary" @click="openOrderDetail(scope.row)">{{ scope.row.order_no }}</el-button>
               </template>
             </el-table-column>
-            <el-table-column prop="customer_name" label="客户" min-width="120" show-overflow-tooltip />
-            <el-table-column prop="status" label="状态" width="100">
-              <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ statusLabel(scope.row.status) }}</el-tag></template>
+            <el-table-column prop="order_type_label" label="类型" width="80">
+              <template #default="scope">
+                <el-tag v-if="scope.row.order_type && scope.row.order_type !== 'normal'" :type="orderTypeStyle(scope.row.order_type).tagType" effect="light" size="small">{{ scope.row.order_type_label }}</el-tag>
+                <span v-else class="text-muted">-</span>
+              </template>
             </el-table-column>
-            <el-table-column label="财务修改" width="110">
+            <el-table-column prop="customer_name" label="客户" min-width="110" show-overflow-tooltip />
+            <el-table-column label="商品/置货进度" min-width="260">
+              <template #default="scope">
+                <div v-for="it in (scope.row.items || [])" :key="it.sales_order_item_id" class="place-progress">
+                  <div class="place-progress-head">
+                    <span class="place-prod">{{ it.product_name }}</span>
+                    <span class="place-nums">已置 {{ formatNumber(it.placed_quantity) }} / 待置 {{ formatNumber(it.remaining_to_place) }} / 可用 {{ formatNumber(it.available_quantity) }}</span>
+                  </div>
+                  <div class="place-bar">
+                    <div
+                      class="place-bar-fill"
+                      :class="`is-${it.item_status}`"
+                      :style="{ width: barPercent(it) + '%' }"
+                    ></div>
+                  </div>
+                </div>
+                <span v-if="!scope.row.items?.length" class="text-muted">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="置货状态" width="110">
+              <template #default="scope">
+                <el-tag :type="stockStatusTag(scope.row.stock_status)" effect="dark" size="small">{{ stockStatusLabel(scope.row.stock_status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="财务修改" width="100">
               <template #default="scope"><el-tag v-if="scope.row.finance_edit_pending" type="warning">待确认</el-tag><span v-else>-</span></template>
             </el-table-column>
-            <el-table-column label="快捷操作" width="140" fixed="right" align="center">
+            <el-table-column label="快捷操作" width="180" fixed="right" align="center">
               <template #default="scope">
                 <el-button v-if="canConfirmFinanceEdit(scope.row)" class="queue-main-action" size="small" type="warning" @click="openOrderDetail(scope.row)">改单详情</el-button>
-                <el-button v-else class="queue-main-action" size="small" type="success" @click="markPlacement(scope.row)">已置货</el-button>
+                <el-tooltip v-else-if="scope.row.blocked_reason" :content="scope.row.blocked_reason" placement="top">
+                  <span>
+                    <el-button class="queue-main-action" size="small" type="info" disabled>已置货</el-button>
+                  </span>
+                </el-tooltip>
+                <el-button v-else class="queue-main-action" size="small" type="success" @click="openPlacementDialog(scope.row)">已置货</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -87,6 +120,21 @@
         <el-table-column prop="item_count" label="明细数" width="90" />
         <el-table-column prop="status_label" label="状态" width="110">
           <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="财务" width="110">
+          <template #default="scope">
+            <el-tag :type="dimTag(scope.row, 'finance').type" size="small" effect="light">{{ dimTag(scope.row, 'finance').label }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="生产" width="110">
+          <template #default="scope">
+            <el-tag :type="dimTag(scope.row, 'production').type" size="small" effect="light">{{ dimTag(scope.row, 'production').label }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="质检" width="110">
+          <template #default="scope">
+            <el-tag :type="dimTag(scope.row, 'quality').type" size="small" effect="light">{{ dimTag(scope.row, 'quality').label }}</el-tag>
+          </template>
         </el-table-column>
         <el-table-column prop="finance_edit_pending" label="改单" width="100">
           <template #default="scope">
@@ -153,6 +201,131 @@
       <template #footer>
         <el-button @click="shipmentDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="shipmentSubmitting" @click="submitShipment">确认出库并发货</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="manualDemandVisible" title="手动提补货需求" width="480px">
+      <el-form :model="manualDemandForm" label-width="100px">
+        <el-form-item label="产品" required>
+          <el-select v-model="manualDemandForm.product_id" filterable placeholder="选择产品" style="width: 100%">
+            <el-option v-for="p in productOptions" :key="p.id" :label="`${p.name}（${p.fulfillment_mode === 'trade' ? '贸易型' : '生产型'}）`" :value="p.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="缺口数量" required>
+          <el-input-number v-model="manualDemandForm.shortage_quantity" :min="0.01" :precision="2" style="width: 180px" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="manualDemandForm.remark" type="textarea" :rows="2" placeholder="缺口原因(选填)" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="manualDemandVisible = false">取消</el-button>
+        <el-button type="primary" :loading="manualDemandSubmitting" @click="submitManualDemand">提交</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="placementDialogVisible" title="分批次置货" width="760px">
+      <template v-if="activePlacement">
+        <el-alert
+          v-if="activePlacement.blocked_reason"
+          :title="activePlacement.blocked_reason"
+          type="error"
+          :closable="false"
+          show-icon
+          class="mb-12"
+        />
+        <el-form label-width="100px">
+          <el-row :gutter="16" class="shipment-head">
+            <el-col :span="8"><span class="field-label">客户订单：</span>{{ activePlacement.order_no }}</el-col>
+            <el-col :span="8"><span class="field-label">客户：</span>{{ activePlacement.customer_name || '-' }}</el-col>
+            <el-col :span="8">
+              <span class="field-label">置货状态：</span>
+              <el-tag :type="stockStatusTag(activePlacement.stock_status)" effect="dark" size="small">{{ stockStatusLabel(activePlacement.stock_status) }}</el-tag>
+            </el-col>
+          </el-row>
+          <el-table :data="placementForm.items" border class="mt-12">
+            <el-table-column prop="product_name" label="商品" min-width="160" />
+            <el-table-column prop="display_specification" label="规格" width="110" />
+            <el-table-column label="待置货" width="90">
+              <template #default="scope">{{ formatNumber(scope.row.remaining_to_place) }}</template>
+            </el-table-column>
+            <el-table-column label="已置货" width="90">
+              <template #default="scope">{{ formatNumber(scope.row.placed_quantity) }}</template>
+            </el-table-column>
+            <el-table-column label="可用库存" width="90">
+              <template #default="scope">{{ formatNumber(scope.row.available_quantity) }}</template>
+            </el-table-column>
+            <el-table-column label="本次置货" width="140">
+              <template #default="scope">
+                <el-input-number
+                  v-model="scope.row.place_qty"
+                  :min="0"
+                  :max="Math.min(scope.row.remaining_to_place, scope.row.available_quantity)"
+                  :precision="0"
+                  size="small"
+                  style="width: 110px"
+                />
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-if="placementShortage.length" class="shortage-tip mt-12">
+            <el-alert type="warning" :closable="false" show-icon>
+              <template #title>库存不足,缺口合计 {{ placementShortageTotal }}。确认置货后,系统将询问是否对缺口提补货需求。</template>
+            </el-alert>
+          </div>
+        </el-form>
+      </template>
+      <template #footer>
+        <el-button @click="placementDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="placementSubmitting" @click="submitPlacement">确认置货</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="myDemandsVisible" title="我的补货需求" width="760px">
+      <el-table :data="myDemands" stripe border>
+        <el-table-column prop="demand_no" label="补货单号" width="140" />
+        <el-table-column prop="product_name" label="产品" min-width="140" />
+        <el-table-column prop="shortage_quantity" label="数量" width="90">
+          <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
+        </el-table-column>
+        <el-table-column prop="fulfillment_mode_label" label="类型" width="80" />
+        <el-table-column prop="sales_order_no" label="来源订单" width="140">
+          <template #default="scope">{{ scope.row.sales_order_no || '手动' }}</template>
+        </el-table-column>
+        <el-table-column label="进度" width="120">
+          <template #default="scope">
+            <el-tag :type="demandProgressTag(scope.row.progress_status)" size="small">{{ scope.row.progress_label }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="related_no" label="关联单据" min-width="140">
+          <template #default="scope">{{ scope.row.related_no || '-' }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="myDemandsVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="demandConfirmVisible" title="提补货需求" width="640px">
+      <template v-if="demandConfirmItems.length">
+        <el-alert type="info" :closable="false" show-icon class="mb-12">
+          <template #title>订单 {{ demandConfirmOrderNo }} 存在库存缺口,是否对以下商品提补货需求?数量默认等于缺口,可修改。</template>
+        </el-alert>
+        <el-table :data="demandConfirmItems" border>
+          <el-table-column prop="product_name" label="商品" min-width="160" />
+          <el-table-column label="缺口数量" width="110">
+            <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="补货数量" width="150">
+            <template #default="scope">
+              <el-input-number v-model="scope.row.demand_quantity" :min="1" :precision="0" size="small" style="width: 120px" />
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="demandConfirmVisible = false">暂不提</el-button>
+        <el-button type="primary" :loading="demandSubmitting" @click="submitDemandConfirm">确认提补货需求</el-button>
       </template>
     </el-dialog>
 
@@ -350,6 +523,226 @@ async function openOrderDetail(row) {
   }
 }
 
+const placementDialogVisible = ref(false)
+const activePlacement = ref(null)
+const placementForm = reactive({ items: [] })
+const placementSubmitting = ref(false)
+
+// 销售单据类型配置(与后端 models.py ORDER_TYPE_STYLES 保持一致)
+const ORDER_TYPE_STYLES = {
+  normal:    { label: '普通', color: '#909399', tagType: 'info' },
+  urgent:    { label: '加急', color: '#F56C6C', tagType: 'danger' },
+  custom:    { label: '定制', color: '#E6A23C', tagType: 'warning' },
+  important: { label: '重要', color: '#F56C6C', tagType: 'danger' },
+}
+function orderTypeStyle(key) {
+  return ORDER_TYPE_STYLES[key] || ORDER_TYPE_STYLES.normal
+}
+
+function stockStatusLabel(status) {
+  return { green: '库存充足', yellow: '部分库存', red: '库存不足' }[status] || status || '-'
+}
+
+// 全链看板:维度状态标签(财务/生产/质检)
+const DIM_TAG_COLORS = {
+  finance: {
+    paid: 'success', settled: 'success', completed: 'success', cleared: 'success',
+    partially_received: 'warning', partial_paid: 'warning',
+    receipt_pending: 'danger', pending_finance_check: 'danger', rejected: 'danger', pending: 'danger',
+    not_required: 'info',
+  },
+  production: {
+    completed: 'success', not_required: 'info',
+    pending: 'danger', pending_material: 'warning', pending_material_approval: 'warning', pending_material_outbound: 'warning',
+    material_issued: 'primary', in_production: 'primary', producing: 'primary', processing: 'primary',
+    waiting_quality: 'warning', ready_for_inbound: 'warning', pending_inbound: 'warning',
+    reworked: 'danger', rework_pending: 'danger', rework_created: 'danger',
+    scrapped: 'danger', partially_scrapped: 'danger',
+  },
+  quality: {
+    passed: 'success', approved: 'success', completed: 'success', qualified: 'success', done: 'success',
+    not_required: 'info',
+    pending: 'warning', waiting_quality: 'warning', inspecting: 'warning',
+    failed: 'danger', rejected: 'danger', unqualified: 'danger',
+  },
+}
+function dimOf(row, name) {
+  return (row.dimensions || []).find((d) => d.dimension === name) || null
+}
+function dimTag(row, name) {
+  const d = dimOf(row, name)
+  if (!d) return { label: '-', type: 'info' }
+  const stage = d.current_stage || d.status_code || ''
+  let label = d.current_stage_label || d.status_label || stage || '-'
+  const colors = DIM_TAG_COLORS[name] || {}
+  // not_required 按维度显示更明确的文案
+  if (stage === 'not_required') {
+    label = name === 'finance' ? '无需收款' : name === 'production' ? '无需生产' : name === 'quality' ? '无需质检' : label
+  }
+  return { label, type: colors[stage] || 'info' }
+}
+function stockStatusTag(status) {
+  return { green: 'success', yellow: 'warning', red: 'danger' }[status] || 'info'
+}
+function barPercent(it) {
+  if (!it) return 0
+  const total = Number(it.placed_quantity || 0) + Number(it.remaining_to_place || 0)
+  if (total <= 0) return 0
+  return Math.min(100, Math.round((Number(it.placed_quantity || 0) / total) * 100))
+}
+function placementRowClass({ row }) {
+  if (!row) return ''
+  return `placement-${row.stock_status || ''}`
+}
+
+const placementShortage = computed(() => {
+  if (!activePlacement.value?.items) return []
+  return activePlacement.value.items.filter((it) => Number(it.remaining_to_place || 0) > Number(it.available_quantity || 0))
+})
+const placementShortageTotal = computed(() =>
+  placementShortage.value.reduce((sum, it) => sum + Math.max(Number(it.remaining_to_place || 0) - Number(it.available_quantity || 0), 0), 0)
+)
+
+const manualDemandVisible = ref(false)
+const manualDemandSubmitting = ref(false)
+const manualDemandForm = reactive({ product_id: null, shortage_quantity: 1, remark: '' })
+const productOptions = ref([])
+
+async function openManualDemand() {
+  if (!productOptions.value.length) {
+    productOptions.value = (await get('/api/master-data/products')) || []
+  }
+  Object.assign(manualDemandForm, { product_id: null, shortage_quantity: 1, remark: '' })
+  manualDemandVisible.value = true
+}
+
+async function submitManualDemand() {
+  if (!manualDemandForm.product_id) {
+    ElMessage.warning('请选择产品')
+    return
+  }
+  if (!manualDemandForm.shortage_quantity || manualDemandForm.shortage_quantity <= 0) {
+    ElMessage.warning('请填写大于 0 的缺口数量')
+    return
+  }
+  manualDemandSubmitting.value = true
+  try {
+    const data = await post('/api/inventory/fulfillment-demands', {
+      product_id: manualDemandForm.product_id,
+      shortage_quantity: manualDemandForm.shortage_quantity,
+      remark: manualDemandForm.remark || null,
+    })
+    ElMessage.success(data?.msg || '补货需求已提交')
+    manualDemandVisible.value = false
+  } catch (e) {
+    ElMessage.error(e?.message || '提交失败')
+  } finally {
+    manualDemandSubmitting.value = false
+  }
+}
+
+function openPlacementDialog(row) {
+  activePlacement.value = row
+  placementForm.items = (row.items || []).map((it) => ({
+    ...it,
+    place_qty: Math.min(Number(it.remaining_to_place || 0), Number(it.available_quantity || 0)),
+  }))
+  placementDialogVisible.value = true
+}
+
+async function submitPlacement() {
+  if (placementSubmitting.value) return
+  const items = placementForm.items
+    .filter((it) => Number(it.place_qty || 0) > 0)
+    .map((it) => ({ sales_order_item_id: it.sales_order_item_id, placed_quantity: Number(it.place_qty || 0) }))
+  if (!items.length) {
+    ElMessage.warning('请填写本次置货数量')
+    return
+  }
+  placementSubmitting.value = true
+  try {
+    const resp = await post(`/api/inventory/queues/${activePlacement.value.queue_id}/placement`, { action: 'placed', items })
+    ElMessage.success('置货成功')
+    placementDialogVisible.value = false
+    await load()
+  } catch (e) {
+    const data = e?.data || {}
+    if (data?.code === 'finished_product_stock_shortage') {
+      placementDialogVisible.value = false
+      await load()
+      openDemandConfirm(data.shortages || [])
+    } else if (data?.code === 'placement_blocked') {
+      ElMessage.error(data.message || '当前订单暂不能置货')
+    } else {
+      ElMessage.error(e?.message || '置货失败')
+    }
+  } finally {
+    placementSubmitting.value = false
+  }
+}
+
+const myDemandsVisible = ref(false)
+const myDemands = ref([])
+
+async function openMyDemands() {
+  try {
+    const rows = await get('/api/inventory/fulfillment-demands')
+    myDemands.value = rows || []
+    myDemandsVisible.value = true
+  } catch (e) {
+    ElMessage.error(e?.message || '加载失败')
+  }
+}
+
+const DEMAND_PROGRESS_TAGS = {
+  pending: 'warning', pending_material: 'warning', purchasing: 'primary', ordered: 'primary',
+  receiving: 'primary', pending_payment: 'danger', raw_purchasing: 'warning', producing: 'primary',
+  pending_inbound: 'warning', completed: 'success', cancelled: 'info',
+}
+function demandProgressTag(status) {
+  return DEMAND_PROGRESS_TAGS[status] || 'info'
+}
+
+const demandConfirmVisible = ref(false)
+const demandSubmitting = ref(false)
+const demandConfirmOrderNo = ref('')
+const demandConfirmItems = ref([])
+
+function openDemandConfirm(shortages) {
+  const rows = (shortages || []).filter((it) => Number(it.shortage_quantity || 0) > 0)
+  if (!rows.length) return
+  demandConfirmOrderNo.value = activePlacement.value?.order_no || ''
+  demandConfirmItems.value = rows.map((it) => ({
+    product_id: it.product_id,
+    product_name: it.product_name,
+    shortage_quantity: Number(it.shortage_quantity || 0),
+    demand_quantity: Number(it.shortage_quantity || 0),
+  }))
+  demandConfirmVisible.value = true
+}
+
+async function submitDemandConfirm() {
+  if (demandSubmitting.value) return
+  const items = demandConfirmItems.value
+    .filter((it) => Number(it.demand_quantity || 0) > 0)
+    .map((it) => ({ product_id: it.product_id, shortage_quantity: Number(it.demand_quantity || 0) }))
+  if (!items.length) {
+    ElMessage.warning('请填写补货数量')
+    return
+  }
+  demandSubmitting.value = true
+  try {
+    const resp = await post(`/api/inventory/queues/${activePlacement.value.queue_id}/replenishment-demands`, { items })
+    ElMessage.success(resp?.msg || '补货需求已提交')
+    demandConfirmVisible.value = false
+    await load()
+  } catch (err) {
+    ElMessage.error(err?.message || '提补货需求失败')
+  } finally {
+    demandSubmitting.value = false
+  }
+}
+
 async function markPlacement(row) {
   await post(`/api/inventory/queues/${row.queue_id}/placement`, { action: 'placed' })
   ElMessage.success('已标记为已置货')
@@ -507,6 +900,29 @@ watch(() => [route.query.focusId, route.query.focusType], () => {
 .queue-main-action { min-width: 84px; font-weight: 600; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
 .shipment-head { margin-bottom: 16px; color: #303133; }
+
+/* 置货进度条 */
+.place-progress { margin-bottom: 8px; }
+.place-progress:last-child { margin-bottom: 0; }
+.place-progress-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 18px; }
+.place-prod { font-weight: 600; color: #303133; }
+.place-nums { color: #909399; white-space: nowrap; }
+.place-bar { height: 8px; border-radius: 4px; background: #f0f2f5; overflow: hidden; margin-top: 2px; }
+.place-bar-fill { height: 100%; border-radius: 4px; transition: width .3s; }
+.place-bar-fill.is-enough { background: #67c23a; }
+.place-bar-fill.is-partial { background: #e6a23c; }
+.place-bar-fill.is-none { background: #f56c6c; }
+.place-bar-fill.is-done { background: #67c23a; }
+
+/* 置货状态行颜色(浅色底,不干扰文字) */
+.placement-green { --el-table-tr-bg-color: #f0f9eb; }
+.placement-yellow { --el-table-tr-bg-color: #fdf6ec; }
+.placement-red { --el-table-tr-bg-color: #fef0f0; }
+
+.shortage-tip { display: block; }
+.mt-12 { margin-top: 12px; }
+.text-muted { color: #c0c4cc; }
+
 .field-label { color: #909399; }
 .mb-12 { margin-bottom: 12px; }
 .mt-16 { margin-top: 16px; }

@@ -125,6 +125,113 @@ def _is_special_material_request(task: ProductionTask, usage: ProductionMaterial
     return Decimal(usage.requested_quantity or 0) > _allowed_quantity(task, usage) or usage.manager_approval_status != "not_required"
 
 
+def _create_raw_material_demands_for_task(
+    db: Session,
+    *,
+    task: ProductionTask,
+    demand: FulfillmentDemand,
+    raw_material_demands: list,
+    current_user: User,
+) -> list[str]:
+    """转生产任务时原料不足,为生产补货需求创建原料采购待办(数量可自定义),返回编号列表。
+
+    载体复用 sales_order_material_replenishment(采购侧已支持展示与转采购单),
+    关联生产补货需求 demand_no,避免重复提交。
+    """
+    import json
+
+    if not raw_material_demands:
+        return []
+    bom = db.execute(
+        select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == demand.product_id)
+    ).unique().scalar_one_or_none()
+    if bom is None or not bom.items:
+        return []
+    material_map = {
+        row.id: row
+        for row in db.execute(select(Material).where(Material.id.in_([r.material_id for r in raw_material_demands] or [-1]))).scalars().all()
+    }
+    shortage_items = []
+    for raw in raw_material_demands:
+        shortage_quantity = Decimal(str(raw.shortage_quantity))
+        if shortage_quantity <= 0:
+            continue
+        material = material_map.get(raw.material_id)
+        shortage_items.append(
+            {
+                "material_id": raw.material_id,
+                "material_name": material.name if material else f"原料#{raw.material_id}",
+                "required_quantity": float(shortage_quantity),
+                "expected_available_quantity": 0,
+                "shortage_quantity": float(shortage_quantity),
+            }
+        )
+    if not shortage_items:
+        return []
+
+    business_type = "sales_order_material_replenishment"
+    pending_todos = db.execute(
+        select(TodoItem).where(
+            TodoItem.business_type == business_type,
+            TodoItem.business_id == demand.id,
+            TodoItem.status != "completed",
+        )
+    ).scalars().all()
+    purchase_user_ids = resolve_workflow_recipients(
+        db,
+        "purchase",
+        workflow=business_type,
+        business_type=business_type,
+        business_id=demand.id,
+    )
+    task_no = task.task_no if task else "待创建"
+    production_quantity = float(task.planned_quantity or 0) if task else float(demand.shortage_quantity or 0)
+    payload = {
+        "sales_order_id": demand.sales_order_id,
+        "sales_order_no": demand.source_order_no,
+        "fulfillment_demand_id": demand.id,
+        "fulfillment_demand_no": demand.demand_no,
+        "product_id": demand.product_id,
+        "product_name": demand.product.name if demand.product else None,
+        "production_quantity": production_quantity,
+        "items": shortage_items,
+    }
+    description = (
+        f"生产任务 {task_no} 原料不足,生产补货需求 {demand.demand_no} 存在原料缺口，"
+        f"共 {len(shortage_items)} 种原料，请采购人员处理。"
+        f"|sales_order_material_replenishment:{json.dumps(payload, ensure_ascii=False)}"
+    )
+    demand_nos: list[str] = []
+    for user_id in purchase_user_ids:
+        todo = next((row for row in pending_todos if row.assigned_user_id == user_id), None)
+        if todo is None:
+            create_todo(
+                db,
+                title=f"待采购生产原料 {demand.demand_no}",
+                description=description,
+                module="purchase",
+                assigned_user_id=user_id,
+                business_type=business_type,
+                business_id=demand.id,
+                priority="high",
+            )
+        else:
+            todo.description = description
+            todo.status = "pending"
+    raw_no = f"YL-{demand.id}"
+    demand_nos.append(raw_no)
+    create_notification(
+        db,
+        title="新增原料采购补货需求",
+        content=f"生产任务 {task_no} 原料不足，已通知采购处理（关联补货需求 {demand.demand_no}）。",
+        module="purchase",
+        recipient_user_ids=list(dict.fromkeys([*purchase_user_ids, current_user.id])),
+        created_by_id=current_user.id,
+        category="warning",
+    )
+    return demand_nos
+
+
 def _create_raw_material_replenishment_notice(
     db: Session,
     *,
@@ -320,6 +427,56 @@ def _max_producible_quantity_from_raw_stock(
             }
         )
     return max(max_quantity or Decimal("0"), Decimal("0")), material_rows
+
+
+def raw_material_shortage_detail(
+    db: Session,
+    *,
+    product_id: int,
+    planned_quantity: Decimal,
+) -> list[dict]:
+    """按指定生产数量计算每种原料的缺口明细(需要/可用/缺口)。"""
+    bom = db.execute(
+        select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == product_id)
+    ).unique().scalar_one_or_none()
+    if bom is None or not bom.items:
+        return []
+    raw_warehouse = _raw_warehouse(db)
+    material_ids = [item.material_id for item in bom.items if item.standard_quantity and item.standard_quantity > 0]
+    inventory_rows = db.execute(
+        select(Inventory)
+        .where(
+            Inventory.warehouse_id == raw_warehouse.id,
+            Inventory.material_id.in_(material_ids or [-1]),
+            Inventory.product_id.is_(None),
+        )
+    ).scalars().all() if material_ids else []
+    inventory_map = {row.material_id: row for row in inventory_rows}
+    rows: list[dict] = []
+    for bom_item in bom.items:
+        standard_quantity = Decimal(bom_item.standard_quantity or 0)
+        if standard_quantity <= 0:
+            continue
+        inventory = inventory_map.get(bom_item.material_id)
+        available_quantity = max(
+            Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
+            if inventory is not None
+            else Decimal("0"),
+            Decimal("0"),
+        )
+        required_quantity = Decimal(planned_quantity) * standard_quantity
+        shortage_quantity = max(required_quantity - available_quantity, Decimal("0"))
+        material_name = inventory.material.name if inventory is not None and inventory.material else f"原料#{bom_item.material_id}"
+        rows.append(
+            {
+                "material_id": bom_item.material_id,
+                "material_name": material_name,
+                "required_quantity": float(required_quantity),
+                "available_quantity": float(available_quantity),
+                "shortage_quantity": float(shortage_quantity),
+            }
+        )
+    return rows
 
 
 def _ensure_inventory_stock_for_approval(
@@ -534,8 +691,13 @@ def create_task(
     source_type = payload.source_type
     sales_order_id = payload.sales_order_id
     if demand is not None:
-        source_type = "sales_order"
-        sales_order_id = demand.sales_order_id
+        # 补货需求关联了客户订单 → 任务来源为客户订单;手动补货(无订单) → 任务来源为手动补货
+        if demand.sales_order_id:
+            source_type = "sales_order"
+            sales_order_id = demand.sales_order_id
+        else:
+            source_type = "fulfillment_demand"
+            sales_order_id = None
     if source_type == "sales_order" and not sales_order_id:
         raise HTTPException(status_code=409, detail="请选择来源客户订单")
 
@@ -626,6 +788,20 @@ def create_task(
         else:
             demand.shortage_quantity = remaining_quantity
             demand.status = "pending"
+        # 需求:转任务时原料不足→提交原料补货需求后,生产补货需求标记"待补料"
+        if payload.create_raw_material_demands and payload.raw_material_demands:
+            raw_demand_nos = _create_raw_material_demands_for_task(
+                db,
+                task=task,
+                demand=demand,
+                raw_material_demands=payload.raw_material_demands,
+                current_user=current_user,
+            )
+            demand.status = "pending_material"
+            demand.process_note = (
+                f"{demand.process_note or ''}\n已提交原料补货需求: {', '.join(raw_demand_nos)}。"
+                f"原料到货质检合格后可继续安排剩余 {float(remaining_quantity)} 生产。"
+            )
         create_notification(
             db,
             title="销售订单生产需求已分批转生产任务",

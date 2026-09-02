@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,8 @@ class SalesOrderCreate(BaseModel):
     consignee_phone: str = Field(..., max_length=30)
     delivery_address: str = Field(..., max_length=255)
     payment_type: str = Field(..., max_length=50)
+    order_type: str = Field(default="normal", max_length=30)
+    expected_delivery_date: date | None = None
     deposit_amount: Decimal = 0
     transport_fee: Decimal = 0
     order_remark: str | None = None
@@ -32,6 +35,8 @@ class SalesOrderUpdate(BaseModel):
     consignee_phone: str = Field(..., max_length=30)
     delivery_address: str = Field(..., max_length=255)
     payment_type: str = Field(..., max_length=50)
+    order_type: str = Field(default="normal", max_length=30)
+    expected_delivery_date: date | None = None
     deposit_amount: Decimal = 0
     transport_fee: Decimal = 0
     order_remark: str | None = None
@@ -70,6 +75,16 @@ class SalesReturnApprovalRequest(BaseModel):
 
 class QueueActionRequest(BaseModel):
     action: str = Field(..., pattern="^(placed|shipped)$")
+
+
+class PlacementItemInput(BaseModel):
+    sales_order_item_id: int
+    placed_quantity: Decimal = Field(..., ge=0)
+
+
+class PlacementActionRequest(BaseModel):
+    action: str = Field(..., pattern="^placed$")
+    items: list[PlacementItemInput]
 
 
 class SalesShipmentItemInput(BaseModel):

@@ -38,13 +38,30 @@ def get_current_user(
     return user
 
 
+# 超级角色 → 基础角色映射:超级角色拥有普通角色全部权限
+SUPER_ROLE_BASE_MAP = {
+    "inventory_super": "inventory",
+    "quality_super": "quality",
+    "finance_super": "finance",
+}
+
+
 def require_roles(*allowed_codes: str):
     def dependency(current_user: User = Depends(get_current_user)):
         role_code = current_user.role.code if current_user.role else None
         if current_user.role and current_user.role.is_admin:
             return current_user
-        if role_code not in allowed_codes:
+        effective_codes = {role_code}
+        base_code = SUPER_ROLE_BASE_MAP.get(role_code or "")
+        if base_code:
+            effective_codes.add(base_code)
+        if not effective_codes.intersection(allowed_codes):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
         return current_user
 
     return dependency
+
+
+def is_super_role(current_user: User) -> bool:
+    """是否任一超级角色。"""
+    return bool(current_user.role and current_user.role.code in SUPER_ROLE_BASE_MAP)

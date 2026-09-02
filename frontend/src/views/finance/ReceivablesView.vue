@@ -612,7 +612,7 @@ const PAYMENT_TYPE_OPTIONS = [
   { label: '货到付款/分期付款', value: '货到付款/分期付款' }
 ]
 
-const canCreateRefund = computed(() => auth.user?.role_code === 'finance')
+const canCreateRefund = computed(() => auth.isRole('finance'))
 const canRegisterReceipt = computed(() => ['finance', 'system_admin'].includes(auth.user?.role_code))
 const purchaseRefunds = computed(() => refunds.value.filter((item) => item.business_type === 'purchase_return'))
 const pendingReceivableTotal = computed(() =>

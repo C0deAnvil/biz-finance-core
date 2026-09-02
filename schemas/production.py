@@ -24,6 +24,11 @@ class MaterialUsageInput(BaseModel):
     reason: str | None = None
 
 
+class RawMaterialDemandInput(BaseModel):
+    material_id: int = Field(..., description="原料ID")
+    shortage_quantity: float = Field(..., gt=0, description="原料补货数量(默认缺口,可修改)")
+
+
 class ProductionTaskCreate(BaseModel):
     source_type: str = "manual"
     sales_order_id: int | None = None
@@ -34,6 +39,8 @@ class ProductionTaskCreate(BaseModel):
     notes: str | None = None
     warehouse_id: int | None = None
     material_usages: list[MaterialUsageInput] = []
+    create_raw_material_demands: bool = False
+    raw_material_demands: list[RawMaterialDemandInput] = []
 
 
 class ProductionPlanCreate(BaseModel):
@@ -106,3 +113,28 @@ class ProductionInboundRequest(BaseModel):
 
 class FulfillmentDemandCancelRequest(BaseModel):
     reason: str = Field(..., min_length=2, max_length=500)
+
+
+class FulfillmentDemandUpdateRequest(BaseModel):
+    shortage_quantity: float = Field(..., gt=0, description="调整后的缺口数量")
+    note: str | None = Field(default=None, max_length=500)
+
+
+class FulfillmentDemandManualCreateRequest(BaseModel):
+    product_id: int
+    shortage_quantity: float = Field(..., gt=0)
+    remark: str | None = Field(default=None, max_length=500)
+
+
+class SalesOrderReplenishmentItem(BaseModel):
+    sales_order_item_id: int | None = Field(default=None, description="销售订单明细ID(与product_id二选一)")
+    product_id: int | None = Field(default=None, description="产品ID(与sales_order_item_id二选一)")
+    shortage_quantity: float = Field(..., gt=0, description="补货数量(默认缺口,可修改)")
+
+
+class SalesOrderReplenishmentCreateRequest(BaseModel):
+    items: list[SalesOrderReplenishmentItem] = Field(..., min_length=1, description="补货明细列表")
+
+
+class DemandRawMaterialDemandCreateRequest(BaseModel):
+    items: list[RawMaterialDemandInput] = Field(..., min_length=1, description="原料补货明细(默认缺口,可修改)")

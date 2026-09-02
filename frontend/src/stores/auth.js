@@ -12,7 +12,14 @@ export const useAuthStore = defineStore('auth', {
   }),
   getters: {
     isLoggedIn: (state) => state.hasSession,
-    menuItems: (state) => state.user?.navigation || []
+    menuItems: (state) => state.user?.navigation || [],
+    // 超级角色映射:inventory_super 视为 inventory,以此类推
+    isRole: (state) => (base) => {
+      const code = state.user?.role_code || ''
+      if (code === base) return true
+      const map = { inventory_super: 'inventory', quality_super: 'quality', finance_super: 'finance' }
+      return map[code] === base
+    }
   },
   actions: {
     async login(credentials) {

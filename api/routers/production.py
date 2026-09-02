@@ -32,11 +32,14 @@ from models import (
     TodoItem,
     User,
     Warehouse,
+    order_type_style,
 )
 from responses import api_response
 from schemas.production import (
     BOMCreate,
+    DemandRawMaterialDemandCreateRequest,
     FulfillmentDemandCancelRequest,
+    FulfillmentDemandUpdateRequest,
     MaterialRequestCreate,
     MaterialUsageInput,
     ProductionPlanCreate,
@@ -57,12 +60,15 @@ from services.production_service import (
     convert_plan_to_task as convert_plan_to_task_service,
     create_plan as create_plan_service,
     create_task as create_task_service,
+    _create_raw_material_demands_for_task,
     _max_producible_quantity_from_raw_stock,
+    raw_material_shortage_detail,
     submit_material_request as submit_material_request_service,
     submit_special_requests as submit_special_requests_service,
     update_plan as update_plan_service,
 )
 from services.quality_workflow import quality_sample_consumption
+from services.replenishment_service import resolve_demand_progress
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, production_flow_steps
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
@@ -422,6 +428,9 @@ def list_tasks(
                 "source_type": row.source_type,
                 "sales_order_id": row.sales_order_id,
                 "sales_order_no": sales_order_map[row.sales_order_id].order_no if row.sales_order_id in sales_order_map else None,
+                "order_type": sales_order_map[row.sales_order_id].order_type if row.sales_order_id in sales_order_map else None,
+                "order_type_color": order_type_style(sales_order_map[row.sales_order_id].order_type).get("color") if row.sales_order_id in sales_order_map else None,
+                "order_type_label": order_type_style(sales_order_map[row.sales_order_id].order_type).get("label") if row.sales_order_id in sales_order_map else None,
                 "product_id": row.product_id,
                 "product_name": row.product.name,
                 "parent_task_id": row.parent_task_id,
@@ -559,6 +568,64 @@ def get_task_detail(task_id: int, current_user: User = Depends(get_current_user)
             "flow_steps": production_flow_steps(task),
         }
     )
+
+
+@router.post("/fulfillment-demands/{demand_id}/raw-material-demands")
+def create_demand_raw_material_demands(
+    demand_id: int,
+    payload: DemandRawMaterialDemandCreateRequest,
+    current_user: User = Depends(require_roles("production")),
+    db: Session = Depends(get_db),
+):
+    """原料完全不足无法创建生产任务时,仅提交原料补货需求,生产补货需求标记'待补料'。"""
+    demand = db.execute(
+        select(FulfillmentDemand)
+        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
+        .where(FulfillmentDemand.id == demand_id, FulfillmentDemand.fulfillment_mode == "production")
+    ).unique().scalar_one_or_none()
+    if demand is None:
+        raise HTTPException(status_code=404, detail="生产补货需求不存在")
+    if demand.status not in {"pending", "pending_material"}:
+        raise HTTPException(status_code=409, detail="当前生产补货需求已处理")
+    raw_demand_nos = _create_raw_material_demands_for_task(
+        db,
+        task=None,
+        demand=demand,
+        raw_material_demands=payload.items,
+        current_user=current_user,
+    )
+    if not raw_demand_nos:
+        raise HTTPException(status_code=409, detail="请至少提交一条原料补货明细")
+    demand.status = "pending_material"
+    demand.processed_by_id = current_user.id
+    demand.process_note = (
+        f"已提交原料补货需求: {', '.join(raw_demand_nos)}。"
+        f"原料到货质检合格后,可继续安排生产。"
+    )
+    db.commit()
+    return api_response(
+        msg=f"已提交原料补货需求 {', '.join(raw_demand_nos)},生产补货需求已标记待补料",
+        data={"demand_id": demand.id, "demand_no": demand.demand_no, "raw_demand_nos": raw_demand_nos, "status": demand.status},
+    )
+
+
+@router.get("/raw-material-shortage")
+def get_raw_material_shortage(
+    product_id: int,
+    planned_quantity: float = Query(default=1, gt=0),
+    current_user: User = Depends(require_roles("production", "inventory", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """转生产任务前,按计划数量计算每种原料的缺口明细(供前端询问是否提原料补货)。"""
+    product = db.execute(select(Product).where(Product.id == product_id)).scalar_one_or_none()
+    if product is None:
+        raise HTTPException(status_code=404, detail="产品不存在")
+    rows = raw_material_shortage_detail(
+        db,
+        product_id=product_id,
+        planned_quantity=Decimal(str(planned_quantity)),
+    )
+    return api_response(data=rows)
 
 
 @router.post("/tasks")
@@ -880,7 +947,7 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
     query = (
         select(FulfillmentDemand)
         .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
-        .where(FulfillmentDemand.fulfillment_mode == "production", FulfillmentDemand.status == "pending")
+        .where(FulfillmentDemand.fulfillment_mode == "production")
         .order_by(FulfillmentDemand.created_at.desc(), FulfillmentDemand.id.desc())
     )
     if current_user.role.code == "production":
@@ -936,6 +1003,9 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
                 "source_type": "sales_shortage",
                 "sales_order_id": row.sales_order_id,
                 "sales_order_no": row.sales_order.order_no if row.sales_order else None,
+                "order_type": row.sales_order.order_type if row.sales_order else None,
+                "order_type_color": order_type_style(row.sales_order.order_type).get("color") if row.sales_order else None,
+                "order_type_label": order_type_style(row.sales_order.order_type).get("label") if row.sales_order else None,
                 "product_id": row.product_id,
                 "product_name": row.product.name if row.product else None,
                 "shortage_quantity": float(row.shortage_quantity or 0),
@@ -954,6 +1024,10 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
                 ),
                 "status": row.status,
                 "status_label": status_label(row.status),
+                "progress_status": resolve_demand_progress(db, row)["progress_status"],
+                "progress_label": resolve_demand_progress(db, row)["progress_label"],
+                "related_no": resolve_demand_progress(db, row)["related_no"],
+                "related_status_label": resolve_demand_progress(db, row)["related_status_label"],
                 "assigned_user_id": row.assigned_user_id,
                 "process_note": row.process_note,
                 "cancel_reason": row.cancel_reason,
@@ -992,6 +1066,36 @@ def list_fulfillment_demands(current_user: User = Depends(get_current_user), db:
             }
         )
     return api_response(data=data)
+
+
+@router.put("/fulfillment-demands/{demand_id}")
+def update_fulfillment_demand(
+    demand_id: int,
+    payload: FulfillmentDemandUpdateRequest,
+    current_user: User = Depends(require_roles("production", "inventory", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    row = db.execute(select(FulfillmentDemand).where(FulfillmentDemand.id == demand_id)).scalar_one_or_none()
+    if row is None or row.fulfillment_mode != "production":
+        raise HTTPException(status_code=404, detail="补货需求不存在")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="仅待处理的补货需求可修改数量")
+    old_qty = float(row.shortage_quantity or 0)
+    row.shortage_quantity = Decimal(str(payload.shortage_quantity))
+    if payload.note:
+        row.process_note = f"数量调整: {old_qty} → {float(row.shortage_quantity)}。{payload.note}"
+    else:
+        row.process_note = f"数量调整: {old_qty} → {float(row.shortage_quantity)}。"
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="production",
+        action="update_fulfillment_demand",
+        content=f"调整生产补货需求 {row.demand_no} 数量 {old_qty} → {float(row.shortage_quantity)}",
+        after_data={"demand_id": row.id, "shortage_quantity": float(row.shortage_quantity)},
+    )
+    db.commit()
+    return api_response(data={"id": row.id, "demand_no": row.demand_no, "shortage_quantity": float(row.shortage_quantity)})
 
 
 @router.post("/fulfillment-demands/{demand_id}/cancel")
