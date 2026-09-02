@@ -45,9 +45,34 @@
           <el-badge :value="todoCount" :hidden="!todoCount">
             <el-button plain @click="router.push('/dashboard')">待办</el-button>
           </el-badge>
-          <el-badge :value="unreadCount" :hidden="!unreadCount">
-            <el-button plain @click="router.push('/dashboard')">通知</el-button>
-          </el-badge>
+          <el-popover placement="bottom-end" :width="360" trigger="click" @show="refreshNotifications">
+            <template #reference>
+              <el-badge :value="unreadCount" :hidden="!unreadCount">
+                <el-button plain>🔔 通知</el-button>
+              </el-badge>
+            </template>
+            <div class="notification-panel">
+              <div class="notification-panel-header">
+                <span class="notification-panel-title">通知中心</span>
+                <el-button v-if="unreadCount" size="small" text type="primary" @click="markAllRead">全部已读</el-button>
+              </div>
+              <div v-if="!notificationList.length" class="notification-empty">暂无通知</div>
+              <div v-else class="notification-list">
+                <div v-for="item in notificationList" :key="item.id" class="notification-item" :class="{ 'is-unread': !item.is_read }" @click="openNotification(item)">
+                  <div class="notification-item-title">
+                    <el-tag size="small" v-bind="moduleTagStyle(item.module)">{{ moduleMeta(item.module).label }}</el-tag>
+                    <span class="notification-item-text">{{ item.title }}</span>
+                    <span v-if="!item.is_read" class="notification-dot" />
+                  </div>
+                  <div class="notification-item-content">{{ item.content }}</div>
+                  <div class="notification-item-time">{{ formatDateTime(item.created_at) }}</div>
+                </div>
+              </div>
+              <div class="notification-panel-footer">
+                <el-button size="small" text @click="router.push('/dashboard')">查看全部</el-button>
+              </div>
+            </div>
+          </el-popover>
           <el-button plain @click="refreshPage">刷新</el-button>
           <el-dropdown @command="handleCommand">
             <div class="user-trigger">
@@ -104,7 +129,8 @@ import { post } from '../api/client'
 import { preloadCommonDataForUser, preloadCommonRoutesForUser, preloadRouteComponent, warmRouteData } from '../router'
 import { useAuthStore } from '../stores/auth'
 import { useDashboardStore } from '../stores/dashboard'
-import { getModuleMeta, getModuleNotificationClass } from '../utils/modules'
+import { getModuleMeta, getModuleNotificationClass, getModuleTagStyle } from '../utils/modules'
+import { formatDateTime } from '../utils/format'
 import NavigationMenu from '../components/NavigationMenu.vue'
 
 const route = useRoute()
@@ -116,6 +142,29 @@ const menuItems = computed(() => auth.menuItems || [])
 const defaultOpeneds = computed(() => menuItems.value.filter((item) => item.children?.length).map((item) => item.path))
 const unreadCount = computed(() => dashboard.unreadCount)
 const todoCount = computed(() => dashboard.todoCount)
+const notificationList = computed(() => dashboard.notifications || [])
+
+function moduleMeta(moduleCode) {
+  return getModuleMeta(moduleCode)
+}
+
+function moduleTagStyle(moduleCode) {
+  return getModuleTagStyle(moduleCode)
+}
+
+function refreshNotifications() {
+  void dashboard.loadSummary({ primeTtlMs: 0, force: true })
+}
+
+function openNotification(item) {
+  router.push('/dashboard')
+}
+
+async function markAllRead() {
+  const ids = notificationList.value.filter((item) => !item.is_read).map((item) => item.id)
+  if (!ids.length) return
+  await dashboard.markNotificationsRead(ids)
+}
 const nowText = ref('')
 const mobileMenuVisible = ref(false)
 
@@ -543,5 +592,99 @@ onBeforeUnmount(() => {
     padding-left: 8px;
     padding-right: 8px;
   }
+}
+
+.notification-panel {
+  max-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+
+.notification-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 4px 10px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.notification-panel-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.notification-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.notification-item {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background-color 0.15s;
+}
+
+.notification-item:hover {
+  background-color: var(--el-fill-color-light);
+}
+
+.notification-item.is-unread {
+  background-color: rgba(64, 158, 255, 0.05);
+}
+
+.notification-item-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.notification-item-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f56c6c;
+  flex-shrink: 0;
+}
+
+.notification-item-content {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.notification-item-time {
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+  margin-top: 4px;
+}
+
+.notification-empty {
+  text-align: center;
+  color: var(--el-text-color-placeholder);
+  padding: 24px 0;
+  font-size: 13px;
+}
+
+.notification-panel-footer {
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding-top: 8px;
+  text-align: center;
 }
 </style>
