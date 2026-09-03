@@ -104,15 +104,81 @@
           </template>
         </el-table-column>
         <el-table-column prop="process_note" label="处理说明" min-width="160" show-overflow-tooltip />
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="scope">
-            <el-button v-if="scope.row.status === 'pending'" size="small" text type="primary" @click="openEditDemand(scope.row)">改数量</el-button>
+            <el-button size="small" text type="info" @click="openMaterialProgress(scope.row)">原料进度</el-button>
             <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建任务</el-button>
             <el-button v-if="scope.row.status === 'pending'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
+      <AppPagination
+        :total="demandTotal"
+        :page="demandPagination.page"
+        :page-size="demandPagination.pageSize"
+        :page-sizes="[10, 20, 50, 100]"
+        layout="total, prev, pager, next"
+        @change="handleDemandPaginationChange"
+      />
     </PageSection>
+
+    <el-dialog v-model="materialProgressVisible" title="原料状况与补货确认" width="860px">
+      <template v-if="materialProgressData">
+        <el-alert
+          :type="materialProgressData.can_produce ? 'success' : 'warning'"
+          :closable="false"
+          show-icon
+          class="mb-12"
+        >
+          <template #title>
+            生产补货需求 {{ materialProgressData.demand_no }}：{{ materialProgressData.can_produce ? '原料已满足，可直接转生产任务' : '原料尚未全部满足，请先处理原料补货' }}
+          </template>
+        </el-alert>
+        <el-table :data="materialProgressItems" size="small" border>
+          <el-table-column prop="material_name" label="原料" min-width="150" />
+          <el-table-column label="需求数量" width="90">
+            <template #default="scope">{{ formatNumber(scope.row.required_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="库存可用" width="90">
+            <template #default="scope">{{ formatNumber(scope.row.stock_available_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="已提交补货" width="100">
+            <template #default="scope">{{ formatNumber(scope.row.submitted_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="已到货" width="90">
+            <template #default="scope">{{ formatNumber(scope.row.received_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="130">
+            <template #default="scope">
+              <el-tag :type="materialProgressTag(scope.row.progress)" size="small">{{ materialProgressLabel(scope.row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="关联采购单" min-width="140">
+            <template #default="scope">{{ scope.row.related_po_no || '-' }}</template>
+          </el-table-column>
+          <el-table-column v-if="!materialProgressData.can_produce" label="建议补货数量" width="140">
+            <template #default="scope">
+              <el-input-number
+                v-model="scope.row.suggest_quantity"
+                :min="0"
+                :max="scope.row.shortage"
+                :precision="2"
+                size="small"
+                :disabled="scope.row.satisfied || Number(scope.row.submitted_quantity) > 0"
+              />
+            </template>
+          </el-table-column>
+        </el-table>
+        <div v-if="!materialProgressData.can_produce" class="material-progress-tip">
+          对需要补货的原料填写数量后点击「提交补货需求」，将为补货数量大于 0 的原料各生成一条采购补货需求；原料到货质检合格后可继续转建任务。
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="materialProgressVisible = false">关闭</el-button>
+        <el-button v-if="!materialProgressData?.can_produce" type="primary" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">提交补货需求</el-button>
+        <el-button v-if="materialProgressData?.can_produce" type="success" @click="closeMaterialProgressAndCreateTask">转建任务</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="editDemandVisible" title="调整补货需求数量" width="440px">
       <el-form :model="editDemandForm" label-width="100px">
@@ -444,6 +510,8 @@ const activeTask = ref(null)
 const taskDetail = ref(null)
 const fulfillmentDemands = ref([])
 const activeDemand = ref(null)
+const demandPagination = reactive({ page: 1, pageSize: 10 })
+const demandTotal = ref(0)
 const activeTaskTab = ref('ongoing')
 
 const completedStatuses = ['completed', 'cancelled', 'scrapped', 'partially_scrapped', 'reworked']
@@ -660,7 +728,9 @@ async function load() {
   rows.value = taskData.items || []
   total.value = Number(taskData.pagination?.total || 0)
   if (canManageTasks.value) {
-    fulfillmentDemands.value = await get('/api/production/fulfillment-demands')
+    const demandData = await get(`/api/production/fulfillment-demands?page=${demandPagination.page}&page_size=${demandPagination.pageSize}`)
+    fulfillmentDemands.value = demandData.items || demandData || []
+    demandTotal.value = Number(demandData.pagination?.total || demandData.total || 0)
   } else {
     fulfillmentDemands.value = []
   }
@@ -670,6 +740,12 @@ async function load() {
 async function handleTaskPaginationChange({ page, pageSize }) {
   pagination.page = page
   pagination.pageSize = pageSize
+  await load()
+}
+
+async function handleDemandPaginationChange({ page, pageSize }) {
+  demandPagination.page = page
+  demandPagination.pageSize = pageSize
   await load()
 }
 
@@ -713,8 +789,13 @@ async function createTaskDirect() {
       reason: item.reason
     }))
   })
-  if (activeDemand.value?.low_stock_todo_id) {
-    await post(`/api/dashboard/todos/${activeDemand.value.low_stock_todo_id}/done`)
+  try {
+    if (activeDemand.value?.low_stock_todo_id) {
+      await post(`/api/dashboard/todos/${activeDemand.value.low_stock_todo_id}/done`)
+    }
+  } catch (e) {
+    // 待办已完成等并发场景不影响任务创建结果
+    console.warn('low_stock todo done failed', e)
   }
   ElMessage.success('生产任务已创建')
   createVisible.value = false
@@ -775,6 +856,85 @@ async function confirmRawDemand() {
 }
 
 function prefillDemand(row) {
+  if (row.source_type === 'low_stock_replenishment' || String(row.id).startsWith('low-')) {
+    prefillLowStockDemand(row)
+    return
+  }
+  openMaterialProgress(row)
+}
+
+async function openMaterialProgress(row) {
+  resetCreateForm()
+  activeDemand.value = row
+  materialProgressSubmitting.value = false
+  try {
+    const progress = await get(`/api/production/fulfillment-demands/${row.id}/material-progress`)
+    materialProgressData.value = progress
+    // 计算建议补货数量:缺口 = 需求 - 库存可用 - 已到货(已入库原料);未满足且未提交补货的原料默认按缺口补
+    materialProgressItems.value = (progress.items || []).map((item) => {
+      const stockAvailable = Number(item.stock_available_quantity || 0)
+      const received = Number(item.received_quantity || 0)
+      const required = Number(item.required_quantity || 0)
+      const submitted = Number(item.submitted_quantity || 0)
+      const shortage = Math.max(required - stockAvailable - received, 0)
+      return {
+        ...item,
+        shortage,
+        suggest_quantity: shortage > 0 && submitted <= 0 ? shortage : 0,
+        satisfied: shortage <= 0,
+      }
+    })
+    materialProgressVisible.value = true
+  } catch (e) {
+    // 老数据无 BOM 等场景退回原逻辑
+    prefillLowStockDemand(row)
+  }
+}
+
+const materialProgressVisible = ref(false)
+const materialProgressSubmitting = ref(false)
+const materialProgressData = ref(null)
+const materialProgressItems = ref([])
+
+function materialProgressTag(progress) {
+  return { pending: 'info', ordered: 'primary', arrived: 'warning', done: 'success' }[progress] || 'info'
+}
+
+function materialProgressLabel(item) {
+  if (item.satisfied) return '已满足'
+  if (Number(item.submitted_quantity || 0) > 0) return item.progress_label || '采购中'
+  if (Number(item.suggest_quantity || 0) > 0) return '待提交补货'
+  return item.progress_label || '待处理'
+}
+
+async function submitMaterialProgressDemands() {
+  if (materialProgressSubmitting.value) return
+  const items = materialProgressItems.value
+    .filter((it) => Number(it.suggest_quantity || 0) > 0)
+    .map((it) => ({ material_id: it.material_id, shortage_quantity: Number(it.suggest_quantity || 0) }))
+  if (!items.length) {
+    ElMessage.warning('请先填写需要补货的原料数量')
+    return
+  }
+  materialProgressSubmitting.value = true
+  try {
+    const resp = await post(`/api/production/fulfillment-demands/${activeDemand.value.id}/raw-material-demands`, { items })
+    ElMessage.success(resp?.msg || '原料补货需求已提交')
+    materialProgressVisible.value = false
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.message || '提交失败')
+  } finally {
+    materialProgressSubmitting.value = false
+  }
+}
+
+function closeMaterialProgressAndCreateTask() {
+  materialProgressVisible.value = false
+  openCreateTaskDialog(activeDemand.value)
+}
+
+function prefillLowStockDemand(row) {
   resetCreateForm()
   activeDemand.value = row
   if (!canCreateDemandTask(row)) {
@@ -792,6 +952,12 @@ function prefillDemand(row) {
       .catch(() => ElMessage.warning('当前原料库存暂时无法支持生产，请先处理采购补货待办'))
     return
   }
+  openCreateTaskDialog(row)
+}
+
+function openCreateTaskDialog(row) {
+  resetCreateForm()
+  activeDemand.value = row
   createForm.source_type = row.sales_order_id ? 'sales_order' : 'manual'
   createForm.sales_order_id = row.sales_order_id || null
   createForm.product_id = row.product_id

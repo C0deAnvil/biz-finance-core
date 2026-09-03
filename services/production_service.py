@@ -683,7 +683,7 @@ def create_task(
         ).unique().scalar_one_or_none()
         if demand is None:
             raise HTTPException(status_code=404, detail="生产补货需求不存在")
-        if demand.status != "pending":
+        if demand.status not in {"pending", "pending_material"}:
             raise HTTPException(status_code=409, detail="当前生产补货需求已处理")
         if Decimal(payload.planned_quantity) > Decimal(demand.shortage_quantity or 0):
             raise HTTPException(status_code=409, detail="本批生产数量不能超过当前补货需求剩余数量")
@@ -787,7 +787,7 @@ def create_task(
             complete_todos(db, business_type="fulfillment_demand", business_id=demand.id)
         else:
             demand.shortage_quantity = remaining_quantity
-            demand.status = "pending"
+            demand.status = "pending_material" if payload.create_raw_material_demands else "pending"
         # 需求:转任务时原料不足→提交原料补货需求后,生产补货需求标记"待补料"
         if payload.create_raw_material_demands and payload.raw_material_demands:
             raw_demand_nos = _create_raw_material_demands_for_task(
