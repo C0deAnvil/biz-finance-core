@@ -607,6 +607,7 @@ def _load_purchase_replenishment_source(
     source_id: int | None,
     items,
     existing_order_id: int | None = None,
+    validate_items: bool = True,
 ) -> dict | None:
     if bool(source_type) != bool(source_id):
         raise HTTPException(status_code=409, detail="补货来源类型和来源编号必须同时提交")
@@ -637,12 +638,13 @@ def _load_purchase_replenishment_source(
         ).scalars().all()
         if not pending_todos:
             raise HTTPException(status_code=409, detail="原料采购需求已处理")
-        _validate_purchase_order_replenishment_items(
-            db,
-            source_type=source_type,
-            source_id=source_id,
-            items=items,
-        )
+        if validate_items:
+            _validate_purchase_order_replenishment_items(
+                db,
+                source_type=source_type,
+                source_id=source_id,
+                items=items,
+            )
         payload = next(
             (
                 value
@@ -675,12 +677,13 @@ def _load_purchase_replenishment_source(
         ).scalars().all()
         if not pending_todos:
             raise HTTPException(status_code=409, detail="原料补货需求已处理")
-        _validate_purchase_order_replenishment_items(
-            db,
-            source_type=source_type,
-            source_id=source_id,
-            items=items,
-        )
+        if validate_items:
+            _validate_purchase_order_replenishment_items(
+                db,
+                source_type=source_type,
+                source_id=source_id,
+                items=items,
+            )
         return {
             "source_type": source_type,
             "source_id": source_id,
@@ -709,12 +712,13 @@ def _load_purchase_replenishment_source(
             ),
             {},
         )
-        _validate_purchase_order_replenishment_items(
-            db,
-            source_type=source_type,
-            source_id=source_id,
-            items=items,
-        )
+        if validate_items:
+            _validate_purchase_order_replenishment_items(
+                db,
+                source_type=source_type,
+                source_id=source_id,
+                items=items,
+            )
         return {
             "source_type": source_type,
             "source_id": source_id,
@@ -731,17 +735,37 @@ def _load_purchase_replenishment_source(
         raise HTTPException(status_code=404, detail="采购补货需求不存在")
     if demand.status != "pending":
         raise HTTPException(status_code=409, detail="当前采购补货需求已处理")
-    _validate_purchase_order_replenishment_items(
-        db,
-        source_type=source_type,
-        source_id=source_id,
-        items=items,
-    )
+    if validate_items:
+        _validate_purchase_order_replenishment_items(
+            db,
+            source_type=source_type,
+            source_id=source_id,
+            items=items,
+        )
     return {
         "source_type": source_type,
         "source_id": source_id,
         "demand": demand,
     }
+
+
+def _filter_purchase_items_for_source(source: dict, items) -> list:
+    """从合并采购明细中,过滤出属于某个补货来源的商品明细。"""
+    source_type = source["source_type"]
+    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment"}:
+        wanted = {int(i["material_id"]) for i in (source.get("payload") or {}).get("items", []) if i.get("material_id")}
+        return [it for it in items if it.material_id in wanted]
+    if source_type == "raw_material_replenishment":
+        usage = source.get("usage")
+        wanted = {usage.material_id} if usage else set()
+        return [it for it in items if it.material_id in wanted]
+    if source_type == "low_stock_replenishment":
+        payload = source.get("payload") or {}
+        wanted = {payload.get("product_id"), payload.get("material_id")}
+        return [it for it in items if (it.product_id in wanted or it.material_id in wanted)]
+    demand = source.get("demand")
+    wanted = {demand.product_id} if demand else set()
+    return [it for it in items if it.product_id in wanted]
 
 
 def _complete_purchase_replenishment_source(

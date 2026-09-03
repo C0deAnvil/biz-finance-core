@@ -49,7 +49,12 @@
     />
 
     <PageSection v-if="canManageOrders" title="待采购补货需求" description="贸易型产品库存不足、生产领料原料库存不足时，会在此生成待采购需求。">
-      <el-table :data="fulfillmentDemands" stripe>
+      <div class="demand-toolbar">
+        <span class="demand-toolbar-tip">勾选多条需求可合并生成一个采购订单（相同原料/产品数量自动汇总）</span>
+        <el-button size="small" type="primary" :disabled="!selectedDemands.length" @click="mergeDemands">合并转建采购单({{ selectedDemands.length }})</el-button>
+      </div>
+      <el-table :data="fulfillmentDemands" stripe @selection-change="selectedDemands = $event">
+        <el-table-column type="selection" width="45" />
         <el-table-column prop="demand_no" label="需求号" width="150">
           <template #default="scope">
             <span :style="scope.row.order_type_color ? { color: scope.row.order_type_color, fontWeight: 600 } : {}">{{ scope.row.demand_no }}</span>
@@ -98,7 +103,7 @@
       </el-table>
     </PageSection>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑采购单' : '新增采购单'" width="980px">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑采购单' : (mergeMode ? '合并转建采购单' : '新增采购单')" width="980px">
       <el-alert v-if="activeDemand" type="warning" :closable="false" show-icon class="mb-12">
         <template #title>
           补货需求：{{ activeDemand.item_name || activeDemand.product_name || activeDemand.material_name || '-' }}，缺口 {{ formatNumber(activeDemand.shortage_quantity) }}；
@@ -403,6 +408,9 @@ const detail = ref(null)
 const confirmDetail = ref(null)
 const attachmentOrder = ref(null)
 const activeDemand = ref(null)
+const selectedDemands = ref([])
+const mergedDemandRows = ref([])
+const mergeMode = ref(false)
 const editingId = ref(null)
 const canManageOrders = computed(() => auth.user?.role_code === 'purchase')
 const canManageSettings = computed(() => ['purchase', 'manager', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
@@ -427,7 +435,8 @@ const supplierAiTip = computed(() => {
     title: `${supplierName}：${analysis.predicted_grade || '-'}级，${analysis.risk_label || '暂无风险判断'}，BiLSTM预测${analysis.sequence_risk_label || '暂无结果'}`
   }
 })
-const supplierOptionsForCurrentItems = computed(() => activeDemand.value ? demandSupplierOptions.value : suppliers.value)
+const supplierOptionsForCurrentItems = computed(() => (activeDemand.value || mergeMode.value) ? demandSupplierOptions.value : suppliers.value)
+const mergeableDemandOptions = computed(() => (mergeMode.value ? demandSupplierOptions.value : []))
 const pagination = reactive({ page: 1, pageSize: 10 })
 const total = ref(0)
 const pageSizes = [10, 20, 50, 100]
@@ -451,6 +460,10 @@ function resetForm() {
   demandSupplierOptions.value = []
   supplierAi.value = null
   supplierAiLoading.value = false
+  activeDemand.value = null
+  mergedDemandRows.value = []
+  mergeMode.value = false
+  selectedDemands.value = []
 }
 
 function rowClassName({ row }) {
@@ -712,6 +725,7 @@ async function prefillDemand(row) {
   if (!row) return
   resetForm()
   activeDemand.value = row
+  selectedDemands.value = [row]
   const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material'
   const isLowStockDemand = row.demand_type === 'low_stock_product' || row.demand_type === 'low_stock_material'
   const sourceItems = (row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length
@@ -724,9 +738,118 @@ async function prefillDemand(row) {
     unit_price: 0
   }))
   form.fulfillment_demand_id = (isRawDemand || isLowStockDemand) ? null : row.id
+  mergeMode.value = false
   await loadSupplierOptionsForDemand(row)
   demandDetailVisible.value = false
   dialogVisible.value = true
+}
+
+function mergeableRow(row) {
+  return row && row.source_type !== 'low_stock_replenishment'
+}
+
+async function mergeDemands() {
+  const rows = selectedDemands.value.filter(mergeableRow)
+  if (rows.length < 2) {
+    ElMessage.warning('请至少勾选两条可合并的补货需求（安全库存补货暂不支持合并）')
+    return
+  }
+  resetForm()
+  activeDemand.value = null
+  mergedDemandRows.value = rows
+  mergeMode.value = true
+  const itemMap = new Map()
+  for (const row of rows) {
+    const isRaw = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material'
+    const sourceItems = (row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length
+      ? row.source_items
+      : [row]
+    for (const item of sourceItems) {
+      const key = `${isRaw ? 'm' : 'p'}-${isRaw ? item.material_id : item.product_id}`
+      const qty = Number(item.shortage_quantity || 1)
+      if (itemMap.has(key)) {
+        const prev = itemMap.get(key)
+        prev.quantity = Number(prev.quantity) + qty
+      } else {
+        itemMap.set(key, {
+          type: isRaw ? 'material' : 'product',
+          target_id: isRaw ? item.material_id : item.product_id,
+          quantity: qty,
+          unit_price: 0
+        })
+      }
+    }
+  }
+  form.items = [...itemMap.values()]
+  // 供应商:取所有需求共同维护了名录的供应商
+  await loadSupplierOptionsForDemands(rows)
+  dialogVisible.value = true
+}
+
+async function fetchDemandSuppliers(row) {
+  const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material'
+  if ((row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length) {
+    const optionLists = await Promise.all(
+      row.source_items
+        .filter((item) => item.material_id)
+        .map((item) => get(`/api/purchases/supplier-options?material_id=${item.material_id}`))
+    )
+    const commonSupplierIds = optionLists.reduce((common, options) => {
+      const ids = new Set((options || []).map((item) => item.supplier_id))
+      return common === null ? ids : new Set([...common].filter((id) => ids.has(id)))
+    }, null)
+    const firstOptions = optionLists[0] || []
+    return commonSupplierIds
+      ? firstOptions.filter((item) => commonSupplierIds.has(item.supplier_id))
+      : []
+  }
+  const query = isRawDemand ? `material_id=${row.material_id}` : `product_id=${row.product_id}`
+  if ((!isRawDemand && !row.product_id) || (isRawDemand && !row.material_id)) return []
+  return (await get(`/api/purchases/supplier-options?${query}`)) || []
+}
+
+function demandSourcePayload(row) {
+  // 多需求合并时,将列表行还原为后端补给来源(sales_order_material_replenishment 等)
+  const sourceType = row.source_type === 'sales_order_material_replenishment' || row.source_type === 'low_stock_product_material_replenishment'
+    ? row.source_type
+    : row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
+      ? 'raw_material_replenishment'
+      : row.demand_type === 'low_stock_product'
+        ? 'low_stock_replenishment'
+        : 'fulfillment_demand'
+  const sourceId = row.source_type === 'sales_order_material_replenishment' || row.source_type === 'low_stock_product_material_replenishment'
+    ? row.replenishment_source_id
+    : row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
+      ? row.usage_id
+      : row.low_stock_todo_id
+        ? row.replenishment_source_id
+        : row.id
+  return { source_type: sourceType, source_id: sourceId }
+}
+
+async function loadSupplierOptionsForDemands(rows) {
+  demandSupplierOptions.value = []
+  let shared = null
+  for (const row of rows) {
+    const suppliers = await fetchDemandSuppliers(row)
+    const ids = new Set(suppliers.map((item) => item.id))
+    if (shared === null) {
+      shared = ids
+    } else {
+      shared = new Set([...shared].filter((id) => ids.has(id)))
+    }
+  }
+  if (shared && shared.size) {
+    demandSupplierOptions.value = (await get('/api/master-data/suppliers')).filter((item) => shared.has(item.id))
+  }
+  if (!demandSupplierOptions.value.length) {
+    ElMessage.warning('所选补货需求未找到共同可供货的供应商，请在供应商名录中维护')
+    return
+  }
+  form.supplier_id = demandSupplierOptions.value[0].id
+  await loadSupplierCatalog(form.supplier_id)
+  await loadSupplierAi(form.supplier_id)
+  form.items.forEach((item) => handlePurchaseItemSelect(item))
 }
 
 function viewDemand(row) {
@@ -795,6 +918,10 @@ async function submit() {
     ElMessage.warning('当前补货商品未维护可供货供应商名录，不能直接从补货需求转建采购单')
     return
   }
+  if (mergeMode.value && !mergeableDemandOptions.value.length) {
+    ElMessage.warning('所选补货需求未维护共同可供货供应商名录，不能合并建单')
+    return
+  }
   if (form.supplier_id) {
     await loadSupplierCatalog(form.supplier_id)
     if (form.items.some((item) => !item.target_id || !itemOptions(item).some((option) => option.id === item.target_id))) {
@@ -802,32 +929,43 @@ async function submit() {
       return
     }
   }
-  const payload = {
+  const payloadBase = {
     supplier_id: form.supplier_id,
     operator_user_id: form.operator_user_id || auth.user?.id,
     payment_type: form.payment_type,
-    replenishment_source_type: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
-      ? activeDemand.value.source_type
-      : activeDemand.value?.demand_type === 'raw_material'
-      ? 'raw_material_replenishment'
-      : activeDemand.value?.low_stock_todo_id
-        ? 'low_stock_replenishment'
-        : form.fulfillment_demand_id
-          ? 'fulfillment_demand'
-          : null,
-    replenishment_source_id: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
-      ? activeDemand.value.replenishment_source_id
-      : activeDemand.value?.demand_type === 'raw_material'
-      ? activeDemand.value.usage_id
-      : activeDemand.value?.low_stock_todo_id
-        ? activeDemand.value.replenishment_source_id
-        : form.fulfillment_demand_id || null,
     items: form.items.map((item) => ({
       product_id: item.type === 'product' ? item.target_id : null,
       material_id: item.type === 'material' ? item.target_id : null,
       quantity: item.quantity,
       unit_price: item.unit_price
     }))
+  }
+  let payload
+  if (mergeMode.value) {
+    payload = {
+      ...payloadBase,
+      replenishment_sources: mergedDemandRows.value.map((row) => demandSourcePayload(row))
+    }
+  } else {
+    payload = {
+      ...payloadBase,
+      replenishment_source_type: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
+        ? activeDemand.value.source_type
+        : activeDemand.value?.demand_type === 'raw_material'
+        ? 'raw_material_replenishment'
+        : activeDemand.value?.low_stock_todo_id
+          ? 'low_stock_replenishment'
+          : form.fulfillment_demand_id
+            ? 'fulfillment_demand'
+            : null,
+      replenishment_source_id: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
+        ? activeDemand.value.replenishment_source_id
+        : activeDemand.value?.demand_type === 'raw_material'
+        ? activeDemand.value.usage_id
+        : activeDemand.value?.low_stock_todo_id
+          ? activeDemand.value.replenishment_source_id
+          : form.fulfillment_demand_id || null
+    }
   }
 
   if (editingId.value) {
@@ -941,6 +1079,8 @@ watch(
 
 <style scoped>
 .demand-related { font-size: 12px; color: #909399; line-height: 18px; }
+.demand-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.demand-toolbar-tip { font-size: 12px; color: #909399; }
 .status-tabs { margin-bottom: 12px; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
 .mt-16 { margin-top: 16px; }

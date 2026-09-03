@@ -285,6 +285,7 @@ const purchaseOrders = ref([])
 const warehouses = ref([])
 const items = ref([])
 const dialogVisible = ref(false)
+const submitting = ref(false)
 const canCreate = computed(() => ['purchase', 'inventory'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const canUploadAttachments = computed(() => ['purchase', 'inventory'].includes(auth.user?.role_code) && pagePermission.can('upload'))
 const processingRows = computed(() => rows.value.filter((item) => !['returned', 'refunded'].includes(item.status)))
@@ -369,19 +370,35 @@ async function submit() {
       returned_quantity: item.return_quantity
     }))
 
-  await post('/api/purchases/returns', {
-    purchase_order_id: form.purchase_order_id,
-    warehouse_id: form.warehouse_id,
-    return_type: form.return_type,
-    reason: form.reason,
-    refund_amount: form.refund_amount,
-    requires_reinspection: form.requires_reinspection,
-    items: selectedItems
-  })
-  ElMessage.success(texts.messages.created)
-  dialogVisible.value = false
-  resetForm()
-  await load()
+  if (!form.purchase_order_id) {
+    ElMessage.warning('请选择来源采购订单')
+    return
+  }
+  if (!selectedItems.length) {
+    ElMessage.warning('请至少填写一条退货明细的退货数量')
+    return
+  }
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    await post('/api/purchases/returns', {
+      purchase_order_id: form.purchase_order_id,
+      warehouse_id: form.warehouse_id,
+      return_type: form.return_type,
+      reason: form.reason,
+      refund_amount: form.refund_amount,
+      requires_reinspection: form.requires_reinspection,
+      items: selectedItems
+    })
+    ElMessage.success(texts.messages.created)
+    dialogVisible.value = false
+    resetForm()
+    await load()
+  } catch (e) {
+    ElMessage.error(e?.message || '退货单提交失败')
+  } finally {
+    submitting.value = false
+  }
 }
 
 function exportTable() {

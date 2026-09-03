@@ -11,6 +11,11 @@ class PurchaseOrderItemInput(BaseModel):
     unit_price: Decimal = Field(..., gt=0)
 
 
+class PurchaseReplenishmentSourceInput(BaseModel):
+    source_type: str
+    source_id: int = Field(..., gt=0)
+
+
 class PurchaseOrderCreate(BaseModel):
     supplier_id: int
     operator_user_id: int | None = None
@@ -21,6 +26,8 @@ class PurchaseOrderCreate(BaseModel):
         pattern="^(raw_material_replenishment|low_stock_replenishment|low_stock_product_material_replenishment|fulfillment_demand|sales_order_material_replenishment)$",
     )
     replenishment_source_id: int | None = Field(default=None, gt=0)
+    # 多补货需求合并建单:多个来源同时转成一个采购订单(按原料/产品聚合)
+    replenishment_sources: list[PurchaseReplenishmentSourceInput] | None = None
 
 
 class PurchaseOrderUpdate(BaseModel):

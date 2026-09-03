@@ -69,7 +69,7 @@ REPLENISHMENT_SOURCE_TYPES = {
 
 
 
-from services.purchase_service._common import _build_order_items, _complete_purchase_replenishment_source, _ensure_order_owner, _load_order, _load_purchase_replenishment_source, _manager_user_ids, _order_has_inventory_flow, _reopen_purchase_replenishment_source, _resolve_purchase_operator_user_id, _validate_purchase_order_replenishment_items, _validate_supplier_catalog
+from services.purchase_service._common import _build_order_items, _complete_purchase_replenishment_source, _ensure_order_owner, _filter_purchase_items_for_source, _load_order, _load_purchase_replenishment_source, _manager_user_ids, _order_has_inventory_flow, _reopen_purchase_replenishment_source, _resolve_purchase_operator_user_id, _validate_purchase_order_replenishment_items, _validate_supplier_catalog
 
 def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: Session):
     supplier = db.execute(select(Supplier).where(Supplier.id == payload.supplier_id, Supplier.status == "enabled")).scalar_one_or_none()
@@ -78,12 +78,42 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
     if not payload.items:
         raise HTTPException(status_code=400, detail="采购订单至少需要一条明细")
     _validate_supplier_catalog(db, payload.supplier_id, payload.items)
-    replenishment_source = _load_purchase_replenishment_source(
-        db,
-        source_type=payload.replenishment_source_type,
-        source_id=payload.replenishment_source_id,
-        items=payload.items,
-    )
+    replenishment_sources = getattr(payload, "replenishment_sources", None)
+    multi_source = bool(replenishment_sources)
+    if multi_source:
+        if len(replenishment_sources) < 2:
+            raise HTTPException(status_code=409, detail="合并建单至少需要选择两条补货需求")
+        # 先逐个加载来源(校验存在性 / 防重复),再按来源拆分明细校验
+        loaded_sources = []
+        for src in replenishment_sources:
+            source = _load_purchase_replenishment_source(
+                db,
+                source_type=src.source_type,
+                source_id=src.source_id,
+                items=payload.items,
+                validate_items=False,
+            )
+            if source is None:
+                raise HTTPException(status_code=409, detail="补货来源无效")
+            loaded_sources.append(source)
+        for source in loaded_sources:
+            source_items = _filter_purchase_items_for_source(source, payload.items)
+            if not source_items:
+                raise HTTPException(status_code=409, detail="补货来源对应的商品未包含在采购明细中")
+            _validate_purchase_order_replenishment_items(
+                db,
+                source_type=source["source_type"],
+                source_id=source["source_id"],
+                items=source_items,
+            )
+        replenishment_source = loaded_sources[0]
+    else:
+        replenishment_source = _load_purchase_replenishment_source(
+            db,
+            source_type=payload.replenishment_source_type,
+            source_id=payload.replenishment_source_id,
+            items=payload.items,
+        )
 
     order = PurchaseOrder(
         order_no=next_business_no(db, "CG"),
@@ -92,8 +122,8 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
         operator_user_id=_resolve_purchase_operator_user_id(db, payload.operator_user_id, current_user),
         payment_type=payment_type_label(payload.payment_type, module="purchase"),
         status="draft",
-        replenishment_source_type=payload.replenishment_source_type,
-        replenishment_source_id=payload.replenishment_source_id,
+        replenishment_source_type=replenishment_source["source_type"] if replenishment_source else payload.replenishment_source_type,
+        replenishment_source_id=replenishment_source["source_id"] if replenishment_source else payload.replenishment_source_id,
     )
     db.add(order)
     try:
@@ -131,26 +161,48 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
         recipient_user_ids=[current_user.id, *manager_user_ids],
         created_by_id=current_user.id,
     )
-    if replenishment_source is not None:
+    if multi_source:
+        source_ids_meta = [f"{s['source_type']}:{s['source_id']}" for s in loaded_sources]
+        for source in loaded_sources:
+            _complete_purchase_replenishment_source(
+                db,
+                source=source,
+                order=order,
+                current_user=current_user,
+            )
+        write_operation_log(
+            db,
+            user_id=current_user.id,
+            module="purchase",
+            action="create_purchase_order",
+            content=f"合并创建采购订单 {order.order_no}，来源：{'、'.join(source_ids_meta)}",
+            after_data={
+                "status": order.status,
+                "threshold_triggered": threshold_triggered,
+                "replenishment_sources": source_ids_meta,
+                "item_count": len(payload.items),
+            },
+        )
+    elif replenishment_source is not None:
         _complete_purchase_replenishment_source(
             db,
             source=replenishment_source,
             order=order,
             current_user=current_user,
         )
-    write_operation_log(
-        db,
-        user_id=current_user.id,
-        module="purchase",
-        action="create_purchase_order",
-        content=f"创建采购订单 {order.order_no}",
-        after_data={
-            "status": order.status,
-            "threshold_triggered": threshold_triggered,
-            "replenishment_source_type": order.replenishment_source_type,
-            "replenishment_source_id": order.replenishment_source_id,
-        },
-    )
+        write_operation_log(
+            db,
+            user_id=current_user.id,
+            module="purchase",
+            action="create_purchase_order",
+            content=f"创建采购订单 {order.order_no}",
+            after_data={
+                "status": order.status,
+                "threshold_triggered": threshold_triggered,
+                "replenishment_source_type": order.replenishment_source_type,
+                "replenishment_source_id": order.replenishment_source_id,
+            },
+        )
     try:
         db.commit()
     except IntegrityError as exc:
