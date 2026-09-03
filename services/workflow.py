@@ -121,12 +121,11 @@ def purchase_arrival_status(db: Session, order_id: int) -> str:
     return "arrived"
 
 
-APPROVAL_REQUIRED_INBOUND_CATEGORIES = {
-    "purchase_receipt_inbound",
-    "purchase_quality_inbound",
-    "production_finished_inbound",
-    "production_quality_inbound",
-}
+APPROVAL_REQUIRED_INBOUND_CATEGORIES: set[str] = set()
+
+
+# 需求变更(2026-09):入库环节不再需要总经理审批,库管可直接执行入库。
+# 原有需要审批的入库类别(采购到货/采购质检/生产完工/生产质检)全部改为直接入库。
 
 
 def _requires_inventory_manager_approval(operation_type: str, request_category: str) -> bool:
@@ -530,6 +529,8 @@ def _sync_inventory_request_source(
         if sales_return is None:
             return
         sales_return.status = "approved"
+        # 退货入库完成 → 扣减退货在途(实有已由入库作业增加)
+        _release_sales_return_in_transit(db, request)
         create_notification(
             db,
             title="销售退货已回库",
@@ -539,6 +540,26 @@ def _sync_inventory_request_source(
             created_by_id=current_user.id,
             category="success",
         )
+
+
+def _release_sales_return_in_transit(db: Session, request: InventoryOperationRequest) -> None:
+    """退货入库完成 → 按实际入库数量扣减退货在途。"""
+    handled_items = request.handled_items_json or request.original_items_json or []
+    for item in handled_items:
+        product_id = item.get("product_id") if isinstance(item, dict) else None
+        quantity = item.get("quantity") if isinstance(item, dict) else None
+        if not product_id or quantity is None:
+            continue
+        inventory = db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == request.warehouse_id,
+                Inventory.product_id == product_id,
+                Inventory.material_id.is_(None),
+            )
+        ).scalar_one_or_none()
+        if inventory is None:
+            continue
+        inventory.in_transit = max(Decimal("0"), Decimal(inventory.in_transit or 0) - Decimal(quantity))
 
 
 def _ensure_production_material_issue_approved(request: InventoryOperationRequest, db: Session) -> None:

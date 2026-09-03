@@ -142,7 +142,12 @@ def _serialize_stock(
     item = row.product or row.material
     item_type = "product" if row.product_id else "material"
     key = _stock_key(product_id=row.product_id, material_id=row.material_id)
-    expected_available_quantity = available_quantity - Decimal((pending_sales or {}).get(key, 0)) + Decimal((purchase_in_transit or {}).get(key, 0))
+    expected_available_quantity = (
+        available_quantity
+        - Decimal((pending_sales or {}).get(key, 0))
+        + Decimal((purchase_in_transit or {}).get(key, 0))
+        + (Decimal(row.in_transit or 0) if row.product_id else Decimal("0"))  # 退货在途计入产品预计可用
+    )
     safety_stock_qty = Decimal(item.safety_stock_qty or 0) if item else Decimal("0")
     return {
         "id": row.id,

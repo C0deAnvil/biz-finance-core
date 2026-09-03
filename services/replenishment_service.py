@@ -202,9 +202,22 @@ def ensure_fulfillment_demand_routing(
 
 
 def product_expected_available_quantity(db: Session, *, product_id: int, inventory: Inventory | None = None) -> Decimal:
-    available_quantity = Decimal("0")
+    """产品预计可用 = 实有 - 占用 - 未发货待发 + 采购在途 + 退货在途。"""
+    return_transit_quantity = Decimal("0")
     if inventory is not None:
         available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
+        return_transit_quantity = Decimal(inventory.in_transit or 0)
+    else:
+        available_quantity = Decimal("0")
+        inventory_rows = db.execute(
+            select(Inventory).where(
+                Inventory.product_id == product_id,
+                Inventory.material_id.is_(None),
+            )
+        ).scalars().all()
+        for row in inventory_rows:
+            available_quantity += Decimal(row.quantity or 0) - Decimal(row.reserved_quantity or 0)
+            return_transit_quantity += Decimal(row.in_transit or 0)
     pending_sales = db.execute(
         select(
             func.coalesce(func.sum(SalesOrderItem.quantity), 0),
@@ -226,7 +239,7 @@ def product_expected_available_quantity(db: Session, *, product_id: int, invento
         )
     ).one()
     in_transit_quantity = max(Decimal(in_transit[0] or 0) - Decimal(in_transit[1] or 0), Decimal("0"))
-    return available_quantity - pending_sales_quantity + in_transit_quantity
+    return available_quantity - pending_sales_quantity + in_transit_quantity + return_transit_quantity
 
 
 def material_expected_available_quantity(db: Session, *, material_id: int, inventory: Inventory | None = None) -> Decimal:

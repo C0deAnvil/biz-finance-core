@@ -105,6 +105,32 @@ def create_return(payload: SalesReturnCreate, current_user: User, db: Session):
         )
         detail_count += 1
 
+    # 退货提交 → 增加退货在途(预计可用 = 实有 + 在途 - 占用)
+    return_warehouse = _finished_warehouse(db)
+    for item_payload in payload.items:
+        order_item = order_item_map.get(item_payload.sales_order_item_id)
+        if order_item is None or order_item.product_id is None:
+            continue
+        inventory = db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == return_warehouse.id,
+                Inventory.product_id == order_item.product_id,
+                Inventory.material_id.is_(None),
+            )
+        ).scalar_one_or_none()
+        if inventory is None:
+            inventory = Inventory(
+                warehouse_id=return_warehouse.id,
+                product_id=order_item.product_id,
+                material_id=None,
+                quantity=0,
+                reserved_quantity=0,
+                in_transit=0,
+                avg_unit_cost=0,
+            )
+            db.add(inventory)
+        inventory.in_transit = Decimal(inventory.in_transit or 0) + Decimal(item_payload.quantity)
+
     approver_user_ids = _role_user_ids(db, "manager", "chairman")
     return_type_text = "退货" if payload.return_type == "return" else "换货"
     for user_id in approver_user_ids:
@@ -275,6 +301,8 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
         )
     else:
         sales_return.status = "rejected"
+        # 审批驳回 → 退回已在途的退货数量
+        _release_return_in_transit(db, sales_return, warehouse_id=_finished_warehouse(db).id)
         create_notification(
             db,
             title="销售退换货已驳回",
@@ -300,4 +328,29 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
     )
     db.commit()
     return api_response(data={"id": sales_return.id, "status": sales_return.status})
+
+
+def _release_return_in_transit(db: Session, sales_return: SalesReturn, *, warehouse_id: int) -> None:
+    """释放退换货单占用在途的退货数量(审批驳回时调用)。"""
+    items = db.execute(
+        select(SalesReturnItem).where(SalesReturnItem.sales_return_id == sales_return.id)
+    ).scalars().all()
+    for item in items:
+        if item.sales_order_item_id is None:
+            continue
+        order_item = db.execute(
+            select(SalesOrderItem).where(SalesOrderItem.id == item.sales_order_item_id)
+        ).scalar_one_or_none()
+        if order_item is None or order_item.product_id is None:
+            continue
+        inventory = db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == warehouse_id,
+                Inventory.product_id == order_item.product_id,
+                Inventory.material_id.is_(None),
+            )
+        ).scalar_one_or_none()
+        if inventory is None:
+            continue
+        inventory.in_transit = max(Decimal("0"), Decimal(inventory.in_transit or 0) - Decimal(item.quantity or 0))
 
