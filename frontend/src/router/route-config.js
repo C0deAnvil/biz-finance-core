@@ -35,6 +35,7 @@ const loaderMap = {
   '/production/boms': () => import('../views/production/BomsView.vue'),
   '/production/plans': () => import('../views/production/ProductionPlansView.vue'),
   '/production/tasks': () => import('../views/production/ProductionTasksView.vue'),
+  '/notifications': () => import('../views/NotificationsView.vue'),
   '/production/approvals': () => import('../views/production/ProductionApprovalsView.vue'),
   '/quality/tasks': () => import('../views/quality/QualityTasksView.vue'),
   '/finance/receivables': () => import('../views/finance/ReceivablesView.vue'),

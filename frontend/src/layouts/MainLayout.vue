@@ -69,7 +69,7 @@
                 </div>
               </div>
               <div class="notification-panel-footer">
-                <el-button size="small" text @click="router.push('/dashboard')">查看全部</el-button>
+                <el-button size="small" text @click="goNotifications">查看全部</el-button>
               </div>
             </div>
           </el-popover>
@@ -157,7 +157,22 @@ function refreshNotifications() {
 }
 
 function openNotification(item) {
-  router.push('/dashboard')
+  router.push('/notifications')
+  void markNotificationsScoped([item.id])
+}
+
+function goNotifications() {
+  router.push('/notifications')
+}
+
+// 从弹窗跳到通知页时,顺手同步未读(不强制刷新列表)
+async function markNotificationsScoped(ids) {
+  if (!ids.length) return
+  try {
+    await post('/api/dashboard/notifications/batch-read', { ids })
+    dashboard.loadSummary({ primeTtlMs: 0, force: true })
+  } catch {
+  }
 }
 
 async function markAllRead() {

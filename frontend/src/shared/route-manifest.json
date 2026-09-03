@@ -1234,5 +1234,25 @@
   "menu_roles": [],
   "preload_roles": [],
   "warmers": []
+ },
+ {
+  "path": "/notifications",
+  "name": "notifications",
+  "title": "通知中心",
+  "group": "工作台",
+  "menu_roles": [
+   "sales",
+   "finance",
+   "inventory",
+   "production",
+   "purchase",
+   "quality",
+   "manager",
+   "chairman",
+   "master_data_admin",
+   "system_admin"
+  ],
+  "preload_roles": [],
+  "warmers": []
  }
 ]

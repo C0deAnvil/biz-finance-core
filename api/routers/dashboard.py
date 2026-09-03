@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -11,6 +11,7 @@ from models import (
     CashFlowRecord,
     Inventory,
     InventoryDispatchQueue,
+    Notification,
     NotificationRecipient,
     Product,
     ProductionTask,
@@ -446,6 +447,48 @@ def _get_notification_recipient(recipient_id: int, current_user: User, db: Sessi
     if recipient is None:
         raise HTTPException(status_code=404, detail="通知不存在")
     return recipient
+
+
+@router.get("/notifications")
+def list_my_notifications(
+    read: str | None = Query(default=None, pattern="^(read|unread)$"),
+    module: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """当前用户通知列表(分页/已读筛选/模块筛选),供通知中心页面使用。"""
+    base_filters = [NotificationRecipient.user_id == current_user.id]
+    filtered_filters = list(base_filters)
+    if read == "read":
+        filtered_filters.append(NotificationRecipient.is_read.is_(True))
+    elif read == "unread":
+        filtered_filters.append(NotificationRecipient.is_read.is_(False))
+    if module:
+        filtered_filters.append(Notification.module == module)
+
+    query = (
+        select(NotificationRecipient)
+        .options(joinedload(NotificationRecipient.notification))
+        .where(*filtered_filters)
+        .order_by(NotificationRecipient.created_at.desc(), NotificationRecipient.id.desc())
+    )
+    total = db.execute(select(func.count()).select_from(query.subquery())).scalar_one()
+    rows = db.execute(query.offset((page - 1) * page_size).limit(page_size)).unique().scalars().all()
+    unread_count = db.execute(
+        select(func.count()).select_from(NotificationRecipient).where(
+            NotificationRecipient.user_id == current_user.id,
+            NotificationRecipient.is_read.is_(False),
+        )
+    ).scalar_one()
+    return api_response(
+        data={
+            "items": [_serialize_notification(item) for item in rows],
+            "pagination": {"page": page, "page_size": page_size, "total": total},
+            "unread_count": unread_count,
+        }
+    )
 
 
 @router.post("/notifications/{recipient_id}/read")
