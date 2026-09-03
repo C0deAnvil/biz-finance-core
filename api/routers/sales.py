@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, PurchaseReceipt, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
+from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, PurchaseReceipt, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderApproval, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
 from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
@@ -30,6 +30,7 @@ from services.sales_service import (
     create_return as create_return_service,
     finance_edit_order as finance_edit_order_service,
     submit_merged_sales_receipt_request as submit_merged_sales_receipt_request_service,
+    submit_order as submit_order_service,
     submit_sales_receipt_request as submit_sales_receipt_request_service,
     update_order as update_order_service,
 )
@@ -797,6 +798,16 @@ def create_order(payload: SalesOrderCreate, current_user: User = Depends(require
     return create_order_service(payload, current_user, db)
 
 
+@router.post("/orders/{order_id}/submit")
+def submit_order(
+    order_id: int,
+    current_user: User = Depends(require_roles("sales")),
+    db: Session = Depends(get_db),
+):
+    """草稿/已驳回订单提交财务审批。"""
+    return submit_order_service(order_id, current_user, db)
+
+
 @router.put("/orders/{order_id}")
 def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User = Depends(require_roles("sales")), db: Session = Depends(get_db)):
     return update_order_service(order_id, payload, current_user, db)
@@ -829,27 +840,95 @@ def delete_order(order_id: int, current_user: User = Depends(require_roles("sale
         raise HTTPException(status_code=404, detail="客户订单不存在")
     if order.sales_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="仅可删除本人订单")
-    if order.status != "pending_confirmation":
-        raise HTTPException(status_code=409, detail="仅待确认订单允许删除")
+    if order.status not in {"draft", "rejected"}:
+        raise HTTPException(status_code=409, detail="仅草稿或已驳回订单允许删除")
+
+    # 下游单据检查:有生产任务/采购单/退货单的订单不允许删除
+    item_ids = [item.id for item in order.items]
+    downsteam_count = 0
+    if item_ids:
+        downsteam_count += db.execute(
+            select(func.count()).select_from(FulfillmentDemand).where(
+                FulfillmentDemand.sales_order_item_id.in_(item_ids),
+                FulfillmentDemand.status != "pending",
+            )
+        ).scalar_one()
+    downsteam_count += db.execute(
+        select(func.count()).select_from(SalesReturn).where(SalesReturn.sales_order_id == order.id)
+    ).scalar_one()
+    if downsteam_count:
+        raise HTTPException(status_code=409, detail="订单已产生生产/采购/退货下游单据,不允许删除")
+
+    # 清理补货需求引用(历史数据可能挂明细外键)
+    demand_where = (
+        [FulfillmentDemand.sales_order_id == order.id]
+        if not item_ids
+        else [FulfillmentDemand.sales_order_id == order.id, FulfillmentDemand.sales_order_item_id.in_(item_ids)]
+    )
+    for demand in db.execute(select(FulfillmentDemand).where(*demand_where)).scalars().all():
+        db.delete(demand)
 
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)).scalar_one_or_none()
     if queue:
         db.delete(queue)
+    for approval in db.execute(
+        select(SalesOrderApproval).where(SalesOrderApproval.sales_order_id == order.id)
+    ).scalars().all():
+        db.delete(approval)
+    for todo in db.execute(
+        select(TodoItem).where(
+            or_(
+                and_(TodoItem.business_type.in_(["sales_order", "sales_order_approval", "sales_order_price_approval"]), TodoItem.business_id == order.id),
+                and_(TodoItem.business_type == "sales_order_material_replenishment", TodoItem.business_id == order.id),
+            )
+        )
+    ).scalars().all():
+        db.delete(todo)
     db.delete(order)
     db.commit()
     return api_response(msg="客户订单已删除")
 
 
 @router.get("/approvals/pending")
-def pending_approvals(current_user: User = Depends(require_roles("chairman", "system_admin")), db: Session = Depends(get_db)):
-    return api_response(data=[])
+def pending_approvals(
+    current_user: User = Depends(require_roles("finance", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        select(SalesOrder)
+        .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user))
+        .where(SalesOrder.status == "pending_confirmation")
+        .order_by(SalesOrder.updated_at.desc(), SalesOrder.id.desc())
+    ).scalars().all()
+    return api_response(
+        data=[
+            {
+                "id": row.id,
+                "order_no": row.order_no,
+                "customer_name": row.customer.name if row.customer else None,
+                "sales_user": row.sales_user.full_name if row.sales_user else None,
+                "payment_type_label": payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales"),
+                "total_amount": float(row.total_amount or 0),
+                "deposit_amount": float(row.deposit_amount or 0),
+                "expected_delivery_date": row.expected_delivery_date.isoformat() if row.expected_delivery_date else None,
+                "order_type": row.order_type,
+                "order_type_label": order_type_style(row.order_type).get("label"),
+                "order_type_color": order_type_style(row.order_type).get("color"),
+                "status": row.status,
+                "status_label": status_label(row.status),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "rejection_reason": row.rejection_reason,
+            }
+            for row in rows
+        ]
+    )
 
 
 @router.post("/orders/{order_id}/approve")
 def approve_order(
     order_id: int,
     payload: SalesApprovalRequest,
-    current_user: User = Depends(require_roles("chairman", "system_admin")),
+    current_user: User = Depends(require_roles("finance", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
     return approve_order_service(order_id, payload, current_user, db)

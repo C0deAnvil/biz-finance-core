@@ -72,7 +72,7 @@ TODO_APPROVAL_TYPE_MAP = {
 }
 
 APPROVAL_VIEW_ROLES = {
-    "sales_order": {"chairman", "system_admin"},
+    "sales_order": {"finance", "chairman", "system_admin"},
     "purchase_order": {"manager", "system_admin"},
     "purchase_payment_request": {"purchase", "chairman", "finance", "system_admin"},
     "sales_receipt_request": {"sales", "chairman", "finance", "system_admin"},
@@ -84,7 +84,7 @@ APPROVAL_VIEW_ROLES = {
 }
 
 APPROVAL_ACTION_ROLES = {
-    "sales_order": {"chairman", "system_admin"},
+    "sales_order": {"finance", "chairman", "system_admin"},
     "purchase_order": {"manager", "system_admin"},
     "purchase_payment_request": {"chairman", "system_admin"},
     "sales_receipt_request": {"finance", "system_admin"},

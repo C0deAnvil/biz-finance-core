@@ -118,7 +118,7 @@ const auth = useAuthStore()
 const pagePermission = usePagePermission()
 const texts = {
   title: '销售订单审批',
-  description: '仅董事长确认到账信息并审批客户订单；审批通过后订单流转至库管待发货。',
+  description: '财务/董事长确认到账信息并审批客户订单；审批通过后占用库存并流转至库管置货。',
   columns: {
     orderNo: '订单号',
     customer: '客户',
@@ -173,7 +173,7 @@ const decisionVisible = ref(false)
 const detail = ref(null)
 const activeRow = ref(null)
 const decisionForm = reactive({ decision: 'approved', voucher_amount: 0, note: '' })
-const canApproveOrders = computed(() => ['chairman', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('approve'))
+const canApproveOrders = computed(() => ['finance', 'chairman', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('approve'))
 const { pagination, total, pageSizes, pagedItems: pagedRows, ensureVisible } = useLocalPagination(rows)
 
 function rowClassName({ row }) {

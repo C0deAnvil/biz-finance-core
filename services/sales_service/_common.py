@@ -368,6 +368,36 @@ def _create_dispatch_queue(db: Session, sales_order_id: int) -> None:
     )
 
 
+def occupy_inventory_for_order(db: Session, *, order: SalesOrder) -> dict[int, Decimal]:
+    """财务审批通过后占用成品库存:reserved += min(明细数量, 当前可用量)。
+
+    返回各明细实际占用量,缺口部分(明细数量-占用量)由库管在置货环节生成补货需求。
+    """
+    warehouse = _finished_warehouse(db)
+    product_ids = [item.product_id for item in order.items] or [-1]
+    inventory_map = {
+        row.product_id: row
+        for row in db.execute(
+            select(Inventory)
+            .where(
+                Inventory.warehouse_id == warehouse.id,
+                Inventory.product_id.in_(product_ids),
+                Inventory.material_id.is_(None),
+            )
+            .with_for_update()
+        ).scalars().all()
+    }
+    occupied_map: dict[int, Decimal] = {}
+    for item in order.items:
+        inventory = inventory_map.get(item.product_id)
+        available = max(Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0) if inventory else Decimal("0"), Decimal("0"))
+        occupy = min(Decimal(item.quantity or 0), available)
+        if occupy > 0 and inventory is not None:
+            inventory.reserved_quantity = Decimal(inventory.reserved_quantity or 0) + occupy
+        occupied_map[item.id] = occupy
+    return occupied_map
+
+
 def _create_inventory_placement_todos(db: Session, *, order: SalesOrder) -> None:
     inventory_user_ids = _role_user_ids(db, "inventory")
     for user_id in inventory_user_ids:
@@ -413,7 +443,8 @@ def _route_order_to_inventory_shipment(db: Session, *, order: SalesOrder, curren
         )
         db.add(queue)
         db.flush()
-    _create_fulfillment_demands(db, order=order, current_user=current_user)
+    # 放行即占用成品库存;缺口不自动生成补货需求,由库管置货时按需创建
+    occupy_inventory_for_order(db, order=order)
     if queue.placement_status != "hidden":
         queue.placement_status = "pending"
         queue.shipment_status = "waiting_approval"

@@ -1,5 +1,5 @@
 <template>
-  <PageSection title="客户订单管理" description="支持新建、修改、删除待确认订单，并展示拆单父子关系。">
+  <PageSection title="客户订单管理" description="新建订单先存草稿，提交后进入财务审批，审批通过后占用库存并进入置货流程。">
     <template #actions>
       <el-button @click="load">刷新</el-button>
       <el-button @click="exportTable">导出CSV</el-button>
@@ -38,7 +38,6 @@
       <el-table-column prop="split_phase" label="批次" width="80">
         <template #default="scope">第{{ scope.row.split_phase || 1 }}批</template>
       </el-table-column>
-      <el-table-column prop="parent_order_no" label="母订单" width="150" />
       <el-table-column prop="customer_name" label="客户" min-width="160" />
       <el-table-column prop="sales_user" label="销售员" width="120" />
       <el-table-column prop="operator_name" label="经办人" width="120" />
@@ -77,14 +76,15 @@
       <el-table-column prop="created_at" label="创建时间" min-width="160">
         <template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" width="360" fixed="right">
         <template #default="scope">
           <el-button size="small" text @click="viewOrder(scope.row.id)">查看</el-button>
           <el-button size="small" text type="info" @click="openTimeline(scope.row.id)">时间轴</el-button>
+          <el-button v-if="canSubmitOrder(scope.row)" size="small" text type="success" @click="submitOrder(scope.row)">提交</el-button>
           <el-button v-if="canManageOrders" size="small" text type="primary" @click="editOrder(scope.row)" :disabled="!canEditOrder(scope.row)">编辑</el-button>
           <el-button v-if="canFinanceEdit(scope.row)" size="small" text type="primary" @click="financeEditOrder(scope.row)">财务改单</el-button>
           <el-button v-if="canOpenFinanceEditDetail(scope.row)" size="small" text type="warning" @click="viewOrder(scope.row.id)">财务修改详情</el-button>
-          <el-button v-if="canManageOrders" size="small" text type="danger" @click="deleteOrder(scope.row)" :disabled="scope.row.status !== 'pending_confirmation'">删除</el-button>
+          <el-button v-if="canManageOrders" size="small" text type="danger" @click="deleteOrder(scope.row)" :disabled="!canDeleteOrder(scope.row)">删除</el-button>
           <el-button v-if="canApprovePrice(scope.row)" size="small" text type="success" @click="openPriceApproval(scope.row)">改价审批</el-button>
           <el-button v-if="canManageOrders && !scope.row.is_completed_order" size="small" text type="warning" @click="completeOrder(scope.row)" :disabled="!scope.row.can_mark_completed">完结</el-button>
           <el-button v-if="canManageOrders" size="small" text type="success" @click="openAttachments(scope.row)">合同/发票</el-button>
@@ -281,7 +281,7 @@
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button v-if="canSubmitOrderForm" type="primary" :loading="dialogSubmitting" @click="submit">{{ financeEditing ? '提交财务修改' : '提交' }}</el-button>
+        <el-button v-if="canSubmitOrderForm" type="primary" :loading="dialogSubmitting" @click="submit">{{ financeEditing ? '提交财务修改' : (editingId ? '保存修改' : '保存草稿') }}</el-button>
       </template>
     </el-dialog>
 
@@ -491,6 +491,7 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/alert/style/css'
@@ -516,6 +517,7 @@ import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
+import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
@@ -686,8 +688,8 @@ async function confirmStockShortageIfNeeded() {
   ).join('\n')
   try {
     await ElMessageBox.confirm(
-      `${message}\n\n订单提交后，系统将按缺口自动生成采购/生产补货需求。是否继续提交？`,
-      '商品库存不足',
+      `${message}\n\n本单为缺口提醒：系统不会自动生成补货需求，财务审批通过后由库管在置货环节按需生成采购/生产补货需求。是否继续提交？`,
+      '商品库存不足(仅提醒)',
       { type: 'warning', confirmButtonText: '继续提交', cancelButtonText: '返回修改' }
     )
     return true
@@ -726,7 +728,15 @@ function setActiveStatusTabByRow(row) {
 }
 
 function canEditOrder(row) {
-  return ['pending_confirmation', 'pending_price_approval', 'rejected'].includes(row?.status)
+  return ['draft', 'rejected'].includes(row?.status)
+}
+
+function canSubmitOrder(row) {
+  return canManageOrders.value && ['draft', 'rejected'].includes(row?.status)
+}
+
+function canDeleteOrder(row) {
+  return canManageOrders.value && ['draft', 'rejected'].includes(row?.status)
 }
 
 function canApprovePrice(row) {
@@ -1074,16 +1084,11 @@ async function submit() {
       ElMessage.success('订单已更新')
     } else {
       const result = await post('/api/sales/orders', payload)
-      if (result.replenishment_created) {
-        const demandText = (result.replenishment_demands || []).map((item) =>
-          `${item.product_name} 缺口 ${formatNumber(item.shortage_quantity)}，已生成${item.fulfillment_mode_label}补货需求 ${item.demand_no}`
-        ).join('；')
-        await ElMessageBox.alert(
-          `订单 ${result.order_no} 已生成相关采购/生产补货需求。${result.shipment_deferred_by_shortage ? '\n当前库存不足以覆盖首批发货，订单已暂缓流转至发货，待补货完成后再推进。' : ''}${demandText ? `\n${demandText}` : ''}`,
-          '补货需求已生成',
-          { type: 'success', confirmButtonText: '知道了' }
-        )
-      }
+      await ElMessageBox.alert(
+        `订单 ${result.order_no} 已创建为草稿。请确认信息无误后提交财务审批；审批通过后由库管在置货环节按需生成采购/生产补货需求。`,
+        '订单已创建',
+        { type: 'success', confirmButtonText: '知道了' }
+      )
       ElMessage.success(`订单已创建：${result.order_no}`)
     }
     dialogVisible.value = false
@@ -1184,9 +1189,16 @@ async function editOrder(row) {
 }
 
 async function deleteOrder(row) {
-  await ElMessageBox.confirm(`确认删除订单 ${row.order_no} 吗？`, '提示', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除订单 ${row.order_no} 吗？删除后不可恢复。`, '提示', { type: 'warning' })
   await remove(`/api/sales/orders/${row.id}`)
   ElMessage.success('订单已删除')
+  await load()
+}
+
+async function submitOrder(row) {
+  await ElMessageBox.confirm(`确认将订单 ${row.order_no} 提交财务审批吗？提交后不可编辑、不可删除。`, '提交审批', { type: 'info' })
+  await post(`/api/sales/orders/${row.id}/submit`, {})
+  ElMessage.success('订单已提交财务审批')
   await load()
 }
 

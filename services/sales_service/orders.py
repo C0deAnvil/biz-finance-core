@@ -36,7 +36,7 @@ from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate,
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
-from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
+from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity, product_expected_available_quantity
 from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
@@ -45,7 +45,72 @@ from services.time_utils import now_local
 
 
 
-from services.sales_service._common import _build_order_items, _build_split_items, _create_dispatch_queue, _create_fulfillment_demands, _create_inventory_placement_todos, _create_order_todos_and_notice, _ensure_order_owner_or_admin, _finance_user_ids, _has_pending_finance_edit_confirmation, _load_order, _manager_chairman_user_ids, _resolve_sales_operator_user_id, _role_user_ids, _route_order_to_inventory_shipment
+from services.sales_service._common import _build_order_items, _build_split_items, _create_dispatch_queue, _create_fulfillment_demands, _create_inventory_placement_todos, _create_order_todos_and_notice, _ensure_order_owner_or_admin, _finance_user_ids, _finished_warehouse, _has_pending_finance_edit_confirmation, _load_order, _manager_chairman_user_ids, _resolve_sales_operator_user_id, _role_user_ids, _route_order_to_inventory_shipment, occupy_inventory_for_order
+
+
+SALES_EDITABLE_STATUSES = {"draft", "rejected"}
+
+
+def _cleanup_order_item_references(db: Session, order: SalesOrder) -> None:
+    """删除/重建订单明细前,清理关联的补货需求引用(外键约束)。
+
+    历史版本会在创建/审批时自动生成 FulfillmentDemand 并挂到 sales_order_item_id,
+    直接删除明细会触发外键 1451 错误。pending 需求直接删除,已流转的解除明细引用。
+    """
+    item_ids = [item.id for item in order.items] or [-1]
+    demands = db.execute(
+        select(FulfillmentDemand).where(FulfillmentDemand.sales_order_item_id.in_(item_ids))
+    ).scalars().all()
+    for demand in demands:
+        if demand.status == "pending":
+            db.delete(demand)
+        else:
+            demand.sales_order_item_id = None
+            demand.sales_order_id = None
+
+
+def _notify_sales_order_shortage(db: Session, *, order: SalesOrder, current_user: User) -> None:
+    """按预计可用库存(实有-占用-在产+在途+在订)计算订单缺口,仅提醒不生成补货需求。"""
+    warehouse = _finished_warehouse(db)
+    product_ids = [item.product_id for item in order.items] or [-1]
+    inventory_map = {
+        row.product_id: row
+        for row in db.execute(
+            select(Inventory).where(
+                Inventory.warehouse_id == warehouse.id,
+                Inventory.product_id.in_(product_ids),
+                Inventory.material_id.is_(None),
+            )
+        ).scalars().all()
+    }
+    shortage_lines = []
+    for item in order.items:
+        expected_available = product_expected_available_quantity(
+            db,
+            product_id=item.product_id,
+            inventory=inventory_map.get(item.product_id),
+        )
+        shortage = max(Decimal(item.quantity or 0) - expected_available, Decimal("0"))
+        if shortage > 0:
+            product_name = item.product.name if item.product else f"产品#{item.product_id}"
+            shortage_lines.append(f"{product_name} 缺口 {float(shortage)}")
+    if not shortage_lines:
+        return
+    inventory_user_ids = _role_user_ids(db, "inventory")
+    recipient_ids = list(dict.fromkeys([order.sales_user_id, *inventory_user_ids]))
+    create_notification(
+        db,
+        title="销售订单存在库存缺口(仅提醒)",
+        content=(
+            f"客户订单 {order.order_no} 按预计可用库存(实有-占用+在途+在订)计算存在缺口："
+            f"{'、'.join(shortage_lines)}。系统不自动生成补货需求，"
+            f"请财务审批通过后由库管在置货环节生成采购/生产补货需求。"
+        ),
+        module="sales",
+        recipient_user_ids=recipient_ids,
+        created_by_id=current_user.id,
+        category="warning",
+    )
 
 def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
@@ -54,8 +119,7 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     if not payload.items:
         raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
 
-    # 不再拆单：整单保留全部明细，库存缺口统一通过生产/采购补货需求处理
-    phase_one_items, phase_two_items = _build_split_items(db, payload.items)
+    # 不再拆单：整单保留全部明细，库存缺口统一在生产/采购补货需求环节处理
     effective_items = [
         {
             "product_id": item.product_id,
@@ -81,7 +145,7 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
         payment_type=payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales"),
         order_type=payload.order_type or "normal",
         expected_delivery_date=payload.expected_delivery_date,
-        status="pending_confirmation",
+        status="draft",
         deposit_amount=payload.deposit_amount,
         transport_fee=payload.transport_fee,
         packaging_fee=0,
@@ -95,24 +159,17 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     order.split_group_no = order.order_no
 
     order.total_amount = _build_order_items(db, order_id=order.id, payload_items=effective_items) + Decimal(order.transport_fee or 0)
-    _create_dispatch_queue(db, order.id)
-    _create_order_todos_and_notice(db, order=order, customer_name=customer.name, current_user=current_user)
 
-    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
-    has_available_batch = bool(phase_one_items)
-    has_shortage_batch = bool(phase_two_items) or not has_available_batch
-    if order.status != "pending_price_approval" and payment_type == "货到付款/分期付款" and has_available_batch:
-        _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
-
-    # 缺口直接挂在整单上生成补货需求，不再另建拆分单据
-    created_demands = _create_fulfillment_demands(db, order=order, current_user=current_user)
+    # 草稿阶段:不创建置货队列/审批待办,不做库存占用,不生成补货需求
+    # 缺口仅提醒销售与库管:财务审批通过后由库管在置货环节按需生成补货需求
+    _notify_sales_order_shortage(db, order=order, current_user=current_user)
 
     write_operation_log(
         db,
         user_id=current_user.id,
         module="sales",
         action="create_order",
-        content=f"创建客户订单 {order.order_no}",
+        content=f"创建客户订单 {order.order_no}(草稿)",
         after_data={
             "customer_id": order.customer_id,
             "status": order.status,
@@ -128,11 +185,57 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
             "order_no": order.order_no,
             "split_created": False,
             "split_child_order_no": None,
-            "replenishment_created": bool(created_demands),
-            "replenishment_demands": created_demands,
-            "shipment_deferred_by_shortage": has_shortage_batch and not has_available_batch,
+            "replenishment_created": False,
+            "replenishment_demands": [],
+            "shipment_deferred_by_shortage": False,
         }
     )
+
+
+def submit_order(order_id: int, current_user: User, db: Session):
+    """草稿/已驳回订单提交财务审批。提交后不可编辑、不可删除。"""
+    order = _load_order(db, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    _ensure_order_owner_or_admin(order, current_user)
+    if order.status not in {"draft", "rejected"}:
+        raise HTTPException(status_code=409, detail="仅草稿或已驳回订单可提交审批")
+
+    order.status = "pending_confirmation"
+    order.rejection_reason = None
+    _create_dispatch_queue(db, order.id)
+
+    # 提交后提醒财务/董事长审批
+    approver_user_ids = list(dict.fromkeys(_role_user_ids(db, "finance", "chairman")))
+    for user_id in approver_user_ids:
+        create_todo(
+            db,
+            title=f"待审批客户订单 {order.order_no}",
+            description=f"客户订单 {order.order_no} 已提交,请财务确认收款信息并审批。",
+            module="sales",
+            assigned_user_id=user_id,
+            business_type="sales_order_approval",
+            business_id=order.id,
+            priority="high",
+        )
+    create_notification(
+        db,
+        title="客户订单已提交审批",
+        content=f"客户订单 {order.order_no} 已提交,请财务确认收款信息并审批。",
+        module="sales",
+        recipient_user_ids=approver_user_ids,
+        created_by_id=current_user.id,
+    )
+    write_operation_log(
+        db,
+        user_id=current_user.id,
+        module="sales",
+        action="submit_order",
+        content=f"客户订单 {order.order_no} 提交财务审批",
+        after_data={"order_id": order.id, "status": order.status},
+    )
+    db.commit()
+    return api_response(data={"id": order.id, "order_no": order.order_no, "status": order.status})
 
 
 def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, db: Session):
@@ -140,8 +243,8 @@ def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, d
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
     _ensure_order_owner_or_admin(order, current_user)
-    if order.status not in {"pending_confirmation", "pending_price_approval", "rejected"}:
-        raise HTTPException(status_code=409, detail="仅待确认、待改价审批或已驳回订单允许修改")
+    if order.status not in {"draft", "rejected"}:
+        raise HTTPException(status_code=409, detail="仅草稿或已驳回订单允许修改(已提交订单请通过财务改单流程)")
 
     customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
     if customer is None:
@@ -170,6 +273,8 @@ def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, d
     order.order_remark = payload.order_remark
     order.rejection_reason = None
 
+    # 删除旧明细前必须先解除 / 清理关联的补货需求引用,否则外键约束报错
+    _cleanup_order_item_references(db, order)
     for item in list(order.items):
         db.delete(item)
     db.flush()
@@ -185,18 +290,9 @@ def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, d
     order.price_approved_at = None
     complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
     order.total_amount = _build_order_items(db, order_id=order.id, payload_items=payload.items) + Decimal(order.transport_fee or 0)
-    if order.price_approval_status != "pending":
-        order.status = "pending_confirmation"
+    order.status = "draft"
 
-    create_notification(
-        db,
-        title="客户订单已更新",
-        content=f"客户订单 {order.order_no} 已更新，请按最新内容进行审批。",
-        module="sales",
-        recipient_user_ids=_role_user_ids(db, "finance", "chairman"),
-        created_by_id=current_user.id,
-        is_popup=False,
-    )
+    _notify_sales_order_shortage(db, order=order, current_user=current_user)
     write_operation_log(
         db,
         user_id=current_user.id,
@@ -252,7 +348,8 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         order.approved_by_id = current_user.id
         order.approved_at = now_local()
         order.rejection_reason = None
-        _create_fulfillment_demands(db, order=order, current_user=current_user)
+        # 财务审批通过 → 占用成品库存(仅占用实有部分,缺口留待置货环节由库管提补货需求)
+        occupy_inventory_for_order(db, order=order)
         if queue.placement_status == "hidden":
             queue.shipment_status = "pending"
         else:

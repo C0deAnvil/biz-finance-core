@@ -475,6 +475,7 @@
   "title": "客户订单审批",
   "group": "销售管理",
   "menu_roles": [
+   "finance",
    "chairman",
    "system_admin"
   ],
