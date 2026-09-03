@@ -188,7 +188,7 @@ function handleSearch() {
   // 前端过滤即可
 }
 function goOrder(order) {
-  router.push({ path: '/sales/orders', query: { focusId: order.id, focusType: 'sales_order' } })
+  router.push({ path: '/sales/order-timeline', query: { id: order.id } })
 }
 
 async function load() {

@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import { pinia } from '../stores'
 import { useAuthStore } from '../stores/auth'
-import { APP_TITLE, buildAppChildRoutes, rolePreloadPaths, routeDataWarmers, viewLoaders } from './route-config'
+import { APP_TITLE, buildAppChildRoutes, hiddenPagePaths, rolePreloadPaths, routeDataWarmers, viewLoaders } from './route-config'
 import { prefetchGet } from '../api/client'
 
 const preloadedPaths = new Set()
@@ -27,7 +27,10 @@ function flattenMenuPaths(items = []) {
 
 function hasRoutePermission(user, path) {
   if (!user || path === '/dashboard' || path === '/approvals') return true
-  return flattenMenuPaths(user.navigation || []).includes(normalizePath(path))
+  const normalizedPath = normalizePath(path)
+  // 隐藏页面(菜单 menu_roles 为空)不校验菜单权限
+  if (hiddenPagePaths.has(normalizedPath)) return true
+  return flattenMenuPaths(user.navigation || []).includes(normalizedPath)
 }
 
 function scheduleIdle(task) {

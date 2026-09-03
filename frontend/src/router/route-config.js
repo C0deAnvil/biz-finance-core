@@ -13,6 +13,7 @@ const loaderMap = {
   '/packaging-configs': () => import('../views/master/PackagingConfigsView.vue'),
   '/standard-prices': () => import('../views/master/StandardPricesView.vue'),
   '/sales/orders': () => import('../views/sales/SalesOrdersView.vue'),
+  '/sales/order-timeline': () => import('../views/sales/OrderTimelineView.vue'),
   '/sales/settlements': () => import('../views/sales/SalesSettlementsView.vue'),
   '/sales/returns': () => import('../views/sales/SalesReturnsView.vue'),
   '/sales/approvals': () => import('../views/sales/SalesApprovalsView.vue'),
@@ -76,6 +77,13 @@ export const rolePreloadPaths = routeRegistry.reduce((acc, item) => {
   })
   return acc
 }, {})
+
+// 隐藏页面:菜单 menu_roles 为空,不进导航菜单,但允许直接访问
+const hiddenPagePaths = new Set(
+  routeRegistry.filter((item) => !item.menuRoles.length).map((item) => item.path)
+)
+
+export { hiddenPagePaths }
 
 export const viewLoaders = {
   '/__layout': () => import('../layouts/MainLayout.vue'),

@@ -1225,5 +1225,14 @@
   ],
   "preload_apis": [],
   "loader": "/inventory/transfers"
+ },
+ {
+  "path": "/sales/order-timeline",
+  "name": "sales-order-timeline",
+  "title": "订单全链时间轴",
+  "group": "销售管理",
+  "menu_roles": [],
+  "preload_roles": [],
+  "warmers": []
  }
 ]

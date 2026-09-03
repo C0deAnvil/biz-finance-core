@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,12 +8,17 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
+from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, PurchaseReceipt, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
 from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.organization import get_scoped_user_ids, user_in_scope
-from services.document_status import sync_sales_order_process_status
+from services.document_status import (
+    get_document_status_history,
+    get_document_status_snapshots,
+    sync_sales_order_process_status,
+)
+from services.time_utils import now_local
 from services.sales_service import (
     approve_order as approve_order_service,
     approve_sales_price_change as approve_sales_price_change_service,
@@ -651,6 +657,137 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
                     .order_by(SalesOrderPriceChangeLog.created_at.desc(), SalesOrderPriceChangeLog.id.desc())
                 ).scalars().all()
             ],
+        }
+    )
+
+
+# 全链泳道图顺序(业务流转顺序,与看板各维度一一对应)
+SALES_FLOW_LANES = [
+    ("approval", "销售审批"),
+    ("finance", "财务收款"),
+    ("placement", "置货备货"),
+    ("procurement", "采购补货"),
+    ("production", "生产制造"),
+    ("quality", "质检"),
+    ("inbound", "入库"),
+    ("shipment", "发货出库"),
+]
+
+
+# 关联单据类型 -> 单据号 解析(时间轴事件上展示关联单号,便于跳转定位)
+_DOCUMENT_NO_RESOLVERS = {
+    "fulfillment_demand": (FulfillmentDemand, "demand_no"),
+    "production_task": (ProductionTask, "task_no"),
+    "purchase_order": (PurchaseOrder, "order_no"),
+    "quality_task": (QualityTask, "quality_no"),
+    "sales_receipt_request": (SalesReceiptRequest, "request_no"),
+    "purchase_receipt": (PurchaseReceipt, "receipt_no"),
+}
+
+
+def _related_document_no(db: Session, document_type: str | None, document_id: int | None) -> str | None:
+    if not document_type or not document_id:
+        return None
+    resolver = _DOCUMENT_NO_RESOLVERS.get(document_type)
+    if not resolver:
+        return None
+    model, no_field = resolver
+    row = db.get(model, document_id)
+    if row is None:
+        return None
+    return str(getattr(row, no_field) or "")
+
+
+@router.get("/orders/{order_id}/timeline")
+def get_order_timeline(order_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """订单全链时间轴:按泳道(审批/财务/置货/采购/生产/质检/入库/发货)输出状态演进事件序列。"""
+    order = db.execute(
+        select(SalesOrder)
+        .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.operator_user))
+        .where(SalesOrder.id == order_id)
+    ).unique().scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="客户订单不存在")
+    _ensure_sales_scope(db, current_user, order.sales_user_id)
+
+    history_asc = list(
+        reversed(get_document_status_history(db, document_type="sales_order", document_id=order.id))
+    )
+    snapshots = {
+        snapshot.status_dimension: snapshot
+        for snapshot in get_document_status_snapshots(db, document_type="sales_order", document_id=order.id)
+    }
+
+    user_ids = {row.operator_user_id for row in history_asc if row.operator_user_id}
+    user_names: dict[int, str] = {}
+    if user_ids:
+        for user in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all():
+            user_names[user.id] = user.full_name or user.username
+
+    events_by_dimension: dict[str, list[dict]] = defaultdict(list)
+    for row in history_asc:
+        events_by_dimension[row.status_dimension].append(
+            {
+                "id": row.id,
+                "from_stage": row.from_stage,
+                "from_stage_label": status_label(row.from_stage),
+                "to_stage": row.to_stage,
+                "to_stage_label": status_label(row.to_stage),
+                "reason_text": row.reason_text,
+                "operator_name": user_names.get(row.operator_user_id) or "系统",
+                "related_document_type": row.related_document_type,
+                "related_document_id": row.related_document_id,
+                "related_document_no": _related_document_no(
+                    db, row.related_document_type, row.related_document_id
+                ),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+        )
+
+    lanes = []
+    for key, label in SALES_FLOW_LANES:
+        snapshot = snapshots.get(key)
+        lanes.append(
+            {
+                "key": key,
+                "label": label,
+                "current_stage": snapshot.current_stage if snapshot else None,
+                "current_stage_label": status_label(snapshot.current_stage) if snapshot else None,
+                "status_updated_at": snapshot.status_updated_at.isoformat() if snapshot and snapshot.status_updated_at else None,
+                "blocked_reason": snapshot.blocked_reason if snapshot else None,
+                "not_required": bool(snapshot and snapshot.current_stage == "not_required"),
+                "events": events_by_dimension.get(key, []),
+            }
+        )
+
+    fulfillment = snapshots.get("fulfillment")
+    return api_response(
+        data={
+            "order": {
+                "id": order.id,
+                "order_no": order.order_no,
+                "status": order.status,
+                "status_label": status_label(order.status),
+                "order_type": order.order_type,
+                "order_type_label": order_type_style(order.order_type)["label"],
+                "order_type_color": order_type_style(order.order_type)["color"],
+                "customer_name": order.customer.name if order.customer else None,
+                "sales_user": order.operator_user.full_name if order.operator_user else None,
+                "payment_type_label": payment_type_label(
+                    order.payment_type, deposit_amount=order.deposit_amount, module="sales"
+                ),
+                "total_amount": float(order.total_amount or 0),
+                "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
+                "created_at": order.created_at.isoformat() if order.created_at else None,
+                "updated_at": order.updated_at.isoformat() if order.updated_at else None,
+            },
+            "overall_stage": fulfillment.current_stage if fulfillment else order.status,
+            "overall_stage_label": status_label(fulfillment.current_stage) if fulfillment else status_label(order.status),
+            "overall_blocked_reason": fulfillment.blocked_reason if fulfillment else None,
+            "lanes": lanes,
+            "relations": _order_related_documents(db, order.id),
+            "time_start": order.created_at.isoformat() if order.created_at else None,
+            "time_end": now_local().isoformat(),
         }
     )
 

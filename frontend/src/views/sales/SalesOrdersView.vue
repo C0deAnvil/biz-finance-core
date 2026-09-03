@@ -80,6 +80,7 @@
       <el-table-column label="操作" width="320" fixed="right">
         <template #default="scope">
           <el-button size="small" text @click="viewOrder(scope.row.id)">查看</el-button>
+          <el-button size="small" text type="info" @click="openTimeline(scope.row.id)">时间轴</el-button>
           <el-button v-if="canManageOrders" size="small" text type="primary" @click="editOrder(scope.row)" :disabled="!canEditOrder(scope.row)">编辑</el-button>
           <el-button v-if="canFinanceEdit(scope.row)" size="small" text type="primary" @click="financeEditOrder(scope.row)">财务改单</el-button>
           <el-button v-if="canOpenFinanceEditDetail(scope.row)" size="small" text type="warning" @click="viewOrder(scope.row.id)">财务修改详情</el-button>
@@ -528,6 +529,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
 
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useRouteFocus } from '../../composables/useRouteFocus'
 
 import { get, post, put, remove } from '../../api/client'
@@ -540,6 +542,7 @@ import { exportRowsToCsv } from '../../utils/export'
 import { formatDateTime, formatNumber, paymentTypeLabel, statusLabel, statusType } from '../../utils/format'
 
 const auth = useAuthStore()
+const router = useRouter()
 
 // 销售单据类型配置(与后端 models.py ORDER_TYPE_STYLES 保持一致,颜色便于修改)
 const ORDER_TYPE_STYLES = {
@@ -1097,6 +1100,10 @@ async function submit() {
 async function viewOrder(id) {
   detail.value = await get(`/api/sales/orders/${id}`)
   detailVisible.value = true
+}
+
+function openTimeline(id) {
+  router.push({ path: '/sales/order-timeline', query: { id } })
 }
 
 async function openPriceApproval(row) {
