@@ -14,7 +14,6 @@
 
 from helpers import (
     allow_quality_inbound,
-    approve_operation_request,
     complete_operation_request,
     create_bom,
     create_material,
@@ -163,13 +162,11 @@ def test_production_task_full_chain(client, login):
     submit_inspection(client, login, quality_task_id=quality_task["id"], sequence_no=1, grade="A", quantity=10, passed=True)
     allow_quality_inbound(client, login, quality_task_id=quality_task["id"])
 
-    # 提交入库 → 经理审批 → 库管入库
+    # 提交入库 → 库管直接入库(入库不再需要经理审批)
     login("production01")
     resp = client.post(f"/api/production/tasks/{task_id}/inbound", json={"remark": "pytest 成品入库"})
     assert resp.status_code == 200, f"提交成品入库失败: {resp.text}"
 
-    op = find_operation_request(client, login, category="production_quality_inbound", source_id=task_id, statuses={"pending_manager_approval"})
-    approve_operation_request(client, login, request_id=op["id"])
     op = find_operation_request(client, login, category="production_quality_inbound", source_id=task_id, statuses={"pending"})
     complete_operation_request(client, login, request_id=op["id"], items=request_operation_items(op))
 

@@ -11,7 +11,6 @@
 
 from helpers import (
     allow_quality_inbound,
-    approve_operation_request,
     approve_purchase_order,
     complete_operation_request,
     confirm_purchase_order,
@@ -134,9 +133,7 @@ def test_purchase_receipt_quality_inbound_full_chain(client, login):
     receipt_detail = _get_receipt(client, login, receipt_id)
     assert receipt_detail.get("quality_status") == "approved", receipt_detail
 
-    # 生成库管入库作业(需经理审批) → 经理审批 → 库管执行
-    op = find_operation_request(client, login, category="purchase_quality_inbound", source_id=receipt_id, statuses={"pending_manager_approval"})
-    approve_operation_request(client, login, request_id=op["id"])
+    # 生成库管入库作业(入库不再需要经理审批) → 库管直接执行
     op = find_operation_request(client, login, category="purchase_quality_inbound", source_id=receipt_id, statuses={"pending"})
     complete_operation_request(client, login, request_id=op["id"], items=request_operation_items(op))
 
