@@ -33,19 +33,18 @@ from models import (
 )
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity, product_expected_available_quantity
 from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.time_utils import now_local
 
 
 
-from services.sales_service._common import _build_order_items, _build_split_items, _create_dispatch_queue, _create_fulfillment_demands, _create_inventory_placement_todos, _create_order_todos_and_notice, _ensure_order_owner_or_admin, _finance_user_ids, _finished_warehouse, _has_pending_finance_edit_confirmation, _load_order, _manager_chairman_user_ids, _resolve_sales_operator_user_id, _role_user_ids, _route_order_to_inventory_shipment, occupy_inventory_for_order
+from services.sales_service._common import _build_order_items, _build_split_items, _create_dispatch_queue, _create_fulfillment_demands, _create_inventory_placement_todos, _create_order_todos_and_notice, _ensure_order_owner_or_admin, _finance_user_ids, _finished_warehouse, _has_pending_finance_edit_confirmation, _load_order, _manager_chairman_user_ids, _resolve_sales_operator_user_id, _role_user_ids, _route_order_to_inventory_shipment, occupy_inventory_for_order, release_order_reservation
 
 
 SALES_EDITABLE_STATUSES = {"draft", "rejected"}
@@ -192,8 +191,12 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     )
 
 
-def submit_order(order_id: int, current_user: User, db: Session):
-    """草稿/已驳回订单提交财务审批。提交后不可编辑、不可删除。"""
+def submit_order(order_id: int, current_user: User, db: Session, assigned_finance_user_id: int | None = None):
+    """草稿/已驳回订单提交财务审批。提交后不可编辑、不可删除。
+
+    可指定处理该单的财务人员;不指定时由系统按待办量轮询分配,
+    避免所有单据都堆到同一个财务头上。
+    """
     order = _load_order(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
@@ -203,15 +206,22 @@ def submit_order(order_id: int, current_user: User, db: Session):
 
     order.status = "pending_confirmation"
     order.rejection_reason = None
+    order.assigned_finance_user_id = resolve_assigned_finance_user_id(db, assigned_finance_user_id)
     _create_dispatch_queue(db, order.id)
 
-    # 提交后提醒财务/董事长审批
-    approver_user_ids = list(dict.fromkeys(_role_user_ids(db, "finance", "chairman")))
+    # 待办派给指定财务;董事长始终可见以保留监管与代审能力
+    assignee_ids = [order.assigned_finance_user_id] if order.assigned_finance_user_id else _role_user_ids(db, "finance")
+    approver_user_ids = list(dict.fromkeys([*assignee_ids, *_role_user_ids(db, "chairman")]))
+    finance_name = None
+    if order.assigned_finance_user_id:
+        finance_user = db.execute(select(User).where(User.id == order.assigned_finance_user_id)).scalar_one_or_none()
+        finance_name = finance_user.full_name if finance_user else None
+    assign_hint = f"(指定财务:{finance_name})" if finance_name else ""
     for user_id in approver_user_ids:
         create_todo(
             db,
             title=f"待审批客户订单 {order.order_no}",
-            description=f"客户订单 {order.order_no} 已提交,请财务确认收款信息并审批。",
+            description=f"客户订单 {order.order_no} 已提交,请财务确认收款信息并审批。{assign_hint}",
             module="sales",
             assigned_user_id=user_id,
             business_type="sales_order_approval",
@@ -221,7 +231,7 @@ def submit_order(order_id: int, current_user: User, db: Session):
     create_notification(
         db,
         title="客户订单已提交审批",
-        content=f"客户订单 {order.order_no} 已提交,请财务确认收款信息并审批。",
+        content=f"客户订单 {order.order_no} 已提交,请财务确认收款信息并审批。{assign_hint}",
         module="sales",
         recipient_user_ids=approver_user_ids,
         created_by_id=current_user.id,
@@ -321,12 +331,13 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         raise HTTPException(status_code=409, detail="当前订单存在待审批改价，需财务审批通过后再推进")
 
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    # 财务审批与收款确认是两个独立操作:审批只判断"这单能不能做",不要求钱已到账。
+    # 改造前这里要求定金/全款必须先到账才允许审批,把两件事强行绑在一起,
+    # 导致"未收款就无法审批、不审批就不能置货"的死锁。
+    # 审批通过后订单财务状态自然为"待收定金/待收货款"(由 received_amount 实时推导),
+    # 实际收款走独立的收款确认流程(submit_sales_receipt_request → 财务登记)。
+    # 若财务在审批时顺带登记了已到账金额,则如实记账(不丢数据),但不作为审批前置条件。
     actual_amount = Decimal(payload.actual_amount or payload.voucher_amount or 0)
-    deposit_amount = Decimal(order.deposit_amount or 0)
-    if payload.decision == "approved" and payment_type == "先付定金后付尾款" and actual_amount < deposit_amount:
-        raise HTTPException(status_code=409, detail="定金到账金额不足，不能通过审批")
-    if payload.decision == "approved" and payment_type == "全款发货" and actual_amount < Decimal(order.total_amount or 0):
-        raise HTTPException(status_code=409, detail="全款发货订单到账金额不足，不能通过审批")
 
     db.add(
         SalesOrderApproval(
@@ -358,27 +369,14 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
             complete_todos(db, business_type="sales_order", business_id=order.id)
             _create_inventory_placement_todos(db, order=order)
 
-        if actual_amount > 0:
-            db.add(
-                ReceivableRecord(
-                    sales_order_id=order.id,
-                    amount=actual_amount,
-                    payment_stage="deposit" if payment_type == "先付定金后付尾款" else "full",
-                    received_at=order.approved_at,
-                    received_by_id=current_user.id,
-                    remark=f"订单确认到账：{payment_type}",
-                )
-            )
-            create_cash_flow(
-                db,
-                flow_type="incoming",
-                business_type="sales_order",
-                business_id=order.id,
-                related_no=order.order_no,
-                amount=actual_amount,
-                happened_at=order.approved_at,
-                remark=f"客户订单确认到账：{payment_type}",
-            )
+        # 审批**不再**写应收与资金流水。
+        # 原先只要入参带了 actual_amount>0 就记一笔客户回款,而前端(销售审批页与
+        # 审批中心)都会自动预填定金/全款金额,结果财务点一次"通过"就凭空虚增一笔
+        # 回款——定金单尤其严重,审批时定金根本还没收到。
+        # 审批只表示"这单可以执行";钱到账走独立的收款确认流程
+        # (submit_sales_receipt_request → 财务登记),由那里唯一负责记账。
+        # 入参里的金额仅作为审批凭证留痕(见上方 SalesOrderApproval.voucher_amount),
+        # 不产生任何账务影响,这样即便有第三方调用方仍传金额也不会造成错账。
 
         inventory_user_ids = _role_user_ids(db, "inventory")
         if queue.placement_status == "hidden":
@@ -418,6 +416,9 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         order.status = "rejected"
         order.rejection_reason = payload.note
         queue.shipment_status = "rejected"
+        # 驳回后订单可能被改动或作废,必须把已占用的库存退还,否则库存被一张
+        # 未生效的订单永久锁死(改造前没有任何释放点,占用会持续泄漏)。
+        release_order_reservation(db, order=order)
         create_notification(
             db,
             title="客户订单已驳回",
@@ -429,7 +430,6 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         )
 
     complete_todos(db, business_type="sales_order_approval", business_id=order.id)
-    sync_inventory_dimensions(db)
     write_operation_log(
         db,
         user_id=current_user.id,
@@ -488,6 +488,8 @@ def approve_sales_price_change(order_id: int, payload, current_user: User, db: S
         order.price_approval_status = "rejected"
         order.status = "rejected"
         order.rejection_reason = payload.note or "销售改价审批未通过"
+        # 同上:驳回即释放占用,避免库存被未生效订单锁死
+        release_order_reservation(db, order=order)
         for row in logs:
             row.status = "rejected"
             row.approved_by_id = current_user.id
@@ -589,6 +591,12 @@ def finance_edit_order(order_id: int, payload, current_user: User, db: Session):
     if any(quantity > 0 for quantity in shipped_qty_map.values()):
         raise HTTPException(status_code=409, detail="客户订单存在已出库明细，不能通过财务改单修改")
 
+    # 删除明细会一并销毁"本明细占了多少"的账(item.reserved_quantity),
+    # 而仓库端 inventories.reserved_quantity 不会自动跟着减。
+    # 必须先按旧明细把占用退还,否则这批货被锁死且再也找不到归属者
+    # (改单后订单仍是 pending_shipment,不会重跑审批占用)。
+    was_occupied = order.status == "pending_shipment"
+    release_order_reservation(db, order=order)
     for item in list(order.items):
         db.delete(item)
     db.flush()
@@ -610,6 +618,14 @@ def finance_edit_order(order_id: int, payload, current_user: User, db: Session):
         enforce_price_remark=False,
         create_price_approval=False,
     ) + Decimal(order.transport_fee or 0)
+    # 改单前已占用的订单,按新明细重新占用(数量可能增减)。
+    # occupy 是幂等的,重复调用不会叠加。
+    # 注意:_build_order_items 用 db.add 直接插新行,不会追加到 order.items 关系上,
+    # 必须先 expire 让关系重新加载,否则 occupy 拿到的还是刚被删掉的旧明细。
+    if was_occupied:
+        db.flush()
+        db.expire(order, ["items"])
+        occupy_inventory_for_order(db, order=order)
     updated_operator = db.execute(select(User).where(User.id == order.operator_user_id)).scalar_one_or_none()
     if order.status == "pending_price_approval":
         if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "货到付款/分期付款":

@@ -204,6 +204,11 @@
         <el-form-item label="说明">
           <el-input v-model="receiptForm.remark" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item label="指定财务">
+          <el-select v-model="receiptForm.assigned_finance_user_id" clearable placeholder="不指定则系统自动分配" style="width: 100%">
+            <el-option v-for="u in financeAssignees" :key="u.id" :label="u.is_super ? `${u.full_name}（超级财务）` : u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="receiptVisible = false">取消</el-button>
@@ -266,6 +271,11 @@
         <el-form-item label="说明">
           <el-input v-model="mergedReceiptForm.remark" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item label="指定财务">
+          <el-select v-model="mergedReceiptForm.assigned_finance_user_id" clearable placeholder="不指定则系统自动分配" style="width: 100%">
+            <el-option v-for="u in financeAssignees" :key="u.id" :label="u.is_super ? `${u.full_name}（超级财务）` : u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="mergedReceiptVisible = false">取消</el-button>
@@ -310,6 +320,7 @@ import { useRouter } from 'vue-router'
 import { get, post } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import { useFinanceAssignees } from '../../composables/useFinanceAssignees'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatNumber, statusType } from '../../utils/format'
@@ -325,13 +336,16 @@ const receiptVisible = ref(false)
 const mergedReceiptVisible = ref(false)
 const selectedOrderRows = ref([])
 
+const { financeAssignees, loadFinanceAssignees } = useFinanceAssignees()
+
 const receiptForm = reactive({
   sales_order_id: null,
   requested_amount: 0,
   payment_stage: 'deposit',
   installment_total: null,
   installment_index: null,
-  remark: ''
+  remark: '',
+  assigned_finance_user_id: null
 })
 
 const mergedReceiptForm = reactive({
@@ -340,7 +354,8 @@ const mergedReceiptForm = reactive({
   installment_total: null,
   installment_index: null,
   remark: '',
-  items: []
+  items: [],
+  assigned_finance_user_id: null
 })
 
 const canSubmitReceipt = computed(() => ['sales', 'system_admin'].includes(auth.user?.role_code))
@@ -381,6 +396,7 @@ function resetReceiptForm() {
   receiptForm.installment_total = null
   receiptForm.installment_index = null
   receiptForm.remark = ''
+  receiptForm.assigned_finance_user_id = null
 }
 
 function resetMergedReceiptForm() {
@@ -390,6 +406,7 @@ function resetMergedReceiptForm() {
   mergedReceiptForm.installment_index = null
   mergedReceiptForm.remark = ''
   mergedReceiptForm.items = []
+  mergedReceiptForm.assigned_finance_user_id = null
 }
 
 async function load() {
@@ -530,7 +547,9 @@ watch(() => mergedReceiptForm.payment_stage, (value) => {
   }
 })
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([load(), loadFinanceAssignees()])
+})
 </script>
 
 <style scoped>

@@ -83,10 +83,14 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/empty/style/css'
+import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/radio/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElRadioButton, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs'
+import ElEmpty from 'element-plus/es/components/empty/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 
 import { computed, onMounted, reactive, ref } from 'vue'

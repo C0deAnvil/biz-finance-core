@@ -42,7 +42,7 @@
           </div>
         </div>
         <div class="top-actions">
-          <el-badge :value="todoCount" :hidden="!todoCount">
+          <!-- <el-badge :value="todoCount" :hidden="!todoCount">
             <el-button plain @click="router.push('/dashboard')">待办</el-button>
           </el-badge>
           <el-popover placement="bottom-end" :width="360" trigger="click" @show="refreshNotifications">
@@ -71,8 +71,8 @@
               <div class="notification-panel-footer">
                 <el-button size="small" text @click="goNotifications">查看全部</el-button>
               </div>
-            </div>
-          </el-popover>
+            </div> -->
+          <!-- </el-popover> -->
           <el-button plain @click="refreshPage">刷新</el-button>
           <el-dropdown @command="handleCommand">
             <div class="user-trigger">

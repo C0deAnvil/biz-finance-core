@@ -54,9 +54,9 @@ from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
 from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
-from services.inventory_dimensions import sync_inventory_dimensions
+from services.inventory_availability import purchase_in_transit_map, stock_key
 
-from api.routers.inventory._common import _apply_stock_take_submission, _assigned_operation_request_ids, _can_access_operation_request, _expected_available_maps, _operation_source_detail, _scoped_warehouse_ids, _serialize_stock, _serialize_stock_take_item, _serialize_stock_take_task, _serialize_stock_take_template_item, _serialize_transaction, _stock_key
+from api.routers.inventory._common import _apply_stock_take_submission, _assigned_operation_request_ids, _can_access_operation_request, _operation_source_detail, _scoped_warehouse_ids, _serialize_stock, _serialize_stock_take_item, _serialize_stock_take_task, _serialize_stock_take_template_item, _serialize_transaction
 
 
 
@@ -76,7 +76,6 @@ def list_stocks(
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     sync_low_stock_alerts(db)
-    sync_inventory_dimensions(db)
     db.commit()
     query = (
         select(Inventory)
@@ -110,7 +109,7 @@ def list_stocks(
         total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
         query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
-    pending_sales, purchase_in_transit = _expected_available_maps(db)
+    purchase_in_transit = purchase_in_transit_map(db)
     synthetic_rows = []
     if page is None:
         scoped_ids = warehouse_ids
@@ -140,7 +139,8 @@ def list_stocks(
                         "quantity": 0,
                         "reserved_quantity": 0,
                         "available_quantity": 0,
-                        "expected_available_quantity": float(Decimal(purchase_in_transit.get(_stock_key(product_id=product.id), 0)) - Decimal(pending_sales.get(_stock_key(product_id=product.id), 0))),
+                        # 该仓库尚无库存行:实有/占用/退货在途均为 0,补货可用量只剩采购在途
+                        "expected_available_quantity": float(purchase_in_transit.get(stock_key(product_id=product.id), 0)),
                         "avg_unit_cost": float(product.price or 0), "inventory_amount": 0,
                         "safety_stock_qty": float(product.safety_stock_qty or 0), "below_safety_stock": Decimal(product.safety_stock_qty or 0) > 0, "updated_at": None,
                     }
@@ -161,10 +161,8 @@ def list_stocks(
                     "quantity": 0,
                     "reserved_quantity": 0,
                     "available_quantity": 0,
-                    "expected_available_quantity": float(
-                        Decimal(purchase_in_transit.get(_stock_key(material_id=material.id), 0))
-                        - Decimal(pending_sales.get(_stock_key(material_id=material.id), 0))
-                    ),
+                    # 同上:无库存行时补货可用量只剩采购在途
+                    "expected_available_quantity": float(purchase_in_transit.get(stock_key(material_id=material.id), 0)),
                     "avg_unit_cost": float(material.price or 0),
                     "inventory_amount": 0,
                     "safety_stock_qty": float(material.safety_stock_qty or 0),
@@ -173,7 +171,7 @@ def list_stocks(
                     }
                 )
     items = [
-            _serialize_stock(row, pending_sales=pending_sales, purchase_in_transit=purchase_in_transit)
+            _serialize_stock(row, purchase_in_transit=purchase_in_transit)
             for row in rows
         ] + synthetic_rows
     if page is not None:

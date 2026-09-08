@@ -42,6 +42,8 @@ class QualityTaskManualCreate(BaseModel):
     batch_no: str | None = Field(default=None, min_length=2, max_length=80)
     required_tests: int = Field(1, ge=1, le=20)
     remark: str | None = Field(default=None, max_length=500)
+    assigned_inspector_id: int | None = Field(default=None, description="指定质检员(不指定则由该仓库质检员自行领取)")
+    target_warehouse_id: int | None = Field(default=None, description="质检任务归属仓库(决定普通质检员可见范围)")
 
 
 class QualityAllowInbound(BaseModel):

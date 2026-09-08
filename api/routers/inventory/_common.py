@@ -39,7 +39,7 @@ from responses import api_response
 from schemas.inventory import InventoryManualOperationCreateRequest, InventoryOperationApprovalRequest, InventoryOperationHandleRequest, InventoryOperationRejectRequest, StockTakeCreate, StockTakeSubmit, StockTransferCreateRequest, TransferQualityRequest
 from schemas.production import FulfillmentDemandManualCreateRequest, SalesOrderReplenishmentCreateRequest
 from schemas.sales import PlacementActionRequest, QueueActionRequest, SalesShipmentRequest
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
+from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
 from services.replenishment_service import create_manual_fulfillment_demand, ensure_fulfillment_demand_routing, resolve_demand_progress
 from services.display import clean_display_text, inventory_request_category_label, status_label, transaction_type_label
 from services.display import payment_type_label
@@ -54,7 +54,12 @@ from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
 from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
-from services.inventory_dimensions import sync_inventory_dimensions
+from services.inventory_availability import (
+    placeable_of,
+    purchase_in_transit_map,
+    replenishment_available_of,
+    stock_key,
+)
 
 
 
@@ -86,68 +91,22 @@ def _finished_warehouse_id(db: Session) -> int:
     return get_finished_warehouse(db).id
 
 
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
-
-
-def _stock_key(*, product_id: int | None = None, material_id: int | None = None) -> tuple[str, int | None]:
-    return ("product", product_id) if product_id else ("material", material_id)
-
-
-def _expected_available_maps(db: Session) -> tuple[dict[tuple[str, int | None], Decimal], dict[tuple[str, int | None], Decimal]]:
-    pending_sales: dict[tuple[str, int | None], Decimal] = {}
-    for product_id, ordered_quantity, shipped_quantity in db.execute(
-        select(
-            SalesOrderItem.product_id,
-            func.coalesce(func.sum(SalesOrderItem.quantity), 0),
-            func.coalesce(func.sum(SalesOrderItem.shipped_quantity), 0),
-        )
-        .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
-        .where(SalesOrder.status == "pending_shipment")
-        .group_by(SalesOrderItem.product_id)
-    ).all():
-        pending_sales[_stock_key(product_id=product_id)] = max(Decimal(ordered_quantity or 0) - Decimal(shipped_quantity or 0), Decimal("0"))
-
-    purchase_in_transit: dict[tuple[str, int | None], Decimal] = {}
-    for product_id, material_id, ordered_quantity, received_quantity in db.execute(
-        select(
-            PurchaseOrderItem.product_id,
-            PurchaseOrderItem.material_id,
-            func.coalesce(func.sum(PurchaseOrderItem.quantity), 0),
-            func.coalesce(func.sum(PurchaseOrderItem.received_quantity), 0),
-        )
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
-        .where(PurchaseOrder.status.in_(["purchasing", "partial_received", "pending_purchase_confirm", "fully_received"]))
-        .group_by(PurchaseOrderItem.product_id, PurchaseOrderItem.material_id)
-    ).all():
-        purchase_in_transit[_stock_key(product_id=product_id, material_id=material_id)] = max(
-            Decimal(ordered_quantity or 0) - Decimal(received_quantity or 0),
-            Decimal("0"),
-        )
-    return pending_sales, purchase_in_transit
-
-
 def _serialize_stock(
     row: Inventory,
     *,
-    pending_sales: dict[tuple[str, int | None], Decimal] | None = None,
     purchase_in_transit: dict[tuple[str, int | None], Decimal] | None = None,
 ) -> dict:
-    available_quantity = Decimal(row.quantity or 0) - Decimal(row.reserved_quantity or 0)
+    """序列化库存行。两个可用量口径见 services/inventory_availability 模块说明。
+
+    available_quantity = 可置货量(实有-占用),决定能否交货;
+    expected_available_quantity = 补货可用量(实有+在途-占用),决定是否还要补货。
+    """
+    key = stock_key(product_id=row.product_id, material_id=row.material_id)
+    in_transit_qty = Decimal((purchase_in_transit or {}).get(key, 0))
+    available_quantity = placeable_of(row)
+    expected_available_quantity = replenishment_available_of(row, purchase_in_transit=in_transit_qty)
     item = row.product or row.material
     item_type = "product" if row.product_id else "material"
-    key = _stock_key(product_id=row.product_id, material_id=row.material_id)
-    expected_available_quantity = (
-        available_quantity
-        - Decimal((pending_sales or {}).get(key, 0))
-        + Decimal((purchase_in_transit or {}).get(key, 0))
-        + (Decimal(row.in_transit or 0) if row.product_id else Decimal("0"))  # 退货在途计入产品预计可用
-    )
     safety_stock_qty = Decimal(item.safety_stock_qty or 0) if item else Decimal("0")
     return {
         "id": row.id,
@@ -160,11 +119,9 @@ def _serialize_stock(
         "item_name": row.product.name if row.product else (row.material.name if row.material else ""),
         "quantity": float(row.quantity),
         "reserved_quantity": float(row.reserved_quantity),
-        "in_production": float(row.in_production or 0),
         "in_transit": float(row.in_transit or 0),
-        "on_order": float(row.on_order or 0),
+        "purchase_in_transit": float(in_transit_qty),
         "available_quantity": float(available_quantity),
-        "available_stock": float(row.available if row.available is not None else available_quantity),
         "expected_available_quantity": float(expected_available_quantity),
         "avg_unit_cost": float(row.avg_unit_cost),
         "inventory_amount": float(Decimal(row.quantity or 0) * Decimal(row.avg_unit_cost or 0)),
@@ -328,9 +285,9 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
         if product_ids
         else []
     )
-    available_map = {
-        row.product_id: max(Decimal(row.quantity or 0) - Decimal(row.reserved_quantity or 0), Decimal("0"))
-        for row in inventory_rows
+    # 仓库层面还没被任何订单占用的散量(可供本单继续追加占用)
+    unreserved_map = {
+        row.product_id: max(placeable_of(row), Decimal("0")) for row in inventory_rows
     }
     items = []
     any_available = False
@@ -340,7 +297,18 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
         placed = Decimal(item.placed_quantity or 0)
         shipped = Decimal(item.shipped_quantity or 0)
         remaining_to_place = max(ordered - placed - shipped, Decimal("0"))
-        available = available_map.get(item.product_id, Decimal("0"))
+        # 本明细能置的量 = 审批时为它锁定但还没置的部分 + 仓库里尚未被占用的散量。
+        # 前一项是关键:那批货已经被这张订单锁死了,别人拿不走,所以对本单来说是可用的。
+        # 漏掉它会把"库存充足"误判成"完全缺货"(库存100/订单100 → reserved=100 → 散量0 → red)。
+        reserved_for_me = max(Decimal(item.reserved_quantity or 0) - placed, Decimal("0"))
+        # 散量是全仓共享的,必须边分配边扣减:同一订单若有多条明细指向同一产品,
+        # 把整个散量重复加给每条明细会让"可置合计"超过实有库存(如实有200、
+        # 两条明细各报可置140),库管照此置货就会超卖。
+        free_pool = unreserved_map.get(item.product_id, Decimal("0"))
+        take_from_pool = min(free_pool, max(remaining_to_place - reserved_for_me, Decimal("0")))
+        if item.product_id in unreserved_map:
+            unreserved_map[item.product_id] = free_pool - take_from_pool
+        available = reserved_for_me + take_from_pool
         if remaining_to_place <= 0:
             item_status = "done"
         elif available >= remaining_to_place:
@@ -364,6 +332,7 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
                 "placed_quantity": float(placed),
                 "shipped_quantity": float(shipped),
                 "remaining_to_place": float(remaining_to_place),
+                "reserved_quantity": float(item.reserved_quantity or 0),
                 "available_quantity": float(available),
                 "shortage_quantity": float(max(remaining_to_place - available, Decimal("0"))),
                 "item_status": item_status,
@@ -378,14 +347,34 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
     return {"stock_status": stock_status, "items": items}
 
 
+def _has_open_demand(db: Session, *, sales_order_item_id: int) -> bool:
+    """该订单明细是否已存在未完成的补货需求(避免对同一缺口重复提)。
+
+    这里**包含 converted**,与 replenishment_service.has_open_product_demand 不同:
+    本判定针对"这条订单明细的这个缺口",转成采购单/生产任务后货就在路上了,
+    再问一次只会生成重复需求;而那边针对"这个产品的安全库存",
+    converted 是终态,若也算未完成会导致告警被永久压制。
+    """
+    return db.execute(
+        select(FulfillmentDemand.id).where(
+            FulfillmentDemand.sales_order_item_id == sales_order_item_id,
+            FulfillmentDemand.status.in_(["pending", "pending_material", "converted"]),
+        )
+    ).first() is not None
+
+
 def _placement_blocked_reason(db: Session, order: SalesOrder, stock_status: str) -> str | None:
     """置货被阻止的原因(库存不足 / 定金未付),无阻止时返回 None。"""
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
     if payment_type == "先付定金后付尾款":
+        # 只要"累计已收 >= 应收定金"就可以置货,不限定收款是哪个阶段登记的。
+        # 原先只统计 payment_stage == "deposit" 的记录,而财务选择"直接收款"时
+        # 登记的是 payment_stage == "direct"(库里已有 4 笔共 1 万余元),
+        # 定金口径求和恒为 0 —— 钱明明收了,置货却一直被"需先收取定金"拦住。
+        # 这里改为对该订单的全部收款求和,定金/尾款/直接收款都算数。
         received = db.execute(
             select(func.coalesce(func.sum(ReceivableRecord.amount), 0)).where(
                 ReceivableRecord.sales_order_id == order.id,
-                ReceivableRecord.payment_stage == "deposit",
             )
         ).scalar_one()
         deposit = Decimal(order.deposit_amount or 0)

@@ -54,9 +54,9 @@ from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
 from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
-from services.inventory_dimensions import sync_inventory_dimensions
 
-from api.routers.inventory._common import _finance_edit_confirm_state, _finance_edit_snapshot, _finished_warehouse_id, _order_item_name, _placement_blocked_reason, _role_user_ids, _scoped_warehouse_ids, _serialize_inventory_order_detail, _serialize_inventory_sales_order_summary, _serialize_placement_queue, _serialize_shipment_queue
+from api.routers.inventory._common import _finance_edit_confirm_state, _finance_edit_snapshot, _finished_warehouse_id, _has_open_demand, _order_item_name, _placement_blocked_reason, _role_user_ids, _scoped_warehouse_ids, _serialize_inventory_order_detail, _serialize_inventory_sales_order_summary, _serialize_placement_queue, _serialize_shipment_queue
+from services.inventory_availability import placeable_of
 
 
 
@@ -269,26 +269,31 @@ def mark_placement(
             )
             .with_for_update()
         ).scalar_one_or_none()
-        available_quantity = max(
-            Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
-            if inventory is not None
-            else Decimal("0"),
-            Decimal("0"),
-        )
-        if place_qty > available_quantity:
+        # 财务审批时已为本明细占用了库存(item.reserved_quantity),置货不再重复占用,
+        # 否则同一订单会被占两次(库存 200/订单 100 → 置货后占用 200)。
+        # 只有当累计置货量超过已占量时(例如审批时库存不足、后来补货到货),才按当前可置货量补足差额。
+        already_reserved = Decimal(item.reserved_quantity or 0)
+        placed_after = Decimal(item.placed_quantity or 0) + place_qty
+        extra_needed = max(placed_after - already_reserved, Decimal("0"))
+        placeable = max(placeable_of(inventory), Decimal("0"))
+        if extra_needed > placeable:
+            # 可支撑的置货量 = 已占量 + 现在还能占到的量
+            can_place_total = already_reserved + placeable
+            can_place_now = max(can_place_total - Decimal(item.placed_quantity or 0), Decimal("0"))
             shortage_rows.append(
                 {
                     "product_id": item.product_id,
                     "product_name": _order_item_name(item),
                     "required_quantity": float(place_qty),
-                    "available_quantity": float(available_quantity),
-                    "shortage_quantity": float(place_qty - available_quantity),
+                    "available_quantity": float(can_place_now),
+                    "shortage_quantity": float(place_qty - can_place_now),
                 }
             )
             continue
-        item.placed_quantity = Decimal(item.placed_quantity or 0) + place_qty
-        if inventory is not None:
-            inventory.reserved_quantity = Decimal(inventory.reserved_quantity or 0) + place_qty
+        item.placed_quantity = placed_after
+        if extra_needed > 0 and inventory is not None:
+            inventory.reserved_quantity = Decimal(inventory.reserved_quantity or 0) + extra_needed
+            item.reserved_quantity = already_reserved + extra_needed
         placed_any = True
 
     if shortage_rows:
@@ -305,27 +310,28 @@ def mark_placement(
             },
         )
 
-    # 3. 置货后剩余缺口自动生成补货需求(生产型/贸易型),不阻塞本次置货
+    # 3. 置货后仍有缺口 → 询问是否提补货需求(不自动生成)
     remaining_shortages = []
     for it in order.items:
         remaining = max(Decimal(it.quantity or 0) - Decimal(it.placed_quantity or 0) - Decimal(it.shipped_quantity or 0), Decimal("0"))
         if remaining <= 0:
             continue
-        inv = db.execute(
-            select(Inventory).where(
-                Inventory.warehouse_id == finished_warehouse_id,
-                Inventory.product_id == it.product_id,
-                Inventory.material_id.is_(None),
-            )
-        ).scalar_one_or_none()
-        avail = max(Decimal(inv.quantity or 0) - Decimal(inv.reserved_quantity or 0) if inv is not None else Decimal("0"), Decimal("0"))
-        if avail < remaining:
+        # 已提过且未完成的补货需求不再重复询问(需求已与本单据关联,进度可在补货需求里跟踪)。
+        # 这也顺带解决了"在途货重复补"的问题:有在途必然已存在对应的补货需求/采购单。
+        if _has_open_demand(db, sales_order_item_id=it.id):
+            continue
+        # 审批时已占用但尚未置货的那部分,已有实物库存支撑,不算缺口。
+        reserved_for_unplaced = max(
+            Decimal(it.reserved_quantity or 0) - Decimal(it.placed_quantity or 0), Decimal("0")
+        )
+        shortage = max(remaining - reserved_for_unplaced, Decimal("0"))
+        if shortage > 0:
             remaining_shortages.append({
                 "product_id": it.product_id,
                 "product_name": _order_item_name(it),
                 "required_quantity": float(remaining),
-                "available_quantity": float(avail),
-                "shortage_quantity": float(remaining - avail),
+                "available_quantity": float(reserved_for_unplaced),
+                "shortage_quantity": float(shortage),
             })
     if remaining_shortages:
         db.commit()
@@ -424,9 +430,23 @@ def create_queue_replenishment_demands(
     )
     db.commit()
     sync_sales_order_process_status(db, order, updated_by_id=current_user.id)
+    # 区分"新建"与"复用已有未完成需求(去重)":
+    # 原先一律报"已提 N 条",库管重复点击时看到同样的成功提示,
+    # 分不清究竟提没提、是不是提重了。
+    new_rows = [row for row in created if not row.get("reused")]
+    reused_rows = [row for row in created if row.get("reused")]
+    if new_rows and reused_rows:
+        msg = f"已提 {len(new_rows)} 条补货需求；另有 {len(reused_rows)} 条已存在未完成需求，未重复提交"
+    elif new_rows:
+        msg = f"已提 {len(new_rows)} 条补货需求"
+    elif reused_rows:
+        reused_nos = "、".join(row["demand_no"] for row in reused_rows)
+        msg = f"该订单已存在未完成的补货需求（{reused_nos}），未重复提交"
+    else:
+        msg = "当前没有需要补货的缺口"
     return api_response(
-        msg=f"已提 {len(created)} 条补货需求",
-        data={"demands": created},
+        msg=msg,
+        data={"demands": created, "new_count": len(new_rows), "reused_count": len(reused_rows)},
     )
 
 
@@ -543,8 +563,12 @@ def mark_shipment(
             )
             .with_for_update()
         ).scalar_one_or_none()
-        available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0) if inventory else Decimal("0")
-        if ship_quantity > available_quantity:
+        # 要发的货正是审批时为本单锁定的,因此本明细自己的占用额度算可发量;
+        # 若按"实有-总占用"判断,自己锁的货反而会被当成别人的,导致发不出去。
+        reserved_for_me = Decimal(order_item.reserved_quantity or 0)
+        unreserved = max(placeable_of(inventory), Decimal("0"))
+        shippable_quantity = reserved_for_me + unreserved
+        if ship_quantity > shippable_quantity:
             raise HTTPException(status_code=409, detail=f"{_order_item_name(order_item)} 当前可用库存不足")
         apply_inventory_change(
             db,
@@ -559,11 +583,15 @@ def mark_shipment(
             related_id=order.id,
             created_by_id=current_user.id,
         )
-        if inventory is not None:
-            inventory.reserved_quantity = max(
-                Decimal(inventory.reserved_quantity or 0) - ship_quantity,
-                Decimal("0"),
-            )
+        # 发货即"占用兑现":实有已扣,占用同步释放(只释放本明细实际占的那部分)
+        release_qty = min(ship_quantity, reserved_for_me)
+        if release_qty > 0:
+            order_item.reserved_quantity = reserved_for_me - release_qty
+            if inventory is not None:
+                inventory.reserved_quantity = max(
+                    Decimal(inventory.reserved_quantity or 0) - release_qty,
+                    Decimal("0"),
+                )
         order_item.shipped_quantity = Decimal(order_item.shipped_quantity or 0) + ship_quantity
         total_shipped_this_time += ship_quantity
 
@@ -591,7 +619,6 @@ def mark_shipment(
         category="success" if all_shipped else "info",
     )
     sync_sales_order_process_status(db, order, updated_by_id=current_user.id)
-    sync_inventory_dimensions(db)
     db.commit()
     return api_response(msg="发货出库已完成", data={"order_id": order.id, "status": order.status, "all_shipped": all_shipped})
 

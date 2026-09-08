@@ -366,7 +366,15 @@ function exportTable() {
 
 onMounted(async () => {
   if (canCreate.value) {
-    salesOrders.value = await get('/api/sales/orders')
+    // 该接口返回 {items, pagination} 对象,不是数组:直接赋值会把对象当数组遍历,
+    // 下拉框只会出现两条 "undefined / undefined"。
+    // 且默认 tab=draft,而能退货的是已发货/已完成的单,必须显式取 shipping+completed。
+    // page_size 后端上限 100,传更大会 422
+    const [shipped, done] = await Promise.all([
+      get('/api/sales/orders?tab=shipping&page=1&page_size=100'),
+      get('/api/sales/orders?tab=completed&page=1&page_size=100')
+    ])
+    salesOrders.value = [...(shipped.items || []), ...(done.items || [])]
   }
   await load()
 })

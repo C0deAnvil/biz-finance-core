@@ -10,7 +10,7 @@ from database import get_db
 from dependencies import get_current_user, require_roles
 from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, PurchaseReceipt, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderApproval, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
 from responses import api_response
-from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
+from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderSubmitRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
 from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.organization import get_scoped_user_ids, user_in_scope
 from services.document_status import (
@@ -436,7 +436,7 @@ def order_flow_board(
 
 @router.get("/orders")
 def list_orders(
-    tab: str = Query(default="reviewing", pattern="^(reviewing|shipping|completed|all)$"),
+    tab: str = Query(default="draft", pattern="^(draft|reviewing|shipping|completed|all)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -454,7 +454,10 @@ def list_orders(
         if current_user.id not in scoped_user_ids:
             scoped_user_ids = [*scoped_user_ids, current_user.id]
         query = query.where(SalesOrder.sales_user_id.in_(scoped_user_ids))
+    # draft 必须单独成一个 tab:建单先落 draft,若任何 tab 都不含它,
+    # 销售保存草稿后订单就从列表消失,再也无法编辑/提交/删除。
     tab_filters = {
+        "draft": SalesOrder.status.in_(["draft"]),
         "reviewing": SalesOrder.status.in_(["pending_confirmation", "pending_price_approval", "rejected"]),
         "shipping": SalesOrder.status.in_(["pending_shipment", "shipped"]),
         "completed": SalesOrder.status.in_(["completed", "cancelled"]),
@@ -462,6 +465,21 @@ def list_orders(
     }
     query = query.where(tab_filters[tab])
     total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+    # 各 tab 的单据数(供前端页签角标使用:原先前端用当页行数充当总数,
+    # 未选中的页签恒显示 0,选中的也只显示当页条数)
+    tab_counts = {
+        key: db.execute(
+            select(func.count()).select_from(
+                select(SalesOrder.id)
+                .where(
+                    SalesOrder.sales_user_id.in_(scoped_user_ids) if scoped_user_ids is not None else True,
+                    condition,
+                )
+                .subquery()
+            )
+        ).scalar_one()
+        for key, condition in tab_filters.items()
+    }
     rows = db.execute(
         query.offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
@@ -543,6 +561,7 @@ def list_orders(
             for row in rows
             ],
             "pagination": {"page": page, "page_size": page_size, "total": total},
+            "tab_counts": tab_counts,
         }
     )
 
@@ -801,11 +820,17 @@ def create_order(payload: SalesOrderCreate, current_user: User = Depends(require
 @router.post("/orders/{order_id}/submit")
 def submit_order(
     order_id: int,
+    payload: SalesOrderSubmitRequest | None = None,
     current_user: User = Depends(require_roles("sales")),
     db: Session = Depends(get_db),
 ):
-    """草稿/已驳回订单提交财务审批。"""
-    return submit_order_service(order_id, current_user, db)
+    """草稿/已驳回订单提交财务审批(可指定处理该单的财务人员)。"""
+    return submit_order_service(
+        order_id,
+        current_user,
+        db,
+        assigned_finance_user_id=payload.assigned_finance_user_id if payload else None,
+    )
 
 
 @router.put("/orders/{order_id}")

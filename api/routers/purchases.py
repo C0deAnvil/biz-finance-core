@@ -43,23 +43,15 @@ from services.purchase_service import (
     submit_purchase_payment_request as submit_purchase_payment_request_service,
     update_purchase_order as update_purchase_order_service,
 )
-from services.core import complete_todos, create_notification, sync_low_stock_alerts, write_operation_log
+from services.core import _role_user_ids, complete_todos, create_notification, sync_low_stock_alerts, write_operation_log
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.workflow import purchase_arrival_status, purchase_flow_steps
 from services.workflow_repair import repair_fulfillment_demand_workflows
 from services.time_utils import now_local
+from services.inventory_availability import purchase_in_transit_map, stock_key
 
 
 router = APIRouter(prefix="/purchases", tags=["采购"])
-
-
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def _ensure_purchase_scope(db: Session, current_user: User, owner_user_id: int | None) -> None:
@@ -104,41 +96,6 @@ def _settlement_status(total_amount: Decimal, paid_amount: Decimal) -> str:
     return "partial_settled"
 
 
-def _stock_key(*, product_id: int | None = None, material_id: int | None = None) -> tuple[str, int | None]:
-    return ("product", product_id) if product_id else ("material", material_id)
-
-
-def _expected_available_maps(db: Session) -> tuple[dict[tuple[str, int | None], Decimal], dict[tuple[str, int | None], Decimal]]:
-    pending_sales: dict[tuple[str, int | None], Decimal] = {}
-    for product_id, ordered_quantity, shipped_quantity in db.execute(
-        select(
-            SalesOrderItem.product_id,
-            func.coalesce(func.sum(SalesOrderItem.quantity), 0),
-            func.coalesce(func.sum(SalesOrderItem.shipped_quantity), 0),
-        )
-        .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
-        .where(SalesOrder.status == "pending_shipment")
-        .group_by(SalesOrderItem.product_id)
-    ).all():
-        pending_sales[_stock_key(product_id=product_id)] = max(Decimal(ordered_quantity or 0) - Decimal(shipped_quantity or 0), Decimal("0"))
-
-    purchase_in_transit: dict[tuple[str, int | None], Decimal] = {}
-    for product_id, material_id, ordered_quantity, received_quantity in db.execute(
-        select(
-            PurchaseOrderItem.product_id,
-            PurchaseOrderItem.material_id,
-            func.coalesce(func.sum(PurchaseOrderItem.quantity), 0),
-            func.coalesce(func.sum(PurchaseOrderItem.received_quantity), 0),
-        )
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
-        .where(PurchaseOrder.status.in_(["purchasing", "partial_received", "pending_purchase_confirm", "fully_received"]))
-        .group_by(PurchaseOrderItem.product_id, PurchaseOrderItem.material_id)
-    ).all():
-        purchase_in_transit[_stock_key(product_id=product_id, material_id=material_id)] = max(
-            Decimal(ordered_quantity or 0) - Decimal(received_quantity or 0),
-            Decimal("0"),
-        )
-    return pending_sales, purchase_in_transit
 
 
 @router.get("/orders")
@@ -729,7 +686,7 @@ def list_purchase_fulfillment_demands(
     rows = db.execute(query).unique().scalars().all()
     raw_warehouse = get_raw_warehouse(db)
     finished_warehouse = get_finished_warehouse(db)
-    pending_sales, purchase_in_transit = _expected_available_maps(db)
+    purchase_in_transit = purchase_in_transit_map(db)
 
     def _shortage_level(shortage: float, available: float) -> str:
         """红=完全不足 / 黄=部分不足 / 绿=充足"""
@@ -835,7 +792,7 @@ def list_purchase_fulfillment_demands(
         material = usage.material
         inventory = inventory_map.get(usage.material_id)
         available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0) if inventory else Decimal("0")
-        expected_available_quantity = available_quantity + Decimal(purchase_in_transit.get(_stock_key(material_id=usage.material_id), 0))
+        expected_available_quantity = available_quantity + Decimal(purchase_in_transit.get(stock_key(material_id=usage.material_id), 0))
         shortage_quantity = max(Decimal(usage.requested_quantity or 0) - available_quantity, Decimal("0"))
         raw_demands.append(
             {
@@ -968,13 +925,22 @@ def list_purchase_fulfillment_demands(
                 "material_code": None,
                 "item_name": row.product.name if row.product else None,
                 "shortage_quantity": float(row.shortage_quantity or 0),
+                # 分批补货进度(见 production.py 同名字段说明)
+                "required_quantity": float(row.required_quantity or row.shortage_quantity or 0),
+                "fulfilled_quantity": float(row.fulfilled_quantity or 0),
+                "pending_quantity": float(
+                    max(
+                        Decimal(row.required_quantity or row.shortage_quantity or 0)
+                        - Decimal(row.fulfilled_quantity or 0),
+                        Decimal("0"),
+                    )
+                ),
                 "safety_stock_qty": float(row.product.safety_stock_qty or 0) if row.product else 0,
                 "expected_available_quantity": float(
                     (
                         Decimal((product_inventory_map.get(row.product_id).quantity if product_inventory_map.get(row.product_id) else 0) or 0)
                         - Decimal((product_inventory_map.get(row.product_id).reserved_quantity if product_inventory_map.get(row.product_id) else 0) or 0)
-                        - Decimal(pending_sales.get(_stock_key(product_id=row.product_id), 0))
-                        + Decimal(purchase_in_transit.get(_stock_key(product_id=row.product_id), 0))
+                        + Decimal(purchase_in_transit.get(stock_key(product_id=row.product_id), 0))
                     )
                 ),
                 "shortage_level": _shortage_level(
@@ -983,8 +949,7 @@ def list_purchase_fulfillment_demands(
                         (
                             Decimal((product_inventory_map.get(row.product_id).quantity if product_inventory_map.get(row.product_id) else 0) or 0)
                             - Decimal((product_inventory_map.get(row.product_id).reserved_quantity if product_inventory_map.get(row.product_id) else 0) or 0)
-                            - Decimal(pending_sales.get(_stock_key(product_id=row.product_id), 0))
-                            + Decimal(purchase_in_transit.get(_stock_key(product_id=row.product_id), 0))
+                                + Decimal(purchase_in_transit.get(stock_key(product_id=row.product_id), 0))
                         )
                     ),
                 ),

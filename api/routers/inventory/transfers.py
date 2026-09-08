@@ -54,7 +54,6 @@ from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
 from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
-from services.inventory_dimensions import sync_inventory_dimensions
 
 from api.routers.inventory._common import _transfer_status_label
 

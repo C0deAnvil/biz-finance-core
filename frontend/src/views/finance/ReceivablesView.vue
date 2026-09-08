@@ -11,6 +11,22 @@
         <el-button @click="load">刷新</el-button>
         <el-button v-if="canRegisterReceipt" type="success" plain @click="openDirectRegisterDialog">登记回款</el-button>
       </template>
+      <el-row :gutter="12" class="filters-row">
+        <el-col :span="8">
+          <!-- 财务对账要按时间段查:原先本页只有弹窗里的"收付款日期"输入框,
+               列表本身无法按区间过滤。 -->
+          <el-date-picker
+            v-model="filters.dateRange"
+            type="daterange"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+            @change="load"
+          />
+        </el-col>
+      </el-row>
       <el-table :data="pagedPendingOrders" stripe @selection-change="handlePendingSelectionChange">
         <el-table-column v-if="canRegisterReceipt" type="selection" width="52" />
         <el-table-column type="expand" width="52">
@@ -559,6 +575,23 @@ const receiptRequestSectionRef = ref(null)
 const receivableSummary = reactive({})
 const pendingOrders = ref([])
 const pendingOrderPagination = reactive({ page: 1, pageSize: 50 })
+// 日期区间筛选(后端 /api/finance/receivables 已支持 date_from/date_to)
+const filters = reactive({ dateRange: [] })
+
+/** 把日期区间拼进查询串,空值不传。 */
+function dateRangeParams() {
+  const params = new URLSearchParams()
+  if (Array.isArray(filters.dateRange) && filters.dateRange.length === 2) {
+    if (filters.dateRange[0]) params.set('date_from', filters.dateRange[0])
+    if (filters.dateRange[1]) params.set('date_to', filters.dateRange[1])
+  }
+  return params.toString()
+}
+
+function receivablesUrl() {
+  const extra = dateRangeParams()
+  return `/api/finance/receivables?pending_page=${pendingOrderPagination.page}&pending_page_size=${pendingOrderPagination.pageSize}${extra ? `&${extra}` : ''}`
+}
 const pendingOrderTotal = ref(0)
 const receiptRequests = ref([])
 const records = ref([])
@@ -681,7 +714,7 @@ async function applyFocus() {
 }
 
 async function loadReceivables() {
-  const receivableData = await get(`/api/finance/receivables?pending_page=${pendingOrderPagination.page}&pending_page_size=${pendingOrderPagination.pageSize}`)
+  const receivableData = await get(receivablesUrl())
   Object.assign(receivableSummary, receivableData.summary || {})
   pendingOrders.value = receivableData.pending_orders || []
   pendingOrderTotal.value = Number(receivableData.pending_orders_pagination?.total || receivableData.summary?.pending_order_count || 0)
@@ -698,7 +731,7 @@ async function handlePendingPaginationChange({ page, pageSize }) {
 
 async function load() {
   const [receivableData, refundData, methodData] = await Promise.all([
-    get(`/api/finance/receivables?pending_page=${pendingOrderPagination.page}&pending_page_size=${pendingOrderPagination.pageSize}`),
+    get(receivablesUrl()),
     get('/api/finance/refunds'),
     get('/api/finance/payment-method-options?method_type=receipt')
   ])
@@ -971,6 +1004,7 @@ onMounted(load)
 <style scoped>
 .page-stack { display: flex; flex-direction: column; gap: 16px; }
 .summary-row { margin-bottom: 0; }
+.filters-row { margin-bottom: 16px; }
 .summary-label { color: #909399; margin-bottom: 8px; }
 .summary-value { font-size: 28px; font-weight: 700; color: #0f5c90; }
 .mb-16 { margin-bottom: 16px; }

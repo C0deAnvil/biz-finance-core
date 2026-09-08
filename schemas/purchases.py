@@ -106,6 +106,7 @@ class PurchaseMergedPaymentRequestCreate(BaseModel):
     supplier_id: int | None = None
     items: list[PurchaseMergedPaymentItem]
     payment_detail_remark: str | None = None
+    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
 
 
 class PurchasePaymentApprovalRequest(BaseModel):

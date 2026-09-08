@@ -6,7 +6,7 @@
       <el-col :span="8"><el-card shadow="hover"><div class="summary-label">当前角色</div><div class="summary-value text-primary">{{ auth.user?.role_name || '-' }}</div></el-card></el-col>
     </el-row>
 
-    <PageSection title="审批中心" description="统一处理待审批单据，详情均为只读态。">
+    <PageSection title="审批中心" description="统一处理待审批单据；单据内容只读，审批意见与实付/实收金额、批准数量可在详情中填写。">
       <template #actions>
         <el-date-picker
           v-model="historyRange"
@@ -112,6 +112,28 @@
           </el-table-column>
         </el-table>
 
+        <!-- 可编辑审批字段。改造前本抽屉没有任何输入框:金额/数量全靠
+             buildDecisionPayload 自动推算,审批意见更是完全无法填写,
+             所以销售/采购/生产才各自保留了专用审批页。 -->
+        <el-form v-if="canDecideActiveApproval" label-width="110px" class="mt-16 decision-form">
+          <el-form-item v-if="decisionAmountField" :label="decisionAmountField.label">
+            <el-input-number v-model="decisionForm.amount" :min="0" :precision="2" style="width: 100%" />
+            <div class="decision-hint">{{ decisionAmountField.hint }}</div>
+          </el-form-item>
+          <el-form-item v-if="decisionQuantityField" :label="decisionQuantityField.label">
+            <el-input-number v-model="decisionForm.quantity" :min="0" :precision="2" style="width: 100%" />
+            <div class="decision-hint">{{ decisionQuantityField.hint }}</div>
+          </el-form-item>
+          <el-form-item label="审批意见" :required="pendingDecision === 'rejected'">
+            <el-input
+              v-model="decisionForm.note"
+              type="textarea"
+              :rows="3"
+              placeholder="驳回时必填，请说明原因以便发起人修改后重新提交"
+            />
+          </el-form-item>
+        </el-form>
+
         <div v-if="canDecideActiveApproval" class="drawer-actions">
           <DelayedActionButton type="success" @click="handleDrawerDecision('approved')">通过</DelayedActionButton>
           <DelayedActionButton type="danger" @click="handleDrawerDecision('rejected')">驳回</DelayedActionButton>
@@ -123,6 +145,7 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/button/style/css'
@@ -131,18 +154,25 @@ import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/drawer/style/css'
 import 'element-plus/es/components/row/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
+import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
+import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 
@@ -167,6 +197,10 @@ const activeApproval = ref(null)
 const detailPayload = ref(null)
 const detailVisible = ref(false)
 const decisionSubmitting = ref(false)
+// 审批抽屉里可编辑的字段值(金额/数量/意见)
+const decisionForm = reactive({ amount: 0, quantity: 0, note: '' })
+// 记录当前正要执行哪个决定,用于"驳回时意见必填"的红星提示
+const pendingDecision = ref('approved')
 
 const focusApprovalId = computed(() => String(route.query.focusId || ''))
 const {
@@ -367,6 +401,8 @@ async function openDetail(row) {
   activeApproval.value = row
   const payload = await get(`/api/approvals/${row.id}`)
   detailPayload.value = payload.detail || {}
+  // 预填放在 detailPayload 赋值之后:默认值要用到申请金额/数量
+  resetDecisionForm()
   detailVisible.value = true
 }
 
@@ -388,27 +424,59 @@ function openAttachment(id) {
   window.open(`/api/files/${id}`, '_blank')
 }
 
-function buildDecisionPayload(decision) {
+const AMOUNT_APPROVAL_TYPES = {
+  purchase_payment_request: {
+    label: '实付金额',
+    hint: '默认取申请金额，财务可按实际出账金额修正',
+  },
+  sales_receipt_request: {
+    label: '实收金额',
+    hint: '默认取申请金额，财务可按实际到账金额修正',
+  },
+}
+
+const QUANTITY_APPROVAL_TYPES = {
+  production_material_request: {
+    label: '批准数量',
+    hint: '默认取申请数量，可按实际批准量调整',
+  },
+  production_special_request: {
+    label: '批准数量',
+    hint: '默认取申请数量，可按实际批准量调整',
+  },
+}
+
+const decisionAmountField = computed(() => AMOUNT_APPROVAL_TYPES[activeApproval.value?.approval_type] || null)
+const decisionQuantityField = computed(() => QUANTITY_APPROVAL_TYPES[activeApproval.value?.approval_type] || null)
+
+/** 打开抽屉时用申请值预填可编辑字段(仅作默认值,最终以用户所填为准)。 */
+function resetDecisionForm() {
   const summary = activeApproval.value?.summary || {}
   const detail = detailPayload.value || {}
+  decisionForm.amount = Number(
+    summary.requested_amount || summary.actual_amount || detail.requested_amount || detail.actual_amount || 0
+  )
+  decisionForm.quantity = Number(
+    summary.requested_quantity || summary.approved_quantity || detail.requested_quantity || detail.approved_quantity || 0
+  )
+  decisionForm.note = ''
+  pendingDecision.value = 'approved'
+}
+
+function buildDecisionPayload(decision) {
   const approvalType = activeApproval.value?.approval_type || ''
-  if (approvalType === 'sales_order') {
-    const amount = Number(summary.actual_amount || summary.voucher_amount || detail.actual_amount || detail.requested_amount || detail.total_amount || detail.deposit_amount || 0)
-    return { actual_amount: amount, voucher_amount: amount }
+  const payload = { note: decisionForm.note, remark: decisionForm.note }
+  // 销售订单审批不提交金额:后端见 actual_amount>0 就写一笔应收+资金流水,
+  // 而审批只代表"这单可以做",不代表钱已到账(定金单此时定金还没收)。
+  // 实际收款走"收款确认申请 → 财务登记"这条独立流程。
+  if (approvalType === 'sales_order') return payload
+  if (AMOUNT_APPROVAL_TYPES[approvalType]) {
+    payload.actual_amount = Number(decisionForm.amount || 0)
   }
-  if (approvalType === 'purchase_payment_request') {
-    const amount = Number(summary.requested_amount || summary.actual_amount || detail.requested_amount || detail.actual_amount || 0)
-    return { actual_amount: amount }
+  if (QUANTITY_APPROVAL_TYPES[approvalType]) {
+    payload.approved_quantity = Number(decisionForm.quantity || 0)
   }
-  if (approvalType === 'sales_receipt_request') {
-    const amount = Number(summary.requested_amount || summary.actual_amount || detail.requested_amount || detail.actual_amount || 0)
-    return { actual_amount: amount }
-  }
-  if (approvalType === 'production_material_request' || approvalType === 'production_special_request') {
-    const quantity = Number(summary.requested_quantity || summary.approved_quantity || detail.requested_quantity || detail.approved_quantity || 0)
-    return { approved_quantity: quantity }
-  }
-  return {}
+  return payload
 }
 
 async function postDecision(decision, payload = {}, options = {}) {
@@ -480,6 +548,12 @@ function markActiveApprovalHandled(decision) {
 
 async function handleDrawerDecision(decision) {
   if (!activeApproval.value) return
+  pendingDecision.value = decision
+  // 驳回必须说明原因,否则发起人不知道该改什么
+  if (decision === 'rejected' && !String(decisionForm.note || '').trim()) {
+    ElMessage.warning('请填写驳回原因')
+    return
+  }
   await postDecision(decision, buildDecisionPayload(decision))
 }
 
@@ -505,4 +579,7 @@ watch(() => route.query.focusId, async () => {
 .mt-16 { margin-top: 16px; }
 .drawer-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #ebeef5; }
 .page-stack :deep(.is-focused-row) > td { background: #fff8e1 !important; }
+
+.decision-form { border-top: 1px solid var(--el-border-color-lighter); padding-top: 16px; }
+.decision-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.5; }
 </style>

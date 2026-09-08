@@ -199,12 +199,19 @@ def can_manage_user_modules(db: Session, manager: User, target_user: User) -> bo
 
 
 def get_inventory_scope_warehouse_ids(db: Session, current_user: User) -> list[int] | None:
+    """返回该用户可操作的仓库 id 列表;None 表示不受仓库限制(全部可见)。
+
+    普通库管、普通质检员都按所属部门的仓库范围受限;
+    对应的超级角色(inventory_super / quality_super)不受限。
+    改造前本函数只对 inventory 生效,对 quality 直接返回 None,
+    导致质检模块的仓库过滤形同虚设——普通质检员能看到所有仓库的任务。
+    """
     if is_system_admin(current_user) or is_master_data_admin(current_user):
         return None
     role_code = current_user.role.code if current_user.role else None
-    if role_code == "inventory_super":
-        return None  # 库存超级:所有仓库
-    if role_code != "inventory" or current_user.department_id is None:
+    if role_code in {"inventory_super", "quality_super"}:
+        return None  # 超级角色:所有仓库
+    if role_code not in {"inventory", "quality"} or current_user.department_id is None:
         return None
     department_map, _ = _department_structures(db)
     warehouse_scope = ""

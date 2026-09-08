@@ -52,7 +52,6 @@ from schemas.purchases import (
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps

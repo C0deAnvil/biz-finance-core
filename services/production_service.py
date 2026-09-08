@@ -40,8 +40,7 @@ from schemas.production import (
     SpecialMaterialApproval,
     SpecialMaterialRequestCreate,
 )
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
-from services.inventory_dimensions import sync_inventory_dimensions
+from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.organization import get_inventory_scope_warehouse_ids, is_system_admin
 from services.quality_workflow import create_production_quality_task, resolve_quality_recipients_for_warehouse
 from services.time_utils import now_local
@@ -95,15 +94,6 @@ _PRODUCTION_TASK_NON_RESERVING_STATUSES = {
     "reworked",
     "rework_pending",
 }
-
-
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def _inventory_user_ids_for_warehouse(db: Session, warehouse_id: int) -> list[int]:
@@ -755,6 +745,10 @@ def create_task(
         status="pending_material",
         warehouse_id=warehouse_id,
         created_by_id=current_user.id,
+        # 必须回填来源补货需求:resolve_demand_progress / _batch_demand_progress_map
+        # 都靠这个外键 join 才能推导生产型补货需求的实时进度。
+        # 改造前该字段从未被赋值,导致生产型需求的进度恒为空。
+        fulfillment_demand_id=demand.id if demand is not None else None,
         notes=payload.notes or (f"来源客户订单：{order.order_no}" if order and source_type == "sales_order" else None),
     )
     db.add(task)
@@ -777,16 +771,24 @@ def create_task(
             )
         )
     if demand is not None:
-        remaining_quantity = max(Decimal(demand.shortage_quantity or 0) - Decimal(payload.planned_quantity), Decimal("0"))
+        # 分批生产的记账:已补货量累加,待补量 = 原始需求量 - 已补货量。
+        # 改造前直接原地递减 shortage_quantity,原始需求量被覆盖,
+        # "需求 100 已产 10 还差 90"这类进度事后无法还原。
+        required_quantity = Decimal(demand.required_quantity or 0) or Decimal(demand.shortage_quantity or 0)
+        demand.required_quantity = required_quantity
+        demand.fulfilled_quantity = Decimal(demand.fulfilled_quantity or 0) + Decimal(payload.planned_quantity)
+        remaining_quantity = max(required_quantity - Decimal(demand.fulfilled_quantity or 0), Decimal("0"))
+        demand.shortage_quantity = remaining_quantity
         demand.processed_by_id = current_user.id
         demand.process_note = (
-            f"已创建生产任务 {task.task_no}，本批 {float(payload.planned_quantity)}，剩余 {float(remaining_quantity)}。"
+            f"已创建生产任务 {task.task_no}，本批 {float(payload.planned_quantity)}，"
+            f"累计已补 {float(demand.fulfilled_quantity)}/{float(required_quantity)}，剩余 {float(remaining_quantity)}。"
         )
-        if remaining_quantity <= 0:
+        fully_covered = remaining_quantity <= 0
+        if fully_covered:
             demand.status = "converted"
             complete_todos(db, business_type="fulfillment_demand", business_id=demand.id)
         else:
-            demand.shortage_quantity = remaining_quantity
             demand.status = "pending_material" if payload.create_raw_material_demands else "pending"
         # 需求:转任务时原料不足→提交原料补货需求后,生产补货需求标记"待补料"
         if payload.create_raw_material_demands and payload.raw_material_demands:
@@ -797,7 +799,11 @@ def create_task(
                 raw_material_demands=payload.raw_material_demands,
                 current_user=current_user,
             )
-            demand.status = "pending_material"
+            # 成品需求已全部转成任务时不要退回"待补料":本单的成品缺口已经补齐了,
+            # 原料补货只影响这些任务能否开工,不代表补货需求本身还没处理。
+            # (改造前这里无条件覆盖,已 converted 的需求会被打回 pending_material。)
+            if not fully_covered:
+                demand.status = "pending_material"
             demand.process_note = (
                 f"{demand.process_note or ''}\n已提交原料补货需求: {', '.join(raw_demand_nos)}。"
                 f"原料到货质检合格后可继续安排剩余 {float(remaining_quantity)} 生产。"
@@ -1269,6 +1275,7 @@ def complete_task(
             production_task=task,
             submitted_by_id=current_user.id,
             required_tests=required_tests,
+            assigned_inspector_id=payload.assigned_inspector_id,
         )
         quality_user_ids = resolve_workflow_recipients(
             db,
@@ -1279,12 +1286,16 @@ def complete_task(
             business_type="quality_task",
             business_id=quality_task.id,
         )
-        # 按仓库路由质检员：优先该仓绑定的质检
-        quality_user_ids = resolve_quality_recipients_for_warehouse(
-            db,
-            warehouse_id=task.warehouse_id,
-            fallback_user_ids=quality_user_ids,
-        )
+        # 指定了质检员就只派给他(需求:由指定质检员或超级质检员处理);
+        # 未指定时按仓库路由,优先该仓绑定的质检员
+        if quality_task.assigned_inspector_id:
+            quality_user_ids = [quality_task.assigned_inspector_id]
+        else:
+            quality_user_ids = resolve_quality_recipients_for_warehouse(
+                db,
+                warehouse_id=task.warehouse_id,
+                fallback_user_ids=quality_user_ids,
+            )
         for user_id in quality_user_ids:
             create_todo(
                 db,
@@ -1361,7 +1372,6 @@ def complete_task(
             "batch_no": task.batch_no,
         },
     )
-    sync_inventory_dimensions(db)
     db.commit()
     return api_response(
         data={

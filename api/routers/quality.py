@@ -37,7 +37,7 @@ from schemas.quality import (
     QualityScrapCreate,
     QualityTaskManualCreate,
 )
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, write_operation_log
+from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_assigned_inspector_id, write_operation_log
 from services.display import clean_display_text, status_label
 from services.quality_workflow import (
     resolve_quality_recipients_for_warehouse,
@@ -57,14 +57,28 @@ from services.workflow_repair import repair_quality_workflows
 
 router = APIRouter(prefix="/quality", tags=["quality"])
 
+QUALITY_ASSIGNABLE_ROLE_CODES = ("quality", "quality_super")
 
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
+
+@router.get("/assignable-inspectors")
+def list_assignable_inspectors(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """可被指派质检任务的在岗人员(普通质检员 + 超级质检员)。
+
+    申请质检的发起人可能是采购、生产、库管等任何角色,故这里只要求登录、不限角色,
+    与 /api/finance/assignable-users 的处理方式一致。仅返回 id 与姓名。
+    """
+    users = db.execute(
+        select(User)
+        .join(Role, User.role_id == Role.id)
+        .where(Role.code.in_(QUALITY_ASSIGNABLE_ROLE_CODES), User.is_active.is_(True))
+        .order_by(User.id.asc())
+    ).scalars().all()
+    return api_response(
+        data=[{"id": user.id, "full_name": user.full_name or user.username} for user in users]
+    )
 
 
 def _purchase_quality_target_warehouse_id(db: Session, order_item: PurchaseOrderItem) -> int:
@@ -162,6 +176,18 @@ def _serialize_quality_task(
         "warehouse_name": purchase_meta.get("warehouse_name") or warehouse_name,
         "display_specification": purchase_meta.get("display_specification"),
         "required_tests": task.required_tests,
+        # 指定质检员(派给谁检)与归属仓库,供前端展示与权限提示
+        "assigned_inspector_id": task.assigned_inspector_id,
+        # 只有 id 前端没法显示,补上姓名与仓库名
+        "assigned_inspector_name": (
+            (task.assigned_inspector.full_name or task.assigned_inspector.username)
+            if getattr(task, "assigned_inspector", None)
+            else None
+        ),
+        "target_warehouse_id": task.target_warehouse_id,
+        "target_warehouse_name": (
+            task.target_warehouse.name if getattr(task, "target_warehouse", None) else None
+        ),
         "completed_tests": len(inspections),
         "passed_tests": passed_tests,
         "latest_grade": latest_grade,
@@ -384,18 +410,34 @@ def _sync_return_reinspection_status(
 def list_quality_tasks(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     repair_quality_workflows(db)
     tasks = db.execute(select(QualityTask).order_by(QualityTask.created_at.desc())).scalars().all()
-    # 普通质检员只能看所属仓库的任务;超级质检员看所有
+    # 普通质检员只能看所属仓库的任务;超级质检员看所有。
+    # 指定给本人的任务始终可见(即使任务归属仓库不在其范围内),
+    # 否则"指定了质检员却看不到"会造成流程卡死。
     if current_user.role.code == "quality":
         scoped_warehouse_ids = get_inventory_scope_warehouse_ids(db, current_user)
         if scoped_warehouse_ids is not None:
             scoped_set = set(scoped_warehouse_ids)
+            # 批量取影子生产任务的仓库,避免在循环里逐条查库(N+1)
+            pt_ids = [row.production_task_id for row in tasks if row.production_task_id]
+            pt_map = {
+                row.id: row
+                for row in db.execute(
+                    select(ProductionTask).where(ProductionTask.id.in_(pt_ids))
+                ).scalars().all()
+            } if pt_ids else {}
             filtered: list[QualityTask] = []
             for task in tasks:
-                pt = None
-                if task.production_task_id:
-                    pt = db.execute(select(ProductionTask).where(ProductionTask.id == task.production_task_id)).scalar_one_or_none()
+                if task.assigned_inspector_id == current_user.id:
+                    filtered.append(task)
+                    continue
+                pt = pt_map.get(task.production_task_id)
                 meta = parse_purchase_quality_meta(pt) if pt else {}
-                warehouse_id = meta.get("warehouse_id") or (pt.warehouse_id if pt else None)
+                warehouse_id = (
+                    task.target_warehouse_id
+                    or meta.get("warehouse_id")
+                    or (pt.warehouse_id if pt else None)
+                )
+                # 仓库未知的历史任务按可见处理,避免旧数据凭空消失
                 if warehouse_id is None or warehouse_id in scoped_set:
                     filtered.append(task)
             tasks = filtered
@@ -518,6 +560,7 @@ def create_manual_quality_task(
                 submitted_by_id=current_user.id,
                 required_tests=payload.required_tests,
                 skip_receipt_item_ids=existing_receipt_item_ids,
+                assigned_inspector_id=payload.assigned_inspector_id,
             )
             for task in tasks:
                 production_task = db.execute(select(ProductionTask).where(ProductionTask.id == task.production_task_id)).scalar_one()
@@ -611,6 +654,9 @@ def create_manual_quality_task(
         required_tests=payload.required_tests,
         status="pending",
         submitted_by_id=current_user.id,
+        # 手工建质检任务同样支持指定质检员与归属仓库
+        assigned_inspector_id=resolve_assigned_inspector_id(db, payload.assigned_inspector_id),
+        target_warehouse_id=payload.target_warehouse_id,
     )
     db.add(quality_task)
     db.flush()
@@ -693,6 +739,17 @@ def create_inspection(
         raise HTTPException(status_code=404, detail="质检任务不存在")
     if task.status in {"completed", "rejected", "scrapped", "rework_created"}:
         raise HTTPException(status_code=409, detail="当前质检任务状态不允许继续录入")
+    # 需求:该质检任务只能由指定质检员处理;超级质检员与管理层可代为处理。
+    # 普通质检员越权录入他人任务时明确报错,而不是静默通过。
+    role_code = current_user.role.code if current_user.role else None
+    if (
+        task.assigned_inspector_id
+        and task.assigned_inspector_id != current_user.id
+        and role_code not in {"quality_super", "manager", "chairman", "system_admin"}
+    ):
+        assigned_user = db.execute(select(User).where(User.id == task.assigned_inspector_id)).scalar_one_or_none()
+        assigned_name = assigned_user.full_name if assigned_user else f"#{task.assigned_inspector_id}"
+        raise HTTPException(status_code=403, detail=f"该质检任务已指定由 {assigned_name} 处理,不能越权录入")
     duplicate = db.execute(
         select(QualityInspection).where(
             QualityInspection.quality_task_id == task.id,

@@ -12,6 +12,7 @@ class ReimbursementCreate(BaseModel):
     reason: str = Field(..., min_length=2, max_length=1000)
     attachment_id: int | None = None
     business_matter_id: int | None = None
+    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
 
 
 class ReimbursementAuditRequest(BaseModel):
@@ -45,3 +46,5 @@ class BusinessMatterConvertRequest(BaseModel):
     occurred_at: datetime | None = None
     reason: str | None = Field(default=None, max_length=1000)
     attachment_id: int | None = None
+    # 与直接提交报销一致:转报销同样是财务事务,可指定处理财务
+    assigned_finance_user_id: int | None = Field(default=None, description="指定处理该报销的财务(不指定则自动分配)")

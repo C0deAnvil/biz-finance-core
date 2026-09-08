@@ -8,9 +8,10 @@
     </template>
 
     <el-tabs v-model="activeStatusTab" class="status-tabs">
-      <el-tab-pane :label="`审核中 (${reviewingRows.length})`" name="reviewing" />
-      <el-tab-pane :label="`待发货 (${shippingRows.length})`" name="shipping" />
-      <el-tab-pane :label="`已完成 (${completedRows.length})`" name="completed" />
+      <el-tab-pane :label="tabLabel('草稿', 'draft')" name="draft" />
+      <el-tab-pane :label="tabLabel('审核中', 'reviewing')" name="reviewing" />
+      <el-tab-pane :label="tabLabel('待发货', 'shipping')" name="shipping" />
+      <el-tab-pane :label="tabLabel('已完成', 'completed')" name="completed" />
     </el-tabs>
 
     <el-table :data="pagedRows" stripe :row-class-name="rowClassName" @selection-change="selection = $event">
@@ -82,7 +83,7 @@
           <el-button size="small" text type="info" @click="openTimeline(scope.row.id)">时间轴</el-button>
           <el-button v-if="canSubmitOrder(scope.row)" size="small" text type="success" @click="submitOrder(scope.row)">提交</el-button>
           <el-button v-if="canManageOrders" size="small" text type="primary" @click="editOrder(scope.row)" :disabled="!canEditOrder(scope.row)">编辑</el-button>
-          <el-button v-if="canFinanceEdit(scope.row)" size="small" text type="primary" @click="financeEditOrder(scope.row)">财务改单</el-button>
+          <el-button v-if="canFinanceApprove(scope.row)" size="small" text type="warning" @click="goApprove(scope.row)">审批</el-button>
           <el-button v-if="canOpenFinanceEditDetail(scope.row)" size="small" text type="warning" @click="viewOrder(scope.row.id)">财务修改详情</el-button>
           <el-button v-if="canManageOrders" size="small" text type="danger" @click="deleteOrder(scope.row)" :disabled="!canDeleteOrder(scope.row)">删除</el-button>
           <el-button v-if="canApprovePrice(scope.row)" size="small" text type="success" @click="openPriceApproval(scope.row)">改价审批</el-button>
@@ -281,7 +282,7 @@
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button v-if="canSubmitOrderForm" type="primary" :loading="dialogSubmitting" @click="submit">{{ financeEditing ? '提交财务修改' : (editingId ? '保存修改' : '保存草稿') }}</el-button>
+        <el-button v-if="canSubmitOrderForm" type="primary" :loading="dialogSubmitting" @click="submit">{{ editingId ? '保存修改' : '保存草稿' }}</el-button>
       </template>
     </el-dialog>
 
@@ -487,6 +488,23 @@
         <el-button type="primary" @click="submitCustomer">保存客户</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="submitVisible" title="提交财务审批" width="440px">
+      <p style="margin: 0 0 16px; color: var(--el-text-color-regular)">
+        确认将订单 {{ submitTarget?.order_no }} 提交财务审批吗？提交后不可编辑、不可删除。
+      </p>
+      <el-form label-width="90px">
+        <el-form-item label="指定财务">
+          <el-select v-model="submitForm.assigned_finance_user_id" clearable placeholder="不指定则系统自动分配" style="width: 100%">
+            <el-option v-for="u in financeAssignees" :key="u.id" :label="u.is_super ? `${u.full_name}（超级财务）` : u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="submitVisible = false">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="confirmSubmitOrder">确认提交</el-button>
+      </template>
+    </el-dialog>
   </PageSection>
 </template>
 
@@ -532,6 +550,7 @@ import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
 
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useFinanceAssignees } from '../../composables/useFinanceAssignees'
 import { useRouteFocus } from '../../composables/useRouteFocus'
 
 import { get, post, put, remove } from '../../api/client'
@@ -564,26 +583,34 @@ const products = ref([])
 const packagingOptions = ref([])
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
+const { financeAssignees, loadFinanceAssignees } = useFinanceAssignees()
+const submitVisible = ref(false)
+const submitTarget = ref(null)
+const submitting = ref(false)
+const submitForm = reactive({ assigned_finance_user_id: null })
+
 const attachmentVisible = ref(false)
 const customerDialogVisible = ref(false)
 const detail = ref(null)
 const attachmentOrder = ref(null)
 const editingId = ref(null)
-const financeEditing = ref(false)
 const selection = ref([])
 const dialogSubmitting = ref(false)
 const priceApprovalVisible = ref(false)
 const priceApprovalDetail = ref(null)
 const priceApprovalForm = reactive({ note: '' })
-const activeStatusTab = ref('reviewing')
+// 默认停在草稿页:销售进页面第一件事通常是继续处理没提交完的单
+const activeStatusTab = ref('draft')
 const orderRecommendations = ref([])
 const customerAi = ref(null)
 const customerAiLoading = ref(false)
 const canManageOrders = computed(() => auth.user?.role_code === 'sales')
-const canFinanceEditOrders = computed(() => ['finance', 'system_admin'].includes(auth.user?.role_code))
+// 与审批页 SalesApprovalsView 的 canApproveOrders 保持同一组角色,
+// 否则董事长在列表里看不到审批入口、进审批页却能审,入口不一致。
+const canFinanceApproveOrders = computed(() => ['finance', 'chairman', 'system_admin'].includes(auth.user?.role_code))
 const canFinanceApprovePrice = computed(() => ['finance', 'system_admin'].includes(auth.user?.role_code))
-const canSubmitOrderForm = computed(() => canManageOrders.value || financeEditing.value)
-const canEditOrderForm = computed(() => canManageOrders.value || financeEditing.value)
+const canSubmitOrderForm = computed(() => canManageOrders.value)
+const canEditOrderForm = computed(() => canManageOrders.value)
 const salesUsers = computed(() => {
   const rows = userOptions.value.filter((item) => item.role_code === 'sales')
   return rows.length ? rows : userOptions.value.filter((item) => item.id === auth.user?.id)
@@ -609,14 +636,19 @@ const form = reactive(emptyForm())
 const customerForm = reactive({ name: '', contact_name: '', phone: '', address: '', star_level: '' })
 
 function resolveStatusTab(row) {
+  if (row?.status === 'draft') return 'draft'
   if (row?.status === 'completed' || row?.status === 'cancelled') return 'completed'
   if (['pending_shipment', 'shipped'].includes(row?.status)) return 'shipping'
   return 'reviewing'
 }
 
-const reviewingRows = computed(() => activeStatusTab.value === 'reviewing' ? rows.value : [])
-const shippingRows = computed(() => activeStatusTab.value === 'shipping' ? rows.value : [])
-const completedRows = computed(() => activeStatusTab.value === 'completed' ? rows.value : [])
+// 页签角标用后端返回的各状态总数。原先用 rows.value.length(当页行数)充当角标,
+// 未选中的页签恒为 0,选中的也只显示当页条数,数字全是错的。
+const tabCounts = ref({})
+function tabLabel(text, key) {
+  const count = tabCounts.value?.[key]
+  return typeof count === 'number' ? `${text} (${count})` : text
+}
 const orderGoodsAmount = computed(() =>
   form.items.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_price || 0), 0)
 )
@@ -660,11 +692,8 @@ const customerAiTip = computed(() => {
     title: `${customerName}：${analysis.segment_label || '暂无分群'}，${analysis.lead_label || '暂无意向判断'}`
   }
 })
-const activeRows = computed(() => {
-  if (activeStatusTab.value === 'shipping') return shippingRows.value
-  if (activeStatusTab.value === 'completed') return completedRows.value
-  return reviewingRows.value
-})
+// 后端已按 activeStatusTab 过滤并分页,rows 就是当前页签的数据
+const activeRows = computed(() => rows.value)
 
 const pagination = reactive({ page: 1, pageSize: 10 })
 const total = ref(0)
@@ -675,21 +704,20 @@ function ensureVisible(predicate) { return rows.value.find(predicate) || null }
 function resetForm() {
   Object.assign(form, emptyForm())
   editingId.value = null
-  financeEditing.value = false
   orderRecommendations.value = []
   customerAi.value = null
   customerAiLoading.value = false
 }
 
 async function confirmStockShortageIfNeeded() {
-  if (!stockShortageWarnings.value.length || editingId.value || financeEditing.value) return true
+  if (!stockShortageWarnings.value.length || editingId.value) return true
   const message = stockShortageWarnings.value.map((item) =>
     `${item.productName}：当前库存 ${formatNumber(item.availableQuantity)}，预计可用库存 ${formatNumber(item.expectedAvailableQuantity)}，本单预计占用库存 ${formatNumber(item.requestedQuantity)}，缺口 ${formatNumber(item.shortageQuantity)}`
   ).join('\n')
   try {
     await ElMessageBox.confirm(
       `${message}\n\n本单为缺口提醒：系统不会自动生成补货需求，财务审批通过后由库管在置货环节按需生成采购/生产补货需求。是否继续提交？`,
-      '商品库存不足(仅提醒)',
+      '商品库存不足',
       { type: 'warning', confirmButtonText: '继续提交', cancelButtonText: '返回修改' }
     )
     return true
@@ -742,8 +770,18 @@ function canDeleteOrder(row) {
 function canApprovePrice(row) {
   return canFinanceApprovePrice.value && (row?.price_approval_status === 'pending' || row?.status === 'pending_price_approval')
 }
-function canFinanceEdit(row) {
-  return canFinanceEditOrders.value && row && !['shipped', 'completed', 'cancelled'].includes(row.status)
+// 财务在订单列表里的入口从"改单"改为"审批":财务不再直接修改销售填的单,
+// 有问题一律驳回、由销售改后重新提交(与"驳回→修改→重提"这条路径合并,
+// 避免同一件事存在两套改单闭环)。
+// 只在 pending_confirmation 时显示 —— /api/sales/approvals/pending 只返回该状态,
+// 其他状态跳过去会是空列表。
+function canFinanceApprove(row) {
+  return canFinanceApproveOrders.value && row?.status === 'pending_confirmation'
+}
+
+/** 跳到客户订单审批页并自动展开该单的审批弹窗(审批页已支持 focusId)。 */
+function goApprove(row) {
+  router.push({ path: '/sales/approvals', query: { focusId: row.id } })
 }
 
 function relatedDocTag(row) {
@@ -787,6 +825,7 @@ async function load() {
   const data = await get(`/api/sales/orders?tab=${activeStatusTab.value}&page=${pagination.page}&page_size=${pagination.pageSize}`)
   rows.value = data.items || []
   total.value = Number(data.pagination?.total || 0)
+  tabCounts.value = data.tab_counts || {}
   await applyFocus()
 }
 
@@ -1049,7 +1088,7 @@ function validateOrderPayload() {
       return null
     }
     const standardPrice = productStandardPrice(item.product_id)
-    if (!financeEditing.value && Number(item.unit_price || 0).toFixed(2) !== Number(standardPrice || 0).toFixed(2) && item.price_change_remark.length < 2) {
+    if (Number(item.unit_price || 0).toFixed(2) !== Number(standardPrice || 0).toFixed(2) && item.price_change_remark.length < 2) {
       ElMessage.warning('商品单价与标准价格不一致时，必须填写改价备注')
       return null
     }
@@ -1080,7 +1119,7 @@ async function submit() {
   dialogSubmitting.value = true
   try {
     if (editingId.value) {
-      await put(financeEditing.value ? `/api/sales/orders/${editingId.value}/finance-edit` : `/api/sales/orders/${editingId.value}`, financeEditing.value ? { ...payload, edit_note: '财务发货前修改订单' } : payload)
+      await put(`/api/sales/orders/${editingId.value}`, payload)
       ElMessage.success('订单已更新')
     } else {
       const result = await post('/api/sales/orders', payload)
@@ -1093,7 +1132,8 @@ async function submit() {
     }
     dialogVisible.value = false
     resetForm()
-    activeStatusTab.value = 'reviewing'
+    // 新建/编辑后落的是草稿,跳草稿页才能看到刚保存的单(原先跳"审核中"会显示不出来)
+    activeStatusTab.value = 'draft'
     await load()
   } catch (error) {
     ElMessage.error(error.message || '订单提交失败')
@@ -1129,16 +1169,11 @@ async function submitPriceApproval(decision) {
   await load()
 }
 
-async function financeEditOrder(row) {
-  await editOrder(row)
-  financeEditing.value = true
-}
-
 async function confirmFinanceEdit(row) {
   if (!row?.id || !canConfirmFinanceEdit(row)) return
   try {
-    const result = await post(`/api/sales/orders/${row.id}/finance-edit/confirm`, { note: '?????????' })
-    ElMessage.success('???????')
+    const result = await post(`/api/sales/orders/${row.id}/finance-edit/confirm`, { note: '已确认财务修改' })
+    ElMessage.success('财务修改已确认')
     const nextState = { ...(row.finance_edit_confirm_state || {}), pending: false }
     Object.assign(row, {
       finance_edit_confirm_state: nextState,
@@ -1153,7 +1188,7 @@ async function confirmFinanceEdit(row) {
     }
     rows.value = rows.value.map((item) => item.id === row.id ? { ...item, finance_edit_confirm_state: nextState, finance_edit_pending: Boolean(result?.finance_edit_pending) } : item)
   } catch (error) {
-    ElMessage.error(error.message || '????????')
+    ElMessage.error(error.message || '确认财务修改失败')
   }
 }
 
@@ -1195,11 +1230,28 @@ async function deleteOrder(row) {
   await load()
 }
 
-async function submitOrder(row) {
-  await ElMessageBox.confirm(`确认将订单 ${row.order_no} 提交财务审批吗？提交后不可编辑、不可删除。`, '提交审批', { type: 'info' })
-  await post(`/api/sales/orders/${row.id}/submit`, {})
-  ElMessage.success('订单已提交财务审批')
-  await load()
+function submitOrder(row) {
+  // 提交财务审批需选择处理财务,故用一个轻量弹窗代替原来的纯确认框(不新增步骤)
+  submitTarget.value = row
+  submitForm.assigned_finance_user_id = null
+  submitVisible.value = true
+}
+
+async function confirmSubmitOrder() {
+  const row = submitTarget.value
+  if (!row) return
+  submitting.value = true
+  try {
+    await post(`/api/sales/orders/${row.id}/submit`, {
+      assigned_finance_user_id: submitForm.assigned_finance_user_id
+    })
+    ElMessage.success('订单已提交财务审批')
+    submitVisible.value = false
+    submitTarget.value = null
+    await load()
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function completeOrder(row) {
@@ -1268,7 +1320,7 @@ async function exportExcel() {
 
 onMounted(async () => {
   await loadBaseOptions()
-  await load()
+  await Promise.all([load(), loadFinanceAssignees()])
 })
 
 watch(activeStatusTab, async () => {

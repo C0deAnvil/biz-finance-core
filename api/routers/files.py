@@ -14,7 +14,7 @@ from database import get_db
 from dependencies import get_current_user, require_roles
 from models import Attachment, PurchaseOrder, Role, SalesOrder, User
 from responses import api_response
-from services.core import create_notification
+from services.core import _role_user_ids, create_notification
 from services.time_utils import now_local
 
 router = APIRouter(prefix='/files', tags=['附件'])
@@ -99,15 +99,6 @@ def _validate_mime_type(suffix: str, content_type: str | None, filename: str):
     if checked_types and checked_types.isdisjoint(rule['mime_types']):
         raise HTTPException(status_code=400, detail='文件 MIME 类型与扩展名不匹配')
     return content_type or guessed_type
-
-
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def _notify_order_attachment_uploaded(

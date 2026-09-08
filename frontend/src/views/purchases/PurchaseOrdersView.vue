@@ -72,6 +72,22 @@
         <el-table-column prop="shortage_quantity" label="缺口数量" width="120">
           <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
         </el-table-column>
+        <el-table-column label="补货进度" width="180">
+          <template #default="scope">
+            <div class="demand-progress">
+              <el-progress
+                :percentage="demandProgressPercent(scope.row)"
+                :stroke-width="10"
+                :show-text="false"
+                :status="demandProgressPercent(scope.row) >= 100 ? 'success' : undefined"
+              />
+              <div class="demand-progress-text">
+                已补 {{ formatNumber(scope.row.fulfilled_quantity || 0) }} / 共需 {{ formatNumber(demandRequired(scope.row)) }}
+                <span v-if="demandPending(scope.row) > 0" class="demand-progress-pending">还差 {{ formatNumber(demandPending(scope.row)) }}</span>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="短缺等级" width="110">
           <template #default="scope">
             <el-tag v-if="scope.row.shortage_level === 'green'" type="success" effect="dark">绿·充足</el-tag>
@@ -95,7 +111,6 @@
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="info" @click="viewDemand(scope.row)">详情</el-button>
-            <el-button v-if="scope.row.status === 'pending' && scope.row.demand_type === 'trade_product'" size="small" text type="primary" @click="openEditDemand(scope.row)">改数量</el-button>
             <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建采购单</el-button>
             <el-button v-if="scope.row.status === 'pending' && scope.row.demand_type !== 'raw_material'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
           </template>
@@ -299,23 +314,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="editDemandVisible" title="调整补货需求数量" width="440px">
-      <el-form :model="editDemandForm" label-width="100px">
-        <el-form-item label="需求号"><span>{{ editDemandForm.demand_no }}</span></el-form-item>
-        <el-form-item label="产品/原料"><span>{{ editDemandForm.item_name }}</span></el-form-item>
-        <el-form-item label="缺口数量" required>
-          <el-input-number v-model="editDemandForm.shortage_quantity" :min="0.01" :precision="2" style="width: 180px" />
-        </el-form-item>
-        <el-form-item label="说明">
-          <el-input v-model="editDemandForm.note" type="textarea" :rows="2" placeholder="调整原因(选填)" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editDemandVisible = false">取消</el-button>
-        <el-button type="primary" :loading="editDemandSubmitting" @click="submitEditDemand">保存</el-button>
-      </template>
-    </el-dialog>
-
     <el-dialog v-model="demandDetailVisible" title="补货需求详情" width="680px">
       <el-descriptions v-if="activeDemand" :column="2" border>
         <el-descriptions-item label="需求号">{{ activeDemand.demand_no }}</el-descriptions-item>
@@ -337,6 +335,7 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/alert/style/css'
@@ -349,6 +348,7 @@ import 'element-plus/es/components/form/style/css'
 import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/row/style/css'
 import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/progress/style/css'
 import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tabs/style/css'
 import 'element-plus/es/components/tag/style/css'
@@ -357,6 +357,7 @@ import 'element-plus/es/components/tooltip/style/css'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
+import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
@@ -367,6 +368,7 @@ import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
+import ElProgress from 'element-plus/es/components/progress/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTabs, { ElTabPane } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -452,6 +454,25 @@ const emptyForm = () => ({
 
 const form = reactive(emptyForm())
 const thresholdForm = reactive({ amount: 0 })
+
+// 分批补货进度(后端 required/fulfilled/pending_quantity;老数据回退推算)
+function demandRequired(row) {
+  const required = Number(row?.required_quantity || 0)
+  if (required > 0) return required
+  return Number(row?.fulfilled_quantity || 0) + Number(row?.shortage_quantity || 0)
+}
+
+function demandPending(row) {
+  const pending = row?.pending_quantity
+  if (pending !== null && pending !== undefined) return Number(pending)
+  return Math.max(demandRequired(row) - Number(row?.fulfilled_quantity || 0), 0)
+}
+
+function demandProgressPercent(row) {
+  const required = demandRequired(row)
+  if (required <= 0) return 0
+  return Math.min(Math.max(Math.round((Number(row?.fulfilled_quantity || 0) / required) * 100), 0), 100)
+}
 
 function resetForm() {
   Object.assign(form, emptyForm())
@@ -857,9 +878,9 @@ function viewDemand(row) {
   demandDetailVisible.value = true
 }
 
-const editDemandVisible = ref(false)
-const editDemandSubmitting = ref(false)
-const editDemandForm = reactive({ id: null, demand_no: '', item_name: '', shortage_quantity: 0, note: '' })
+// 已移除"改数量":采购数量与单价在"转建采购单"弹窗里直接可改
+// (form.items 的 quantity/unit_price 均可编辑,且已按需求量预填),
+// 不需要另开一个只改数量的入口。后端端点保留,不影响历史调用。
 
 const DEMAND_PROGRESS_TAGS = {
   pending: 'warning', purchasing: 'primary', ordered: 'primary', receiving: 'primary',
@@ -868,38 +889,6 @@ const DEMAND_PROGRESS_TAGS = {
 }
 function demandProgressTag(status) {
   return DEMAND_PROGRESS_TAGS[status] || 'info'
-}
-
-function openEditDemand(row) {
-  Object.assign(editDemandForm, {
-    id: row.id,
-    demand_no: row.demand_no,
-    item_name: row.item_name || row.product_name || row.material_name || '-',
-    shortage_quantity: Number(row.shortage_quantity || 0),
-    note: '',
-  })
-  editDemandVisible.value = true
-}
-
-async function submitEditDemand() {
-  if (!editDemandForm.id || editDemandForm.shortage_quantity <= 0) {
-    ElMessage.warning('请填写大于 0 的缺口数量')
-    return
-  }
-  editDemandSubmitting.value = true
-  try {
-    await put(`/api/purchases/fulfillment-demands/${editDemandForm.id}`, {
-      shortage_quantity: editDemandForm.shortage_quantity,
-      note: editDemandForm.note || null,
-    })
-    ElMessage.success('补货需求数量已调整')
-    editDemandVisible.value = false
-    await load()
-  } catch (e) {
-    ElMessage.error(e?.message || '调整失败')
-  } finally {
-    editDemandSubmitting.value = false
-  }
 }
 
 async function cancelDemand(row) {
@@ -1094,4 +1083,8 @@ watch(
 .flow-step.is-done { background: #f0f9eb; color: #67c23a; }
 .flow-step.is-current { background: #ecf5ff; color: #409eff; font-weight: 600; }
 .flow-tooltip-content { max-width: 280px; white-space: pre-line; line-height: 1.6; }
+
+.demand-progress { display: flex; flex-direction: column; gap: 4px; }
+.demand-progress-text { font-size: 12px; color: var(--el-text-color-regular); line-height: 1.4; }
+.demand-progress-pending { color: var(--el-color-warning); margin-left: 4px; }
 </style>

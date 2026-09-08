@@ -105,6 +105,12 @@ class SalesSettlementCollectRequest(BaseModel):
     remark: str | None = None
 
 
+class SalesOrderSubmitRequest(BaseModel):
+    """提交客户订单审批。可指定处理该单的财务人员,不指定则系统轮询分配。"""
+
+    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
+
+
 class SalesReceiptRequestCreate(BaseModel):
     sales_order_id: int
     requested_amount: Decimal = Field(..., gt=0)
@@ -112,6 +118,7 @@ class SalesReceiptRequestCreate(BaseModel):
     installment_total: int | None = Field(default=None, ge=1, le=24)
     installment_index: int | None = Field(default=None, ge=1, le=24)
     remark: str | None = None
+    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
 
 
 class SalesMergedReceiptRequestItem(BaseModel):
@@ -126,6 +133,8 @@ class SalesMergedReceiptRequestCreate(BaseModel):
     installment_index: int | None = Field(default=None, ge=1, le=24)
     remark: str | None = None
     items: list[SalesMergedReceiptRequestItem]
+    # 合并收款同样是财务事务,与单笔收款申请一致需选择处理财务
+    assigned_finance_user_id: int | None = Field(default=None, description="指定处理该收款申请的财务(不指定则自动分配)")
 
 
 class SalesReceiptApprovalRequest(BaseModel):

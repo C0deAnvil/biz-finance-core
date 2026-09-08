@@ -51,7 +51,7 @@ from schemas.production import (
     SpecialMaterialApproval,
     SpecialMaterialRequestCreate,
 )
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
+from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
 from services.display import status_label
 from services.production_service import (
     approve_special_request as approve_special_request_service,
@@ -70,6 +70,7 @@ from services.quality_workflow import quality_sample_consumption
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, production_flow_steps
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
+from services.inventory_availability import purchase_in_transit_map, stock_key
 
 
 router = APIRouter(prefix="/production", tags=["production"])
@@ -84,41 +85,6 @@ def _finished_warehouse(db: Session) -> Warehouse:
     return get_finished_warehouse(db)
 
 
-def _stock_key(*, product_id: int | None = None, material_id: int | None = None) -> tuple[str, int | None]:
-    return ("product", product_id) if product_id else ("material", material_id)
-
-
-def _expected_available_maps(db: Session) -> tuple[dict[tuple[str, int | None], Decimal], dict[tuple[str, int | None], Decimal]]:
-    pending_sales: dict[tuple[str, int | None], Decimal] = {}
-    for product_id, ordered_quantity, shipped_quantity in db.execute(
-        select(
-            SalesOrderItem.product_id,
-            func.coalesce(func.sum(SalesOrderItem.quantity), 0),
-            func.coalesce(func.sum(SalesOrderItem.shipped_quantity), 0),
-        )
-        .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
-        .where(SalesOrder.status == "pending_shipment")
-        .group_by(SalesOrderItem.product_id)
-    ).all():
-        pending_sales[_stock_key(product_id=product_id)] = max(Decimal(ordered_quantity or 0) - Decimal(shipped_quantity or 0), Decimal("0"))
-
-    purchase_in_transit: dict[tuple[str, int | None], Decimal] = {}
-    for product_id, material_id, ordered_quantity, received_quantity in db.execute(
-        select(
-            PurchaseOrderItem.product_id,
-            PurchaseOrderItem.material_id,
-            func.coalesce(func.sum(PurchaseOrderItem.quantity), 0),
-            func.coalesce(func.sum(PurchaseOrderItem.received_quantity), 0),
-        )
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
-        .where(PurchaseOrder.status.in_(["purchasing", "partial_received", "pending_purchase_confirm", "fully_received"]))
-        .group_by(PurchaseOrderItem.product_id, PurchaseOrderItem.material_id)
-    ).all():
-        purchase_in_transit[_stock_key(product_id=product_id, material_id=material_id)] = max(
-            Decimal(ordered_quantity or 0) - Decimal(received_quantity or 0),
-            Decimal("0"),
-        )
-    return pending_sales, purchase_in_transit
 
 
 _PROD_TASK_NON_RESERVING = {"completed", "cancelled", "scrapped", "partially_scrapped", "reworked", "rework_pending"}
@@ -275,15 +241,6 @@ def _batch_demand_progress_map(db: Session, demand_ids: list[int]) -> dict[int, 
     for demand in demands:
         result[demand.id] = _progress(demand)
     return result
-
-
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def _allowed_quantity(task: ProductionTask, usage: ProductionMaterialUsage) -> Decimal:
@@ -705,6 +662,24 @@ def get_task_detail(task_id: int, current_user: User = Depends(get_current_user)
                 "code": finished_warehouse.code,
                 "name": finished_warehouse.name,
             },
+            # 本任务实际归属的入库仓库(建任务时选的 warehouse_id,未选则为默认成品仓)。
+            # finished_warehouse 是全局默认仓,不能代表本任务的选择;
+            # 完工录入要据此告知"质检与入库由哪个仓库接手",
+            # 后端建质检任务时用的也正是 task.warehouse_id
+            # (services/quality_workflow.py:114)。
+            "warehouse": (
+                {
+                    "id": task.warehouse.id,
+                    "code": task.warehouse.code,
+                    "name": task.warehouse.name,
+                }
+                if task.warehouse
+                else {
+                    "id": finished_warehouse.id,
+                    "code": finished_warehouse.code,
+                    "name": finished_warehouse.name,
+                }
+            ),
             "raw_warehouse": {
                 "id": raw_warehouse.id,
                 "code": raw_warehouse.code,
@@ -1140,7 +1115,7 @@ def list_fulfillment_demands(
             select(Inventory).where(Inventory.warehouse_id == finished_warehouse.id, Inventory.product_id.in_(product_ids or [-1]))
         ).scalars().all()
     } if product_ids else {}
-    pending_sales, purchase_in_transit = _expected_available_maps(db)
+    purchase_in_transit = purchase_in_transit_map(db)
 
     # 批量计算最大可产:一次预取 BOM/原料库存/生产占用,内存推导
     max_producible_map = _batch_max_producible_map(db, product_ids)
@@ -1171,17 +1146,33 @@ def list_fulfillment_demands(
                 "product_id": row.product_id,
                 "product_name": row.product.name if row.product else None,
                 "shortage_quantity": float(row.shortage_quantity or 0),
-                "max_producible_quantity": float(max_producible_map.get(row.id, 0)),
+                # 分批补货进度:shortage_quantity 是"剩余待补量",单看它看不出
+                # "原需求多少、已补多少"。required_quantity 缺省时回退为剩余量,
+                # 保证老数据也能算出合理进度。
+                "required_quantity": float(row.required_quantity or row.shortage_quantity or 0),
+                "fulfilled_quantity": float(row.fulfilled_quantity or 0),
+                "pending_quantity": float(
+                    max(
+                        Decimal(row.required_quantity or row.shortage_quantity or 0)
+                        - Decimal(row.fulfilled_quantity or 0),
+                        Decimal("0"),
+                    )
+                ),
+                # max_producible_map 的键是 product_id(见 _batch_max_producible_map 入参),
+                # 原先用 row.id(补货需求ID)取值 —— 两套ID几乎永不相等,于是恒取到默认 0,
+                # 导致"最大可产"永远显示 0、"原料状况"永远是红,
+                # 而转任务弹窗走 raw_material_shortage_detail 另一条路径算得出真实缺口,
+                # 于是出现"显示原料不足却能正常转任务"的矛盾。
+                "max_producible_quantity": float(max_producible_map.get(row.product_id, 0)),
                 "shortage_level": _shortage_level(
-                    float(row.shortage_quantity or 0), float(max_producible_map.get(row.id, 0))
+                    float(row.shortage_quantity or 0), float(max_producible_map.get(row.product_id, 0))
                 ),
                 "safety_stock_qty": float(row.product.safety_stock_qty or 0) if row.product else 0,
                 "expected_available_quantity": float(
                     (
                         Decimal((inventory_map.get(row.product_id).quantity if inventory_map.get(row.product_id) else 0) or 0)
                         - Decimal((inventory_map.get(row.product_id).reserved_quantity if inventory_map.get(row.product_id) else 0) or 0)
-                        - Decimal(pending_sales.get(_stock_key(product_id=row.product_id), 0))
-                        + Decimal(purchase_in_transit.get(_stock_key(product_id=row.product_id), 0))
+                        + Decimal(purchase_in_transit.get(stock_key(product_id=row.product_id), 0))
                     )
                 ),
                 "status": row.status,
@@ -1283,6 +1274,8 @@ def get_fulfillment_demand_material_progress(
             payload = _json.loads(description.split(marker, 1)[1])
         except (TypeError, ValueError):
             continue
+        if str(payload.get("fulfillment_demand_id")) != str(demand.id):
+            continue
         for item in payload.get("items", []):
             material_id = int(item.get("material_id") or 0)
             if material_id:
@@ -1297,10 +1290,12 @@ def get_fulfillment_demand_material_progress(
         .where(
             PurchaseOrder.replenishment_source_type == "sales_order_material_replenishment",
             PurchaseOrder.replenishment_source_id == demand.id,
+            PurchaseOrder.status != "cancelled",
         )
         .order_by(PurchaseOrder.id.desc())
     ).scalars().all()
-    order_map: dict[int, PurchaseOrder] = {po.id: po for po in purchase_orders}
+    material_orders: dict[int, list[PurchaseOrder]] = {}
+    order_map = {po.id: po for po in purchase_orders}
     po_ids = [po.id for po in purchase_orders]
     received_map: dict[int, Decimal] = {}
     ordered_map: dict[int, Decimal] = {}
@@ -1311,6 +1306,7 @@ def get_fulfillment_demand_material_progress(
         ).all():
             if not material_id:
                 continue
+            material_orders.setdefault(material_id, []).append(order_map[po_id])
             ordered_map[material_id] = ordered_map.get(material_id, Decimal("0")) + Decimal(quantity or 0)
             received_map[material_id] = received_map.get(material_id, Decimal("0")) + Decimal(received_quantity or 0)
 
@@ -1353,17 +1349,13 @@ def get_fulfillment_demand_material_progress(
             Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0) if inventory else Decimal("0"),
             Decimal("0"),
         )
-        progress = "done"
-        progress_label = "已完成(已入库)"
+        progress = "pending"
+        progress_label = "待提交补货" if submitted_quantity <= 0 else "待采购处理"
         related_no = None
         related_status = None
-        if received_quantity < submitted_quantity:
-            related_incomplete = [po for po in purchase_orders if received_map.get(po.id, Decimal("0")) < Decimal(po.total_amount or 0) or True]
-            active_po = next((po for po in purchase_orders if po.status not in {"completed", "cancelled"}), None)
-            if active_po is None:
-                progress = "pending"
-                progress_label = "待处理"
-            else:
+        if material_orders.get(material_id):
+            active_po = material_orders[material_id][0]
+            if active_po is not None:
                 progress = _po_progress(active_po)
                 progress_label = {"pending": "待处理", "ordered": "已下单", "arrived": "已到货", "done": "已完成(已入库)"}[progress]
                 related_no = active_po.order_no
@@ -1383,11 +1375,10 @@ def get_fulfillment_demand_material_progress(
                 "related_po_status": related_status,
             }
         )
-    can_produce = True
-    for item in items:
-        if item["received_quantity"] + item["stock_available_quantity"] + max(item["ordered_quantity"] - item["received_quantity"], Decimal("0")) < item["required_quantity"]:
-            can_produce = False
-            break
+    # 到货量已经计入库存或仍待质检，采购在途也不能作为可领用库存。
+    can_produce = bool(bom_map) and all(
+        item["stock_available_quantity"] >= item["required_quantity"] for item in items
+    )
     return api_response(
         data={
             "demand_id": demand.id,
@@ -1500,13 +1491,23 @@ def link_fulfillment_demand_task(
         raise HTTPException(status_code=409, detail="生产任务来源客户订单与补货需求不一致")
 
     row.processed_by_id = current_user.id
-    remaining_quantity = max(Decimal(row.shortage_quantity or 0) - Decimal(task.planned_quantity or 0), Decimal("0"))
-    row.process_note = f"已转生产任务 {task.task_no}，本批 {float(task.planned_quantity or 0)}，剩余 {float(remaining_quantity)}。"
+    # 关联既有生产任务时同样按"原始需求量 / 已补货量"记账,保持与 create_task 一致
+    required_quantity = Decimal(row.required_quantity or 0) or Decimal(row.shortage_quantity or 0)
+    row.required_quantity = required_quantity
+    row.fulfilled_quantity = Decimal(row.fulfilled_quantity or 0) + Decimal(task.planned_quantity or 0)
+    remaining_quantity = max(required_quantity - Decimal(row.fulfilled_quantity or 0), Decimal("0"))
+    row.shortage_quantity = remaining_quantity
+    # 回填来源需求,使补货需求进度可从任务实时推导
+    if task.fulfillment_demand_id is None:
+        task.fulfillment_demand_id = row.id
+    row.process_note = (
+        f"已转生产任务 {task.task_no}，本批 {float(task.planned_quantity or 0)}，"
+        f"累计已补 {float(row.fulfilled_quantity)}/{float(required_quantity)}，剩余 {float(remaining_quantity)}。"
+    )
     if remaining_quantity <= 0:
         row.status = "converted"
         complete_todos(db, business_type="fulfillment_demand", business_id=row.id)
     else:
-        row.shortage_quantity = remaining_quantity
         row.status = "pending"
     recipient_user_ids = [current_user.id]
     if row.sales_order and row.sales_order.sales_user_id:

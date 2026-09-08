@@ -50,9 +50,8 @@ from schemas.purchases import (
     PurchaseReturnCreate,
 )
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
@@ -69,7 +68,7 @@ REPLENISHMENT_SOURCE_TYPES = {
 
 
 
-from services.purchase_service._common import _chairman_user_ids, _create_purchase_payment_request_row, _ensure_order_owner, _finance_user_ids, _latest_fund_record, _load_order, _manager_user_ids, _purchase_arrival_display_label, _purchase_contract_attachments, _purchase_order_business_completed, _purchase_paid_order_amount, _round_robin_finance_user_id, _validate_merged_orders_same_supplier, _validate_order_payment_requestable, _validate_payment_amounts
+from services.purchase_service._common import _chairman_user_ids, _create_purchase_payment_request_row, _ensure_order_owner, _finance_user_ids, _latest_fund_record, _load_order, _manager_user_ids, _purchase_approval_amount_threshold, _purchase_arrival_display_label, _purchase_contract_attachments, _purchase_order_business_completed, _purchase_paid_order_amount, _round_robin_finance_user_id, _validate_merged_orders_same_supplier, _validate_order_payment_requestable, _validate_payment_amounts
 
 def request_purchase_fund(payload: PurchaseFundRequestCreate, current_user: User, db: Session):
     order = _load_order(db, payload.purchase_order_id)
@@ -138,36 +137,74 @@ def submit_purchase_payment_request(payload: PurchasePaymentRequestCreate, curre
         raise HTTPException(status_code=409, detail="申请总金额必须等于订单金额加其他费用")
     _validate_payment_amounts(db, order, Decimal(payload.order_amount or 0), Decimal(payload.other_fee_amount or 0))
 
-    assigned_finance_user_id = payload.assigned_finance_user_id or _round_robin_finance_user_id(db)
+    # 显式指定的财务必须校验(改造前直接采信入参,可把付款申请指派给销售等非财务角色);
+    # 未指定时沿用采购域按"待处理付款申请数"的轮询,比按待办总数更贴合该场景。
+    assigned_finance_user_id = (
+        resolve_assigned_finance_user_id(db, payload.assigned_finance_user_id)
+        if payload.assigned_finance_user_id is not None
+        else _round_robin_finance_user_id(db)
+    )
+    # 只有付款金额达到阈值才需要董事长审批;未达阈值直接进入财务出账环节。
+    # 原先所有付款申请一律先派给董事长,小额付款也要等审批,流程无谓变长。
+    requested_amount = Decimal(payload.requested_amount or 0)
+    threshold_amount = _purchase_approval_amount_threshold(db)
+    needs_chairman_approval = threshold_amount > 0 and requested_amount >= threshold_amount
+
     request = _create_purchase_payment_request_row(
         db,
         order=order,
         current_user=current_user,
-        requested_amount=Decimal(payload.requested_amount or 0),
+        requested_amount=requested_amount,
         order_amount=Decimal(payload.order_amount or 0),
         other_fee_amount=Decimal(payload.other_fee_amount or 0),
         payment_detail_remark=payload.payment_detail_remark,
         assigned_finance_user_id=assigned_finance_user_id,
+        preset_status="pending_chairman_approval" if needs_chairman_approval else "pending_finance_payment",
     )
 
     chairman_user_ids = _chairman_user_ids(db)
-    for user_id in chairman_user_ids:
-        create_todo(
-            db,
-            title=f"待审批采购付款申请 {request.request_no}",
-            description=f"采购订单 {order.order_no} 提交付款申请，申请金额 {float(request.requested_amount)}。",
-            module="purchase",
-            assigned_user_id=user_id,
-            business_type="purchase_payment_request",
-            business_id=request.id,
-            priority="high",
-        )
     finance_user_ids = _finance_user_ids(db)
+    if needs_chairman_approval:
+        for user_id in chairman_user_ids:
+            create_todo(
+                db,
+                title=f"待审批采购付款申请 {request.request_no}",
+                description=f"采购订单 {order.order_no} 提交付款申请，申请金额 {float(request.requested_amount)}。",
+                module="purchase",
+                assigned_user_id=user_id,
+                business_type="purchase_payment_request",
+                business_id=request.id,
+                priority="high",
+            )
+        notice_content = (
+            f"采购订单 {order.order_no} 已提交付款申请 {request.request_no}，"
+            f"金额 {float(requested_amount)} 达到审批阈值 {float(threshold_amount)}，等待董事长审批。"
+        )
+    else:
+        # 未达阈值:跳过董事长,直接给财务派出账待办(与审批通过后的派单口径一致)
+        for user_id in finance_user_ids:
+            create_todo(
+                db,
+                title=f"采购付款待出账 {request.request_no}",
+                description=(
+                    f"采购订单 {order.order_no} 的付款申请金额 {float(requested_amount)} "
+                    f"未达审批阈值 {float(threshold_amount)}，无需董事长审批，请财务上传回单并确认出账。"
+                ),
+                module="finance",
+                assigned_user_id=user_id,
+                business_type="purchase_payment_request",
+                business_id=request.id,
+                priority="high",
+            )
+        notice_content = (
+            f"采购订单 {order.order_no} 已提交付款申请 {request.request_no}，"
+            f"金额 {float(requested_amount)} 未达审批阈值，已直接流转至财务确认出账。"
+        )
     recipient_user_ids = list(dict.fromkeys([current_user.id, *chairman_user_ids, *finance_user_ids]))
     create_notification(
         db,
         title="采购付款申请已提交",
-        content=f"采购订单 {order.order_no} 已提交付款申请 {request.request_no}，等待董事长审批。",
+        content=notice_content,
         module="purchase",
         recipient_user_ids=recipient_user_ids,
         created_by_id=current_user.id,
@@ -213,6 +250,20 @@ def submit_merged_purchase_payment_request(payload: PurchaseMergedPaymentRequest
     requested_total = Decimal("0")
 
     first_request_id: int | None = None
+    # 整批合并付款派给同一个财务(在循环外解析一次,避免同批被拆给不同人)。
+    # 改造前合并路径完全不写该字段,导致合并付款申请恒为"未分配"。
+    # 显式指定的财务必须校验(改造前直接采信入参,可把付款申请指派给销售等非财务角色);
+    # 未指定时沿用采购域按"待处理付款申请数"的轮询,比按待办总数更贴合该场景。
+    assigned_finance_user_id = (
+        resolve_assigned_finance_user_id(db, payload.assigned_finance_user_id)
+        if payload.assigned_finance_user_id is not None
+        else _round_robin_finance_user_id(db)
+    )
+    # 与单笔口径一致:按阈值决定是否需要董事长审批。
+    # 合并付款是一次性出账,风险敞口是**批次总额**,所以用总额和阈值比,
+    # 而不是逐单比(否则拆成多张小单就能绕过审批)。
+    # 先算总额,再据此决定所有子申请的初始状态。
+    prepared_rows: list[tuple] = []
     for order in orders:
         _validate_order_payment_requestable(order, current_user, db)
         item = payload_map[order.id]
@@ -220,6 +271,14 @@ def submit_merged_purchase_payment_request(payload: PurchaseMergedPaymentRequest
         other_fee_amount = Decimal(item.other_fee_amount or 0)
         _validate_payment_amounts(db, order, order_amount, other_fee_amount)
         requested_amount = order_amount + other_fee_amount
+        prepared_rows.append((order, order_amount, other_fee_amount, requested_amount))
+        requested_total += requested_amount
+
+    threshold_amount = _purchase_approval_amount_threshold(db)
+    needs_chairman_approval = threshold_amount > 0 and requested_total >= threshold_amount
+    preset_status = "pending_chairman_approval" if needs_chairman_approval else "pending_finance_payment"
+
+    for order, order_amount, other_fee_amount, requested_amount in prepared_rows:
         request = _create_purchase_payment_request_row(
             db,
             order=order,
@@ -229,27 +288,55 @@ def submit_merged_purchase_payment_request(payload: PurchaseMergedPaymentRequest
             other_fee_amount=other_fee_amount,
             payment_detail_remark=payload.payment_detail_remark,
             merge_no=merge_no,
+            assigned_finance_user_id=assigned_finance_user_id,
+            preset_status=preset_status,
         )
         created_rows.append(request)
         if first_request_id is None:
             first_request_id = request.id
-        requested_total += requested_amount
-    for user_id in chairman_user_ids:
-        create_todo(
-            db,
-            title=f"待审批合并付款申请 {merge_no}",
-            description=f"合并付款批次 {merge_no} 包含 {len(created_rows)} 张采购订单，申请总额 {float(requested_total)}。",
-            module="purchase",
-            assigned_user_id=user_id,
-            business_type="purchase_payment_request",
-            business_id=first_request_id,
-            priority="high",
+
+    if needs_chairman_approval:
+        for user_id in chairman_user_ids:
+            create_todo(
+                db,
+                title=f"待审批合并付款申请 {merge_no}",
+                description=f"合并付款批次 {merge_no} 包含 {len(created_rows)} 张采购订单，申请总额 {float(requested_total)}。",
+                module="purchase",
+                assigned_user_id=user_id,
+                business_type="purchase_payment_request",
+                business_id=first_request_id,
+                priority="high",
+            )
+        merged_notice = (
+            f"供应商合并付款批次 {merge_no} 已提交，共 {len(created_rows)} 张采购订单，"
+            f"申请总额 {float(requested_total)} 达到审批阈值 {float(threshold_amount)}，等待董事长审批。"
+        )
+    else:
+        # 未达阈值:跳过董事长,直接派财务出账待办
+        for user_id in finance_user_ids:
+            create_todo(
+                db,
+                title=f"合并付款待出账 {merge_no}",
+                description=(
+                    f"合并付款批次 {merge_no} 共 {len(created_rows)} 张采购订单，"
+                    f"总额 {float(requested_total)} 未达审批阈值 {float(threshold_amount)}，"
+                    f"无需董事长审批，请财务上传回单并确认出账。"
+                ),
+                module="finance",
+                assigned_user_id=user_id,
+                business_type="purchase_payment_request",
+                business_id=first_request_id,
+                priority="high",
+            )
+        merged_notice = (
+            f"供应商合并付款批次 {merge_no} 已提交，共 {len(created_rows)} 张采购订单，"
+            f"申请总额 {float(requested_total)} 未达审批阈值，已直接流转至财务确认出账。"
         )
 
     create_notification(
         db,
         title="采购合并付款申请已提交",
-        content=f"供应商合并付款批次 {merge_no} 已提交，共 {len(created_rows)} 张采购订单，申请总额 {float(requested_total)}。",
+        content=merged_notice,
         module="purchase",
         recipient_user_ids=list(dict.fromkeys([current_user.id, *chairman_user_ids, *finance_user_ids])),
         created_by_id=current_user.id,

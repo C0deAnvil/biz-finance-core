@@ -52,7 +52,6 @@ from schemas.purchases import (
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
@@ -228,7 +227,6 @@ def create_receipt(payload: PurchaseReceiptCreate, current_user: User, db: Sessi
             "status": receipt.status,
         },
     )
-    sync_inventory_dimensions(db)
     db.commit()
     return api_response(
         data={
@@ -335,6 +333,8 @@ def create_purchase_return(payload: PurchaseReturnCreate, current_user: User, db
             item_label="、".join(dict.fromkeys(reinspection_names)) or "采购退换货物料",
             quantity=total_return_quantity,
             submitted_by_id=current_user.id,
+            # 退换货复检归属退货所在仓库,普通质检员按此过滤可见范围
+            target_warehouse_id=payload.warehouse_id,
         )
         quality_user_ids = _role_user_ids(db, "quality", "manager", "chairman")
         for user_id in quality_user_ids:

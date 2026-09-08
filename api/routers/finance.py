@@ -48,7 +48,7 @@ from schemas.finance import (
     RefundRecordCreate,
     SalesCostUpdate,
 )
-from services.core import complete_todos, create_cash_flow, create_notification, create_todo, write_operation_log
+from services.core import FINANCE_ROLE_CODES, complete_todos, create_cash_flow, create_notification, create_todo, write_operation_log, _role_user_ids
 from services.finance_service import create_refund_record as create_refund_record_service, update_sales_cost as update_sales_cost_service, recognize_quality_cost as recognize_quality_cost_service
 from services.purchase_service import (
     register_merged_purchase_payment as register_merged_purchase_payment_service,
@@ -60,6 +60,7 @@ from schemas.purchases import PurchasePaymentApprovalRequest
 from services.display import format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.time_utils import now_local
 from services.request_trace import trace_stage
+from services.workflow import purchase_arrival_status
 from services.workflow_repair import repair_sales_receipt_workflows
 
 
@@ -70,6 +71,36 @@ PAYMENT_RECORDED_STATUSES = {"paid", "partial_settled", "settled"}
 RECEIPT_MERGE_NO_PATTERN = re.compile(r"合并收款批次[:：]\s*(?P<merge_no>[A-Za-z0-9-]+)")
 
 
+@router.get("/assignable-users")
+def list_assignable_finance_users(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """可被指派财务事务的在岗人员(普通财务 + 超级财务)。
+
+    提交客户订单审批、收款申请、报销、采购付款申请等事务时都要选一个财务,
+    发起人可能是销售/采购/生产等任何角色,故这里只要求登录,不限角色。
+    仅返回 id 与姓名,不暴露其他用户信息。
+    """
+    users = db.execute(
+        select(User)
+        .join(Role, User.role_id == Role.id)
+        .where(Role.code.in_(FINANCE_ROLE_CODES), User.is_active.is_(True))
+        .order_by(User.id.asc())
+    ).scalars().all()
+    return api_response(
+        data=[
+            {
+                "id": row.id,
+                "full_name": row.full_name,
+                "role_code": row.role.code if row.role else None,
+                "is_super": bool(row.role and row.role.code == "finance_super"),
+            }
+            for row in users
+        ]
+    )
+
+
 def _recalculate_sales_profit(order: SalesOrder):
     order.profit_amount = (
         Decimal(order.total_amount or 0)
@@ -77,18 +108,6 @@ def _recalculate_sales_profit(order: SalesOrder):
         - Decimal(order.transport_fee or 0)
         - Decimal(order.packaging_fee or 0)
     )
-
-
-def _role_user_ids(db: Session, *role_codes: str, exclude_user_id: int | None = None) -> list[int]:
-    user_ids = [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
-    if exclude_user_id is not None:
-        user_ids = [user_id for user_id in user_ids if user_id != exclude_user_id]
-    return user_ids
 
 
 def _ensure_payment_method_options(db: Session) -> None:
@@ -527,18 +546,30 @@ def _serialize_quality_cost_rows(rows: list[QualityCostRecord], db: Session) -> 
 def list_receivable_records(
     pending_page: int = Query(default=1, ge=1),
     pending_page_size: int = Query(default=50, ge=1, le=100),
+    # 日期区间筛选(沿用 /cash-flows 的写法):财务对账时需要按时间段查,
+    # 原先该页只有弹窗里的"收款日期"输入框,列表本身无法按区间过滤。
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)),
     db: Session = Depends(get_db),
 ):
     request_started_at = perf_counter()
     repair_sales_receipt_workflows(db)
     stage_started_at = perf_counter()
-    records = db.execute(select(ReceivableRecord).order_by(ReceivableRecord.received_at.desc(), ReceivableRecord.id.desc())).scalars().all()
+    records_query = select(ReceivableRecord).order_by(ReceivableRecord.received_at.desc(), ReceivableRecord.id.desc())
+    requests_query = select(SalesReceiptRequest).order_by(SalesReceiptRequest.created_at.desc(), SalesReceiptRequest.id.desc())
+    if date_from is not None:
+        start_at = datetime.combine(date_from, datetime.min.time())
+        records_query = records_query.where(ReceivableRecord.received_at >= start_at)
+        requests_query = requests_query.where(SalesReceiptRequest.created_at >= start_at)
+    if date_to is not None:
+        end_at = datetime.combine(date_to, datetime.max.time())
+        records_query = records_query.where(ReceivableRecord.received_at <= end_at)
+        requests_query = requests_query.where(SalesReceiptRequest.created_at <= end_at)
+    records = db.execute(records_query).scalars().all()
     trace_stage("receivables_load_records", stage_started_at, record_count=len(records))
     stage_started_at = perf_counter()
-    receipt_requests = db.execute(
-        select(SalesReceiptRequest).order_by(SalesReceiptRequest.created_at.desc(), SalesReceiptRequest.id.desc())
-    ).scalars().all()
+    receipt_requests = db.execute(requests_query).scalars().all()
     trace_stage("receivables_load_requests", stage_started_at, request_count=len(receipt_requests))
     record_order_ids = [row.sales_order_id for row in records]
     request_order_ids = [row.sales_order_id for row in receipt_requests]
@@ -795,11 +826,27 @@ def register_merged_sales_receipt_requests(
 
 
 @router.get("/payables")
-def list_payables(current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)), db: Session = Depends(get_db)):
-    records = db.execute(select(PayableRecord).order_by(PayableRecord.paid_at.desc(), PayableRecord.id.desc())).scalars().all()
-    payment_requests = db.execute(
-        select(PurchasePaymentRequest).order_by(PurchasePaymentRequest.created_at.desc(), PurchasePaymentRequest.id.desc())
-    ).scalars().all()
+def list_payables(
+    # 同应收:补上日期区间筛选,便于按账期对账
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)),
+    db: Session = Depends(get_db),
+):
+    records_query = select(PayableRecord).order_by(PayableRecord.paid_at.desc(), PayableRecord.id.desc())
+    requests_query = select(PurchasePaymentRequest).order_by(
+        PurchasePaymentRequest.created_at.desc(), PurchasePaymentRequest.id.desc()
+    )
+    if date_from is not None:
+        start_at = datetime.combine(date_from, datetime.min.time())
+        records_query = records_query.where(PayableRecord.paid_at >= start_at)
+        requests_query = requests_query.where(PurchasePaymentRequest.created_at >= start_at)
+    if date_to is not None:
+        end_at = datetime.combine(date_to, datetime.max.time())
+        records_query = records_query.where(PayableRecord.paid_at <= end_at)
+        requests_query = requests_query.where(PurchasePaymentRequest.created_at <= end_at)
+    records = db.execute(records_query).scalars().all()
+    payment_requests = db.execute(requests_query).scalars().all()
     record_order_ids = [row.purchase_order_id for row in records]
     request_order_ids = [row.purchase_order_id for row in payment_requests]
     user_ids = [row.paid_by_id for row in records if row.paid_by_id]
@@ -888,8 +935,10 @@ def list_payables(current_user: User = Depends(require_roles(*FINANCE_READ_ROLES
                     "order_amount": float(row.order_amount or 0),
                     "other_fee_amount": float(row.other_fee_amount or 0),
                     "actual_amount": float(row.actual_amount or 0),
-                    "arrival_status": row.arrival_status,
-                    "arrival_status_label": status_label(row.arrival_status),
+                    # arrival_status 列是建申请时的快照,质检通过后不会刷新,
+                    # 直接读会让已到货的单一直显示"未到货";按采购单实时计算。
+                    "arrival_status": purchase_arrival_status(db, row.purchase_order_id) if row.purchase_order_id else row.arrival_status,
+                    "arrival_status_label": status_label(purchase_arrival_status(db, row.purchase_order_id) if row.purchase_order_id else row.arrival_status),
                     "status": row.status,
                     "status_label": status_label(row.status),
                     "payment_detail_remark": row.payment_detail_remark,

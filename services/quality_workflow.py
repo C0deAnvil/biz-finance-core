@@ -19,7 +19,7 @@ from models import (
     Supplier,
     Warehouse,
 )
-from services.core import next_business_no
+from services.core import next_business_no, resolve_assigned_inspector_id
 
 PURCHASE_QUALITY_NOTES_PREFIX = "PURCHASE_QUALITY::"
 RETURN_QUALITY_NOTES_PREFIX = "RETURN_QUALITY::"
@@ -99,6 +99,7 @@ def create_production_quality_task(
     production_task: ProductionTask,
     submitted_by_id: int,
     required_tests: int,
+    assigned_inspector_id: int | None = None,
 ) -> QualityTask:
     quality_task = QualityTask(
         quality_no=next_business_no(db, "ZJY"),
@@ -108,6 +109,9 @@ def create_production_quality_task(
         required_tests=required_tests,
         status="pending",
         submitted_by_id=submitted_by_id,
+        # 指定质检员(未指定则轮询分配),归属仓库用于普通质检员的可见范围过滤
+        assigned_inspector_id=resolve_assigned_inspector_id(db, assigned_inspector_id),
+        target_warehouse_id=production_task.warehouse_id,
     )
     db.add(quality_task)
     db.flush()
@@ -122,6 +126,7 @@ def create_purchase_quality_tasks(
     submitted_by_id: int,
     required_tests: int = 1,
     skip_receipt_item_ids: set[int] | None = None,
+    assigned_inspector_id: int | None = None,
 ) -> list[QualityTask]:
     order_items = {
         row.id: row
@@ -140,6 +145,8 @@ def create_purchase_quality_tasks(
     placeholder_product = quality_shadow_product(db)
     total_items = len(receipt_items)
     created_tasks: list[QualityTask] = []
+    # 同一批到货共用同一个指定质检员:在循环外校验一次,避免重复查库。
+    batch_inspector_id = resolve_assigned_inspector_id(db, assigned_inspector_id)
 
     for index, receipt_item in enumerate(receipt_items):
         if skip_receipt_item_ids and receipt_item.id in skip_receipt_item_ids:
@@ -201,6 +208,9 @@ def create_purchase_quality_tasks(
             required_tests=required_tests,
             status="pending",
             submitted_by_id=submitted_by_id,
+            # 采购到货质检:归属收货仓库,整批派给同一质检员(见上方 batch_inspector_id)
+            assigned_inspector_id=batch_inspector_id,
+            target_warehouse_id=receipt.warehouse_id,
         )
         db.add(quality_task)
         db.flush()
@@ -220,6 +230,8 @@ def create_return_reinspection_quality_task(
     quantity: Decimal,
     submitted_by_id: int,
     required_tests: int = 1,
+    assigned_inspector_id: int | None = None,
+    target_warehouse_id: int | None = None,
 ) -> QualityTask:
     placeholder_product = quality_shadow_product(db)
     source_type = "sales_return_reinspection" if business_type == "sales_return" else "purchase_return_reinspection"
@@ -255,6 +267,9 @@ def create_return_reinspection_quality_task(
         required_tests=required_tests,
         status="pending",
         submitted_by_id=submitted_by_id,
+        # 退货复检:指定质检员(未指定则留空,由该仓库质检员自行领取)
+        assigned_inspector_id=resolve_assigned_inspector_id(db, assigned_inspector_id),
+        target_warehouse_id=target_warehouse_id,
     )
     db.add(quality_task)
     db.flush()

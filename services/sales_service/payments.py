@@ -33,14 +33,13 @@ from models import (
 )
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.time_utils import now_local
 
 
@@ -125,17 +124,25 @@ def submit_sales_receipt_request(payload: SalesReceiptRequestCreate, current_use
         installment_index=payload.installment_index,
         status="pending_finance_check",
         remark=payload.remark,
+        # 指定处理该收款申请的财务;不指定则按待办量轮询分配
+        assigned_finance_user_id=resolve_assigned_finance_user_id(
+            db, payload.assigned_finance_user_id
+        ),
     )
     db.add(request)
     db.flush()
 
-    finance_user_ids = resolve_workflow_recipients(
-        db,
-        "finance",
-        workflow="sales_receipt_request",
-        business_type="sales_receipt_request",
-        business_id=request.id,
-    )
+    # 指定了财务就派给他,否则回落到全体财务
+    if request.assigned_finance_user_id:
+        finance_user_ids = [request.assigned_finance_user_id]
+    else:
+        finance_user_ids = resolve_workflow_recipients(
+            db,
+            "finance",
+            workflow="sales_receipt_request",
+            business_type="sales_receipt_request",
+            business_id=request.id,
+        )
     for user_id in finance_user_ids:
         create_todo(
             db,
@@ -198,12 +205,18 @@ def submit_merged_sales_receipt_request(payload: SalesMergedReceiptRequestCreate
     merge_no = next_business_no(db, "HSK")
     created_rows: list[SalesReceiptRequest] = []
     requested_total = Decimal("0")
-    finance_user_ids = resolve_workflow_recipients(
-        db,
-        "finance",
-        workflow="sales_merged_receipt_request",
-        business_type="sales_receipt_request",
-    )
+    # 整批合并收款指派给同一个财务(在循环外校验一次,避免同批被拆给不同人)。
+    # 改造前合并路径完全不写该字段,导致合并收款申请恒为"未分配"、广播给全体财务。
+    assigned_finance_user_id = resolve_assigned_finance_user_id(db, payload.assigned_finance_user_id)
+    if assigned_finance_user_id:
+        finance_user_ids = [assigned_finance_user_id]
+    else:
+        finance_user_ids = resolve_workflow_recipients(
+            db,
+            "finance",
+            workflow="sales_merged_receipt_request",
+            business_type="sales_receipt_request",
+        )
 
     for order in orders:
         _ensure_order_owner_or_admin(order, current_user)
@@ -252,6 +265,7 @@ def submit_merged_sales_receipt_request(payload: SalesMergedReceiptRequestCreate
             installment_index=payload.installment_index,
             status="pending_finance_check",
             remark="；".join(remark_parts),
+            assigned_finance_user_id=assigned_finance_user_id,
         )
         db.add(request)
         db.flush()

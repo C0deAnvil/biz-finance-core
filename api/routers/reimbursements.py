@@ -19,7 +19,7 @@ from schemas.reimbursements import (
     ReimbursementCreate,
     ReimbursementPayRequest,
 )
-from services.core import complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, write_operation_log
+from services.core import _role_user_ids, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_assigned_finance_user_id, write_operation_log
 from services.time_utils import now_local
 
 
@@ -55,15 +55,6 @@ MATTER_STATUS_LABELS = {
 }
 
 
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
-
-
 def _validate_category(expense_category: str, expense_subcategory: str) -> None:
     if expense_category in SUBCATEGORY_OPTIONS and expense_subcategory not in SUBCATEGORY_OPTIONS[expense_category]:
         raise HTTPException(status_code=409, detail="费用小类不属于所选费用大类")
@@ -88,6 +79,7 @@ def _serialize_reimbursement(row: Reimbursement) -> dict:
         "chairman_user_name": row.chairman_user.full_name if row.chairman_user else None,
         "chairman_remark": row.chairman_remark,
         "finance_user_id": row.finance_user_id,
+        "assigned_finance_user_id": row.assigned_finance_user_id,
         "finance_user_name": row.finance_user.full_name if row.finance_user else None,
         "finance_remark": row.finance_remark,
         "payment_method": row.payment_method,
@@ -258,6 +250,7 @@ def convert_matter_to_reimbursement(
         attachment_id=payload.attachment_id or matter.attachment_id,
         business_matter_id=matter.id,
         created_by_id=current_user.id,
+        assigned_finance_user_id=payload.assigned_finance_user_id,
     )
     matter.status = "converted"
     matter.actual_amount = Decimal(payload.actual_amount or 0)
@@ -279,6 +272,7 @@ def _create_reimbursement_row(
     attachment_id: int | None,
     business_matter_id: int | None,
     created_by_id: int,
+    assigned_finance_user_id: int | None = None,
 ) -> Reimbursement:
     row = Reimbursement(
         reimbursement_no=next_business_no(db, "BX"),
@@ -291,6 +285,8 @@ def _create_reimbursement_row(
         attachment_id=attachment_id,
         business_matter_id=business_matter_id,
         status="pending_chairman_approval",
+        # 申请时即指定由谁出账;董事长审批通过后待办直接派给此人
+        assigned_finance_user_id=resolve_assigned_finance_user_id(db, assigned_finance_user_id),
     )
     db.add(row)
     db.flush()
@@ -346,6 +342,7 @@ def create_reimbursement(payload: ReimbursementCreate, current_user: User = Depe
         attachment_id=payload.attachment_id,
         business_matter_id=payload.business_matter_id,
         created_by_id=current_user.id,
+        assigned_finance_user_id=payload.assigned_finance_user_id,
     )
     db.commit()
     db.refresh(row)
@@ -370,7 +367,12 @@ def audit_reimbursement(
     row.approved_at = now_local()
     complete_todos(db, business_type="reimbursement", business_id=row.id)
     if row.status == "approved":
-        finance_user_ids = _role_user_ids(db, "finance")
+        # 出账待办派给申请时指定的财务;未指定时回落到全体财务
+        finance_user_ids = (
+            [row.assigned_finance_user_id]
+            if row.assigned_finance_user_id
+            else _role_user_ids(db, "finance")
+        )
         for user_id in finance_user_ids:
             create_todo(
                 db,

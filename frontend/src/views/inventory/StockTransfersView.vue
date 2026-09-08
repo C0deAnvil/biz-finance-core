@@ -115,6 +115,26 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/alert/style/css'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/input-number/style/css'
+import 'element-plus/es/components/radio/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/tag/style/css'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
+import ElRadio, { ElRadioGroup, ElRadioButton } from 'element-plus/es/components/radio/index.mjs'
+import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
+import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, ref } from 'vue'
 
 import PageSection from '../../components/PageSection.vue'

@@ -605,12 +605,11 @@ class Inventory(TimestampMixin, Base):
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
-    quantity = Column(Numeric(18, 4), nullable=False, default=0)
-    reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0)
-    in_production = Column(Numeric(18, 4), nullable=False, default=0)  # 在制
-    in_transit = Column(Numeric(18, 4), nullable=False, default=0)     # 在途
-    on_order = Column(Numeric(18, 4), nullable=False, default=0)       # 在订
-    available = Column(Numeric(18, 4), nullable=False, default=0)      # 可用(冗余计算)
+    quantity = Column(Numeric(18, 4), nullable=False, default=0)      # 实有
+    reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0)  # 占用
+    in_transit = Column(Numeric(18, 4), nullable=False, default=0)     # 在途(退货在途;采购在途由采购单实时推导)
+    # 已删除 in_production / on_order / available 三个缓存列:它们是第 4 套"可用量"算法,
+    # 与其他算法口径互相矛盾且前端从未使用。可用量统一由 services/inventory_availability 实时计算。
     ext_json = Column(JSON, nullable=True)
     avg_unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
 
@@ -731,6 +730,9 @@ class SalesOrder(TimestampMixin, Base):
     rejection_reason = Column(Text, nullable=True)
     approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     approved_at = Column(DateTime, nullable=True)
+    # 提交审批时指定的财务人员(需求:所有财务事务都要指定一个财务负责人)。
+    # 与 approved_by_id 的区别:这里是"派给谁办",后者是"最终谁办了"。
+    assigned_finance_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     shipped_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
@@ -762,6 +764,9 @@ class SalesOrderItem(TimestampMixin, Base):
     remark = Column(String(255), nullable=True)
     shipped_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
     placed_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+    # 本明细当前占用了多少成品库存。有了这个"账",占用才能做到幂等(重复审批不叠加)
+    # 且可释放(驳回/取消时知道该退还多少),否则只看仓库端的 reserved 无法区分是谁占的。
+    reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
 
     sales_order = relationship("SalesOrder", back_populates="items")
     product = relationship("Product")
@@ -833,6 +838,11 @@ class FulfillmentDemand(TimestampMixin, Base):
     sales_order_item_id = Column(Integer, ForeignKey("sales_order_items.id"), nullable=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     fulfillment_mode = Column(String(30), nullable=False)
+    # required_quantity 为原始需求量(恒定不变),fulfilled_quantity 为已补货量(累加),
+    # shortage_quantity 为当前待补量。改造前只有 shortage_quantity 且被原地递减,
+    # 原始需求量丢失,导致分批生产/分批采购的"待补货/已补货"进度无法还原。
+    required_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+    fulfilled_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
     shortage_quantity = Column(Numeric(18, 4), nullable=False)
     status = Column(String(30), nullable=False, default="pending")
     assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -1087,6 +1097,8 @@ class ProductionTask(TimestampMixin, Base):
     product = relationship("Product")
     fulfillment_demand = relationship("FulfillmentDemand", foreign_keys=[fulfillment_demand_id])
     completion_recorded_by = relationship("User", foreign_keys=[completion_recorded_by_id])
+    # 供接口展示"本任务归属哪个入库仓库",避免只拿到 id
+    warehouse = relationship("Warehouse", foreign_keys=[warehouse_id])
     usages = relationship(
         "ProductionMaterialUsage",
         back_populates="production_task",
@@ -1167,6 +1179,15 @@ class QualityTask(TimestampMixin, Base):
     required_tests = Column(Integer, nullable=False, default=1)
     status = Column(String(30), nullable=False, default="pending")
     submitted_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # 申请质检时指定的质检员(需求:由指定质检员或超级质检员处理)。
+    # 与 QualityInspection.inspector_user_id 的区别:这里是"派给谁检",后者是"谁检了"。
+    assigned_inspector_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # 该质检任务归属的仓库,用于普通质检员的可见范围过滤(超级质检员不受限)
+    target_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
+
+    # 供接口展示"派给谁检"与"归属哪个仓库"的名称,避免前端只拿到 id
+    assigned_inspector = relationship("User", foreign_keys=[assigned_inspector_id])
+    target_warehouse = relationship("Warehouse", foreign_keys=[target_warehouse_id])
 
     inspections = relationship(
         "QualityInspection",
@@ -1261,6 +1282,8 @@ class SalesReceiptRequest(TimestampMixin, Base):
     finance_status = Column(String(30), nullable=False, default="pending")
     finance_checked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     finance_checked_at = Column(DateTime, nullable=True)
+    # 提交收款申请时指定的财务人员(派给谁办;finance_checked_by_id 记录最终谁办了)
+    assigned_finance_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     receipt_method = Column(String(80), nullable=True)
     receipt_at = Column(DateTime, nullable=True)
     bank_receipt_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
@@ -1346,6 +1369,9 @@ class Reimbursement(TimestampMixin, Base):
     occurred_at = Column(DateTime, nullable=False)
     reason = Column(Text, nullable=False)
     status = Column(String(30), nullable=False, default="pending")
+    # 申请时指定的财务人员(派给谁办)。
+    # finance_user_id 保留原语义:实际执行付款的财务(谁办了),两者用途不同不可合并。
+    assigned_finance_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     finance_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     finance_remark = Column(Text, nullable=True)
     chairman_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)

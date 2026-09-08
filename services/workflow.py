@@ -29,7 +29,7 @@ from models import (
 )
 from responses import api_response
 from schemas.inventory import InventoryOperationApprovalRequest, InventoryOperationHandleRequest
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_workflow_recipients, role_user_ids, write_operation_log
 from services.display import status_label
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
@@ -78,17 +78,6 @@ def _has_quantity_difference(expected_items: list[dict], actual_items: list[dict
 
 def _operation_quantity_label(operation_type: str) -> tuple[str, str]:
     return ("应到", "实到") if operation_type == "inbound" else ("应出", "实出")
-
-
-def role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    if not role_codes:
-        return []
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def finished_warehouse_id(db: Session) -> int:

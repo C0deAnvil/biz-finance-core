@@ -80,6 +80,22 @@
         <el-table-column prop="shortage_quantity" label="缺口数量" width="120">
           <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
         </el-table-column>
+        <el-table-column label="补货进度" width="180">
+          <template #default="scope">
+            <div class="demand-progress">
+              <el-progress
+                :percentage="demandProgressPercent(scope.row)"
+                :stroke-width="10"
+                :show-text="false"
+                :status="demandProgressPercent(scope.row) >= 100 ? 'success' : undefined"
+              />
+              <div class="demand-progress-text">
+                已补 {{ formatNumber(scope.row.fulfilled_quantity || 0) }} / 共需 {{ formatNumber(demandRequired(scope.row)) }}
+                <span v-if="demandPending(scope.row) > 0" class="demand-progress-pending">还差 {{ formatNumber(demandPending(scope.row)) }}</span>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="原料状况" width="110">
           <template #default="scope">
             <el-tag v-if="scope.row.shortage_level === 'green'" type="success" effect="dark">绿·原料充足</el-tag>
@@ -122,7 +138,7 @@
       />
     </PageSection>
 
-    <el-dialog v-model="materialProgressVisible" title="原料状况与补货确认" width="860px">
+    <el-dialog v-model="materialProgressVisible" title="原料状况与补货确认" width="min(1100px, 95vw)">
       <template v-if="materialProgressData">
         <el-alert
           :type="materialProgressData.can_produce ? 'success' : 'warning'"
@@ -156,7 +172,7 @@
           <el-table-column label="关联采购单" min-width="140">
             <template #default="scope">{{ scope.row.related_po_no || '-' }}</template>
           </el-table-column>
-          <el-table-column v-if="!materialProgressData.can_produce" label="建议补货数量" width="140">
+          <el-table-column v-if="!materialProgressData.can_produce" label="本次补货数量" width="170" fixed="right">
             <template #default="scope">
               <el-input-number
                 v-model="scope.row.suggest_quantity"
@@ -164,18 +180,19 @@
                 :max="scope.row.shortage"
                 :precision="2"
                 size="small"
+                style="width: 140px"
                 :disabled="scope.row.satisfied || Number(scope.row.submitted_quantity) > 0"
               />
             </template>
           </el-table-column>
         </el-table>
         <div v-if="!materialProgressData.can_produce" class="material-progress-tip">
-          对需要补货的原料填写数量后点击「提交补货需求」，将为补货数量大于 0 的原料各生成一条采购补货需求；原料到货质检合格后可继续转建任务。
+          在右侧「本次补货数量」中填写数量后提交，生成原料采购补货需求。已提交的原料请等待采购处理；质检入库且可用库存满足需求后，可继续转建任务。
         </div>
       </template>
       <template #footer>
         <el-button @click="materialProgressVisible = false">关闭</el-button>
-        <el-button v-if="!materialProgressData?.can_produce" type="primary" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">提交补货需求</el-button>
+        <el-button v-if="materialProgressData && !materialProgressData.can_produce" type="primary" :disabled="!materialProgressItems.some(item => Number(item.suggest_quantity) > 0)" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">提交补货需求</el-button>
         <el-button v-if="materialProgressData?.can_produce" type="success" @click="closeMaterialProgressAndCreateTask">转建任务</el-button>
       </template>
     </el-dialog>
@@ -334,6 +351,15 @@
           <el-col :span="12"><el-form-item label="产出数量"><el-input-number v-model="completeForm.produced_quantity" :min="0.01" style="width: 100%" @change="syncScrapFromProduced" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="报废数量"><el-input-number v-model="completeForm.scrap_quantity" :min="0" style="width: 100%" @change="syncProducedFromScrap" /></el-form-item></el-col>
           <el-col :span="24"><el-form-item label="完工后质检"><el-switch v-model="completeForm.requires_quality" active-text="需要质检" inactive-text="无需质检" /></el-form-item></el-col>
+          <!-- 这里不该指定质检员:质检与入库由目标仓库的质检员/库管接手,
+               后端建质检任务时已用建任务时选定的 task.warehouse_id
+               (services/quality_workflow.py:114),所以此处只需展示归属仓库。 -->
+          <el-col v-if="completeForm.requires_quality" :span="24">
+            <el-form-item label="入库仓库">
+              <span>{{ taskDetail?.warehouse?.name || taskDetail?.warehouse_name || '默认成品仓' }}</span>
+              <span class="toolbar-tip" style="margin-left: 8px">质检与入库由该仓库的质检员、库管完成</span>
+            </el-form-item>
+          </el-col>
           <el-col :span="24">
             <el-form-item label="初步验收">
               <el-input
@@ -455,6 +481,7 @@ import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/row/style/css'
 import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/switch/style/css'
+import 'element-plus/es/components/progress/style/css'
 import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tabs/style/css'
 import 'element-plus/es/components/tag/style/css'
@@ -475,6 +502,7 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
+import ElProgress from 'element-plus/es/components/progress/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTabs, { ElTabPane } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -530,6 +558,25 @@ const pagination = reactive({ page: 1, pageSize: 10 })
 const total = ref(0)
 const pageSizes = [10, 20, 50, 100]
 const pagedRows = rows
+// 分批补货进度(后端 required/fulfilled/pending_quantity;老数据回退推算)
+function demandRequired(row) {
+  const required = Number(row?.required_quantity || 0)
+  if (required > 0) return required
+  return Number(row?.fulfilled_quantity || 0) + Number(row?.shortage_quantity || 0)
+}
+
+function demandPending(row) {
+  const pending = row?.pending_quantity
+  if (pending !== null && pending !== undefined) return Number(pending)
+  return Math.max(demandRequired(row) - Number(row?.fulfilled_quantity || 0), 0)
+}
+
+function demandProgressPercent(row) {
+  const required = demandRequired(row)
+  if (required <= 0) return 0
+  return Math.min(Math.max(Math.round((Number(row?.fulfilled_quantity || 0) / required) * 100), 0), 100)
+}
+
 function ensureVisible(predicate) {
   return rows.value.find(predicate) || null
 }
@@ -797,7 +844,8 @@ async function createTaskDirect() {
     // 待办已完成等并发场景不影响任务创建结果
     console.warn('low_stock todo done failed', e)
   }
-  ElMessage.success('生产任务已创建')
+  // 回显任务编号:库管/生产需要据此追溯,原先只说"已创建"看不出建了哪一单
+  ElMessage.success(result?.task_no ? `已转生产任务，任务编号 ${result.task_no}` : '生产任务已创建')
   createVisible.value = false
   resetCreateForm()
   activeTaskTab.value = 'ongoing'
@@ -870,13 +918,12 @@ async function openMaterialProgress(row) {
   try {
     const progress = await get(`/api/production/fulfillment-demands/${row.id}/material-progress`)
     materialProgressData.value = progress
-    // 计算建议补货数量:缺口 = 需求 - 库存可用 - 已到货(已入库原料);未满足且未提交补货的原料默认按缺口补
+    // 已入库数量已包含在库存中，到货但未入库的数量不可用于生产。
     materialProgressItems.value = (progress.items || []).map((item) => {
       const stockAvailable = Number(item.stock_available_quantity || 0)
-      const received = Number(item.received_quantity || 0)
       const required = Number(item.required_quantity || 0)
       const submitted = Number(item.submitted_quantity || 0)
-      const shortage = Math.max(required - stockAvailable - received, 0)
+      const shortage = Math.max(required - stockAvailable, 0)
       return {
         ...item,
         shortage,
@@ -955,17 +1002,32 @@ function prefillLowStockDemand(row) {
   openCreateTaskDialog(row)
 }
 
-function openCreateTaskDialog(row) {
+async function openCreateTaskDialog(row) {
   resetCreateForm()
   activeDemand.value = row
   createForm.source_type = row.sales_order_id ? 'sales_order' : 'manual'
   createForm.sales_order_id = row.sales_order_id || null
+  // source_type 置为 sales_order 时必须同时载入订单详情:
+  // availableProducts 在该模式下要用 selectedSalesOrder.items 过滤产品,
+  // 不载入就恒为空数组 —— "产品"下拉显示 no data,任务根本建不了。
+  if (createForm.sales_order_id) {
+    try {
+      selectedSalesOrder.value = await get(`/api/sales/orders/${createForm.sales_order_id}`)
+    } catch (error) {
+      // 订单详情取不到时退回手工排产,至少让全部产品可选,不要卡死流程
+      selectedSalesOrder.value = null
+      createForm.source_type = 'manual'
+    }
+  }
   createForm.product_id = row.product_id
   const shortageQuantity = Number(row.shortage_quantity || 1)
-  const maxProducibleQuantity = row.max_producible_quantity === undefined
-    ? shortageQuantity
-    : Number(row.max_producible_quantity || 0)
-  createForm.planned_quantity = Math.min(shortageQuantity, maxProducibleQuantity)
+  // 计划数量默认取"补货需求量";原料不足时才压到最大可产。
+  // 原先无条件 Math.min(缺口, 最大可产),而最大可产曾因取值 bug 恒为 0,
+  // 结果默认值被 el-input-number 的 :min 顶成 0.01。
+  const maxProducibleQuantity = Number(row.max_producible_quantity || 0)
+  createForm.planned_quantity = maxProducibleQuantity > 0
+    ? Math.min(shortageQuantity, maxProducibleQuantity)
+    : shortageQuantity
   createForm.fulfillment_demand_id = row.source_type === 'low_stock_replenishment' ? null : row.id
   buildCreateMaterialUsages()
   createVisible.value = true
@@ -1139,6 +1201,7 @@ async function completeTask() {
     scrap_quantity: completeForm.scrap_quantity,
     requires_quality: completeForm.requires_quality,
     preliminary_acceptance_note: completeForm.preliminary_acceptance_note,
+    // 不需质检时不传指定质检员,避免无意义的指派
     actual_usages: completeForm.actual_usages.map((item) => ({
       material_id: item.material_id,
       requested_quantity: item.requested_quantity,
@@ -1200,12 +1263,33 @@ watch(
   }
 )
 
+/**
+ * 目标仓库候选(成品仓)。
+ *
+ * 原先 onMounted 里直接调用 loadFinishedWarehouses(),但全文没有定义它 ——
+ * Promise.all([...]) 在构造数组时就抛 ReferenceError,
+ * 连带同一行的 load() 等调用都不执行,
+ * 于是"目标仓库"和"指定质检员"两个下拉都是 no data。
+ */
+async function loadFinishedWarehouses() {
+  try {
+    const res = await get('/api/master-data/warehouses')
+    const rows = Array.isArray(res) ? res : (res?.items || [])
+    finishedWarehouses.value = rows.filter((item) => item.type === 'finished')
+  } catch (error) {
+    finishedWarehouses.value = []
+  }
+}
+
 onMounted(async () => {
-  products.value = await get('/api/master-data/products')
+  const productData = await get('/api/master-data/products')
+  products.value = Array.isArray(productData) ? productData : (productData?.items || [])
   boms.value = await get('/api/production/boms')
-  salesOrders.value = await get('/api/sales/orders')
-  await loadFinishedWarehouses()
-  await load()
+  // 该接口返回 {items, pagination} 对象:原先直接赋值会让下拉框显示两条 undefined。
+  // 且默认 tab 只取草稿,生产要关联的是已审批在流转的单,故取 all。
+  const orderData = await get('/api/sales/orders?tab=all&page=1&page_size=100')
+  salesOrders.value = Array.isArray(orderData) ? orderData : (orderData.items || [])
+  await Promise.all([loadFinishedWarehouses(), load()])
 })
 </script>
 
@@ -1250,4 +1334,8 @@ onMounted(async () => {
     white-space: normal;
   }
 }
+
+.demand-progress { display: flex; flex-direction: column; gap: 4px; }
+.demand-progress-text { font-size: 12px; color: var(--el-text-color-regular); line-height: 1.4; }
+.demand-progress-pending { color: var(--el-color-warning); margin-left: 4px; }
 </style>

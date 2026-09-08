@@ -43,6 +43,7 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/tag/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/form/style/css'
@@ -52,6 +53,7 @@ import 'element-plus/es/components/table/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
+import ElTag from 'element-plus/es/components/tag/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'

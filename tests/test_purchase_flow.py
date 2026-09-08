@@ -167,13 +167,18 @@ def test_purchase_payment_request_flow(client, login):
     request_data = resp.json().get("data") or {}
     request_id = request_data["id"]
 
-    # 董事长审批
+    # 未达审批阈值(默认 50000)的付款申请直接进入财务出账环节,不再经董事长审批。
+    # 原先所有付款一律先派给董事长,小额付款也要等审批,流程无谓变长;
+    # 且董事长审批后会再产生一张待付款申请,存在重复付款风险。
+    assert request_data.get("status") == "pending_finance_payment", (
+        f"小额付款申请应直接待财务出账, 实际 {request_data.get('status')}"
+    )
     login("chairman01")
     resp = client.post(
         f"/api/purchases/settlements/payment-requests/{request_id}/approve",
         json={"decision": "approved", "actual_amount": total_amount, "manager_remark": "pytest 审批通过"},
     )
-    assert resp.status_code == 200, f"付款审批失败: {resp.text}"
+    assert resp.status_code == 409, f"未达阈值的付款申请不应可被董事长审批: {resp.text}"
 
     # 财务登记出账(需先上传银行回单)
     receipt_attachment_id = upload_attachment(

@@ -31,7 +31,7 @@ from schemas.finance import (
     RefundRecordCreate,
     SalesCostUpdate,
 )
-from services.core import complete_todos, create_cash_flow, create_notification, write_operation_log
+from services.core import _role_user_ids, complete_todos, create_cash_flow, create_notification, write_operation_log
 from services.time_utils import now_local
 
 
@@ -42,18 +42,6 @@ def _recalculate_sales_profit(order: SalesOrder):
         - Decimal(order.transport_fee or 0)
         - Decimal(order.packaging_fee or 0)
     )
-
-
-def _role_user_ids(db: Session, *role_codes: str, exclude_user_id: int | None = None) -> list[int]:
-    user_ids = [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
-    if exclude_user_id is not None:
-        user_ids = [user_id for user_id in user_ids if user_id != exclude_user_id]
-    return user_ids
 
 
 def _purchase_paid_amount(db: Session, order_id: int) -> Decimal:

@@ -40,7 +40,6 @@ from services.replenishment_service import create_sales_shortage_demand, ensure_
 from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.time_utils import now_local
 
 
@@ -255,6 +254,8 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
                 item_label="、".join(dict.fromkeys(reinspection_names)) or "退换货产品",
                 quantity=total_reinspection_quantity,
                 submitted_by_id=current_user.id,
+                # 退货复检归属成品仓,普通质检员按此过滤可见范围
+                target_warehouse_id=warehouse.id,
             )
             quality_user_ids = _role_user_ids(db, "quality", "manager", "chairman")
             for user_id in quality_user_ids:

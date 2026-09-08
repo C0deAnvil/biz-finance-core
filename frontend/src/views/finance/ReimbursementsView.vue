@@ -200,6 +200,11 @@
         <el-form-item label="发生时间"><el-date-picker v-model="form.occurred_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width:100%" /></el-form-item>
         <el-form-item label="报销凭证"><input type="file" accept=".jpg,.jpeg,.png,.pdf,.xls,.xlsx" @change="handleAttachmentChange" /></el-form-item>
         <el-form-item label="报销事由"><el-input v-model="form.reason" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="指定财务">
+          <el-select v-model="form.assigned_finance_user_id" clearable placeholder="不指定则系统自动分配" style="width:100%">
+            <el-option v-for="u in financeAssignees" :key="u.id" :label="u.is_super ? `${u.full_name}（超级财务）` : u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -242,6 +247,7 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/dialog/style/css'
@@ -252,6 +258,7 @@ import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/message/style/css'
 
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
@@ -268,6 +275,7 @@ import AppPagination from '../../components/AppPagination.vue'
 import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import DelayedActionButton from '../../components/DelayedActionButton.vue'
 import PageSection from '../../components/PageSection.vue'
+import { useFinanceAssignees } from '../../composables/useFinanceAssignees'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatNumber } from '../../utils/format'
@@ -289,7 +297,9 @@ function openAttachments(row) {
 
 const payVisible = ref(false)
 const activeRow = ref(null)
-const form = reactive({ expense_category: 'management', expense_subcategory: '', amount: 0, occurred_at: '', reason: '', business_matter_id: null })
+const { financeAssignees, loadFinanceAssignees } = useFinanceAssignees()
+
+const form = reactive({ expense_category: 'management', expense_subcategory: '', amount: 0, occurred_at: '', reason: '', business_matter_id: null, assigned_finance_user_id: null })
 const matterForm = reactive({ expense_category: 'management', expense_subcategory: '', estimated_amount: 0, occurred_at: '', detail: '' })
 const payForm = reactive({ paid_at: '', payment_method: '', finance_remark: '' })
 const selectedAttachmentFile = ref(null)
@@ -478,7 +488,8 @@ async function submit() {
         actual_amount: form.amount,
         occurred_at: form.occurred_at,
         reason: form.reason,
-        attachment_id: attachmentId
+        attachment_id: attachmentId,
+        assigned_finance_user_id: form.assigned_finance_user_id
       })
     } else {
       await post('/api/reimbursements', { ...form, attachment_id: attachmentId })
@@ -540,7 +551,9 @@ async function submitPay() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([load(), loadFinanceAssignees()])
+})
 </script>
 
 <style scoped>

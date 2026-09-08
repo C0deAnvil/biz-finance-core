@@ -50,9 +50,8 @@ from schemas.purchases import (
     PurchaseReturnCreate,
 )
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
@@ -122,7 +121,6 @@ from schemas.purchases import (
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
@@ -135,15 +133,6 @@ REPLENISHMENT_SOURCE_TYPES = {
     "fulfillment_demand",
     "sales_order_material_replenishment",
 }
-
-
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def _manager_user_ids(db: Session) -> list[int]:
@@ -343,6 +332,15 @@ def _purchase_paid_amount(db: Session, order_id: int) -> Decimal:
     return amount
 
 
+# 尚在流程中、会导致重复付款的付款申请状态(已驳回/已完成不算)
+UNFINISHED_PAYMENT_REQUEST_STATUSES = (
+    "pending_manager_approval",
+    "pending_chairman_approval",
+    "pending_finance_payment",
+    "pending_completion",
+)
+
+
 def _latest_payment_request(db: Session, order_id: int) -> PurchasePaymentRequest | None:
     return db.execute(
         select(PurchasePaymentRequest)
@@ -357,9 +355,28 @@ def _validate_order_payment_requestable(order: PurchaseOrder, current_user: User
         _ensure_order_owner(order, current_user)
     if order.status == "cancelled":
         raise HTTPException(status_code=409, detail=f"采购订单 {order.order_no} 已作废，不能发起付款申请")
-    latest_request = _latest_payment_request(db, order.id)
-    if latest_request and latest_request.status in {"pending_manager_approval", "pending_chairman_approval", "pending_finance_payment", "pending_completion"}:
-        raise HTTPException(status_code=409, detail=f"采购订单 {order.order_no} 存在未完成的付款申请")
+    # 必须查"是否存在任何未完成申请",不能只看最新一张。
+    # 原先用 _latest_payment_request(按 id 倒序取 first):
+    # 只要最新那张是已驳回/已完成,校验就放行,而更早一张可能仍在
+    # pending_finance_payment —— 同一采购单于是挂上两张有效申请,存在重复付款风险
+    # (CG20260907001 就出现了 FK20260907001 待财务付款 + FK20260907002 待完成)。
+    # 单笔与合并两条提交路径都走这里,一处修好即可同时覆盖。
+    unfinished_request = db.execute(
+        select(PurchasePaymentRequest)
+        .where(
+            PurchasePaymentRequest.purchase_order_id == order.id,
+            PurchasePaymentRequest.status.in_(UNFINISHED_PAYMENT_REQUEST_STATUSES),
+        )
+        .order_by(PurchasePaymentRequest.id.desc())
+    ).scalars().first()
+    if unfinished_request is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"采购订单 {order.order_no} 存在未完成的付款申请 "
+                f"{unfinished_request.request_no}，请先处理该申请后再提交，避免重复付款"
+            ),
+        )
 
 
 def _remaining_order_amount(db: Session, order: PurchaseOrder) -> Decimal:
@@ -847,10 +864,36 @@ def _complete_purchase_replenishment_source(
         return
 
     demand = source["demand"]
-    demand.status = "converted"
+    # 记录补货进度:按本单为该产品实际下单的量累加已补量。
+    # 原先这里只置 status="converted",从不动 fulfilled_quantity ——
+    # 而进度条读的是 fulfilled/required,于是采购型补货需求即便采购单已全部收货,
+    # 界面仍显示"已补 0 / 还差 N"(生产路径在 production_service.py:779 是有累加的,
+    # 两条路径口径不一致)。
+    ordered_quantity = sum(
+        (Decimal(item.quantity or 0) for item in order.items if item.product_id == demand.product_id),
+        Decimal("0"),
+    )
+    required_quantity = Decimal(demand.required_quantity or 0) or Decimal(demand.shortage_quantity or 0)
+    demand.required_quantity = required_quantity
+    if ordered_quantity > 0:
+        demand.fulfilled_quantity = min(
+            Decimal(demand.fulfilled_quantity or 0) + ordered_quantity, required_quantity
+        )
+        demand.shortage_quantity = max(
+            required_quantity - Decimal(demand.fulfilled_quantity or 0), Decimal("0")
+        )
+    # 未全额覆盖时保持 pending,库管/采购才能对剩余缺口继续下单;
+    # 全额覆盖才算 converted(与生产路径一致)。
+    remaining_quantity = max(required_quantity - Decimal(demand.fulfilled_quantity or 0), Decimal("0"))
+    demand.status = "converted" if remaining_quantity <= 0 else "pending"
     demand.processed_by_id = current_user.id
-    demand.process_note = f"已转采购订单 {order.order_no}"
-    complete_todos(db, business_type="fulfillment_demand", business_id=demand.id)
+    demand.process_note = (
+        f"已转采购订单 {order.order_no}，本单 {float(ordered_quantity)}，"
+        f"累计已补 {float(demand.fulfilled_quantity or 0)}/{float(required_quantity)}，"
+        f"剩余 {float(remaining_quantity)}。"
+    )
+    if remaining_quantity <= 0:
+        complete_todos(db, business_type="fulfillment_demand", business_id=demand.id)
     recipient_user_ids = [current_user.id]
     if demand.sales_order and demand.sales_order.sales_user_id:
         recipient_user_ids.append(demand.sales_order.sales_user_id)

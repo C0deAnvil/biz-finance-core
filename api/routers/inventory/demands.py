@@ -54,7 +54,6 @@ from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
 from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
-from services.inventory_dimensions import sync_inventory_dimensions
 
 
 
@@ -93,6 +92,8 @@ def create_manual_demand(
             "product_id": product.id,
             "product_name": product.name,
             "shortage_quantity": float(demand.shortage_quantity),
+            "required_quantity": float(demand.required_quantity or 0),
+            "fulfilled_quantity": float(demand.fulfilled_quantity or 0),
             "fulfillment_mode": demand.fulfillment_mode,
             "status": demand.status,
         },
@@ -122,6 +123,10 @@ def list_my_fulfillment_demands(
                 "product_id": row.product_id,
                 "product_name": row.product.name if row.product else None,
                 "shortage_quantity": float(row.shortage_quantity or 0),
+                # 分批补货进度:原始需求量 / 已补货量 / 待补货量
+                "required_quantity": progress.get("required_quantity"),
+                "fulfilled_quantity": progress.get("fulfilled_quantity"),
+                "pending_quantity": progress.get("pending_quantity"),
                 "fulfillment_mode": row.fulfillment_mode,
                 "fulfillment_mode_label": "采购" if row.fulfillment_mode == "trade" else "生产",
                 "sales_order_id": row.sales_order_id,

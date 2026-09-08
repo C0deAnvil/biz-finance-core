@@ -37,6 +37,13 @@
         <el-table-column label="状态" width="140">
           <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag></template>
         </el-table-column>
+        <el-table-column label="指定质检员" width="140">
+          <template #default="scope">
+            <el-tag v-if="isAssignedToMe(scope.row)" type="primary" effect="dark" size="small">{{ scope.row.assigned_inspector_name }}（我）</el-tag>
+            <span v-else-if="scope.row.assigned_inspector_name">{{ scope.row.assigned_inspector_name }}</span>
+            <span v-else class="text-muted">未指定</span>
+          </template>
+        </el-table-column>
         <el-table-column label="异常处理" min-width="180">
           <template #default="scope">
             <span v-if="scope.row.disposition_type === 'rework'">返工：{{ scope.row.related_production_task_no || '-' }}</span>
@@ -96,6 +103,11 @@
         <el-form-item label="供应商"><el-input :model-value="selectedOrderDetail?.supplier_name || '-'" disabled /></el-form-item>
         <el-form-item label="批次规则"><el-input :model-value="batchRuleText" disabled /></el-form-item>
         <el-form-item label="质检次数"><el-input-number v-model="createForm.required_tests" :min="1" :max="20" style="width: 100%" /></el-form-item>
+        <el-form-item label="指定质检员">
+          <el-select v-model="createForm.assigned_inspector_id" clearable placeholder="不指定则由该仓库质检员自行领取" style="width: 100%">
+            <el-option v-for="u in qualityInspectors" :key="u.id" :label="u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="备注"><el-input v-model="createForm.remark" type="textarea" :rows="3" /></el-form-item>
         <el-table :data="previewRows" border>
           <el-table-column prop="item_type_label" label="类型" width="100" />
@@ -254,11 +266,13 @@ import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { usePagePermission } from '../../composables/usePagePermission'
+import { useQualityInspectors } from '../../composables/useQualityInspectors'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatNumber, statusLabel, statusType } from '../../utils/format'
 
 const auth = useAuthStore()
 const pagePermission = usePagePermission()
+const { qualityInspectors, loadQualityInspectors } = useQualityInspectors()
 const { route, focusedId: focusedTaskId, applyFocus: applyRouteFocus } = useRouteFocus()
 
 const rows = ref([])
@@ -278,7 +292,7 @@ const canOperateQuality = computed(() => auth.isRole('quality') && pagePermissio
 const canUploadAttachments = computed(() => auth.isRole('quality') && pagePermission.can('upload'))
 
 const filters = reactive({ status: '', keyword: '' })
-const createForm = reactive({ purchase_order_id: null, required_tests: 1, remark: '' })
+const createForm = reactive({ purchase_order_id: null, required_tests: 1, remark: '', assigned_inspector_id: null })
 const inspectionForm = reactive({ sequence_no: 1, result_text: '', grade: 'A', is_passed: true, inspected_quantity: 1, sample_consumption_qty: 0, report_summary: '' })
 const reworkForm = reactive({ quantity: 1, reason: '' })
 const scrapForm = reactive({ quantity: 1, reason: '' })
@@ -350,10 +364,16 @@ async function load() {
   await applyFocusFromRoute()
 }
 
+// 派给当前账号的任务高亮,质检员一眼能看出哪些该自己做
+function isAssignedToMe(row) {
+  return Boolean(row?.assigned_inspector_id) && Number(row.assigned_inspector_id) === Number(auth.user?.id)
+}
+
 function openCreate() {
   createForm.purchase_order_id = null
   createForm.required_tests = 1
   createForm.remark = ''
+  createForm.assigned_inspector_id = null
   selectedOrderDetail.value = null
   createVisible.value = true
 }
@@ -456,7 +476,7 @@ watch(
 onMounted(async () => {
   const orderData = await get('/api/purchases/orders?tab=all&page=1&page_size=100')
   purchaseOrders.value = Array.isArray(orderData) ? orderData : (orderData.items || [])
-  await load()
+  await Promise.all([loadQualityInspectors(), load()])
 })
 </script>
 

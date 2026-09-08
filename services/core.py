@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models import (
@@ -324,15 +324,101 @@ def ensure_inventory_record(
     return inventory
 
 
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
+def _role_user_ids(db: Session, *role_codes: str, exclude_user_id: int | None = None) -> list[int]:
+    """按角色解析在岗用户 id(全系统唯一实现)。
+
+    改造前这个函数在 api/ 与 services/ 下有 13 处定义、4 种写法(基础版、带
+    exclude_user_id、带空守卫、以及两者兼具+去重)。此处取各版本的并集,
+    三项差异都是"不传即无影响",故对原先所有调用点都等价:
+      - 空 role_codes 直接返回 []("code IN ()" 本就匹配不到,只是省一次查询)
+      - exclude_user_id 默认 None 时不排除任何人
+      - 去重:一个用户只有一个 role_id,join 不会产生重复行,故去重亦为无操作
+    """
     if not role_codes:
         return []
-    return [
+    user_ids = [
         row.id
         for row in db.execute(
             select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
         ).scalars().all()
     ]
+    if exclude_user_id is not None:
+        user_ids = [user_id for user_id in user_ids if user_id != exclude_user_id]
+    return list(dict.fromkeys(user_ids))
+
+
+# 公开别名:services/workflow.py 等模块以无下划线的名字使用同一实现
+role_user_ids = _role_user_ids
+
+
+FINANCE_ROLE_CODES = ("finance", "finance_super")
+
+
+def assignable_finance_user_ids(db: Session) -> list[int]:
+    """可被指派财务事务的在岗人员(普通财务 + 超级财务)。
+
+    注意与各域里的 _finance_user_ids 区分:后者只取 finance 角色,
+    且无人时会回落 system_admin 并抛错(用于"必须有人接单"的工作流派发);
+    本函数用于校验"用户选的这个财务合不合法",无人时返回空列表即可。
+    """
+    return _role_user_ids(db, *FINANCE_ROLE_CODES)
+
+
+def resolve_assigned_finance_user_id(
+    db: Session,
+    assigned_finance_user_id: int | None,
+    *,
+    required: bool = False,
+) -> int | None:
+    """校验/兜底"指定财务人员",供所有财务事务共用。
+
+    需求要求提交客户订单审批、收款申请、报销、采购付款等财务事务时都要指定一个财务。
+    改造前只有采购付款做了这件事,且校验逻辑写在采购域内无法复用。
+
+    - 显式指定:必须是在岗的 finance / finance_super,否则 409(不能把活派给非财务)。
+    - 未指定且 required=False:按当前待办量最少者轮询分配,避免总落在同一个人头上。
+    - 未指定且 required=True:直接 409,要求调用方必须选人。
+    """
+    candidate_ids = assignable_finance_user_ids(db)
+    if assigned_finance_user_id is not None:
+        if assigned_finance_user_id not in candidate_ids:
+            raise HTTPException(status_code=409, detail="指定的财务人员不存在或已停用")
+        return assigned_finance_user_id
+    if required:
+        raise HTTPException(status_code=409, detail="请指定处理该事务的财务人员")
+    if not candidate_ids:
+        return None
+    # 轮询:以未完成财务待办数最少者为准(同数时取 id 最小,保证结果稳定可测)
+    pending_counts = dict(
+        db.execute(
+            select(TodoItem.assigned_user_id, func.count(TodoItem.id))
+            .where(
+                TodoItem.assigned_user_id.in_(candidate_ids),
+                TodoItem.status != "completed",
+            )
+            .group_by(TodoItem.assigned_user_id)
+        ).all()
+    )
+    return min(candidate_ids, key=lambda uid: (pending_counts.get(uid, 0), uid))
+
+
+QUALITY_ROLE_CODES = ("quality", "quality_super")
+
+
+def resolve_assigned_inspector_id(db: Session, assigned_inspector_id: int | None) -> int | None:
+    """校验"指定质检员":必须是在岗的 quality / quality_super,否则 409。
+
+    未指定时**返回 None,不做自动分配**——这一点是刻意的:
+    "指定质检员"意味着该任务由此人独占(他人越权录入会被 403 拦),
+    若在未指定时自动派人,等于凭空给任务上锁,把原本该仓库任何质检员
+    都能领的任务锁死在一个人身上。未指定的任务仍按仓库广播待办,
+    由该仓库质检员或超级质检员自行领取。
+    """
+    if assigned_inspector_id is None:
+        return None
+    if assigned_inspector_id not in _role_user_ids(db, *QUALITY_ROLE_CODES):
+        raise HTTPException(status_code=409, detail="指定的质检员不存在或已停用")
+    return assigned_inspector_id
 
 
 def resolve_workflow_recipients(

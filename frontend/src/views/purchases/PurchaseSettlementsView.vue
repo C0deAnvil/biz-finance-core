@@ -219,6 +219,11 @@
         <el-form-item label="付款说明">
           <el-input v-model="mergedRequestForm.payment_detail_remark" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item label="指定财务">
+          <el-select v-model="mergedRequestForm.assigned_finance_user_id" clearable placeholder="不指定则系统轮询分配" style="width: 100%">
+            <el-option v-for="u in financeUsers" :key="u.id" :label="u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="mergedRequestVisible = false">取消</el-button>
@@ -317,6 +322,7 @@ const financeUsers = ref([])
 const mergedRequestForm = reactive({
   supplier_id: null,
   payment_detail_remark: '',
+  assigned_finance_user_id: null,
   items: []
 })
 
@@ -355,6 +361,7 @@ function resetRequestForm() {
 function resetMergedRequestForm() {
   mergedRequestForm.supplier_id = null
   mergedRequestForm.payment_detail_remark = ''
+  mergedRequestForm.assigned_finance_user_id = null
   mergedRequestForm.items = []
 }
 
@@ -435,6 +442,7 @@ function openMergedRequestDialog() {
   }
   mergedRequestForm.supplier_id = selectedOrderRows.value[0].supplier_id
   mergedRequestForm.payment_detail_remark = ''
+  mergedRequestForm.assigned_finance_user_id = null
   mergedRequestForm.items = selectedOrderRows.value.map((item) => ({
     purchase_order_id: item.id,
     order_no: item.order_no,
@@ -479,6 +487,7 @@ async function submitMergedRequest() {
   const payload = {
     supplier_id: mergedRequestForm.supplier_id,
     payment_detail_remark: mergedRequestForm.payment_detail_remark,
+    assigned_finance_user_id: mergedRequestForm.assigned_finance_user_id || null,
     items: mergedRequestForm.items.map((item) => ({
       purchase_order_id: item.purchase_order_id,
       order_amount: Number(item.order_amount || 0),

@@ -99,6 +99,7 @@ class ProductionCompleteRequest(BaseModel):
     requires_quality: bool = True
     preliminary_acceptance_note: str | None = Field(default=None, max_length=1000)
     actual_usages: list[MaterialUsageInput] = []
+    assigned_inspector_id: int | None = Field(default=None, description="指定质检员(不指定则由该仓库质检员自行领取)")
 
 
 class ProductionTaskCancelRequest(BaseModel):

@@ -4,7 +4,7 @@
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">库存条目</div><div class="summary-value">{{ filteredRows.length }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">库存金额</div><div class="summary-value">{{ formatNumber(summary.inventoryAmount) }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">低于安全库存</div><div class="summary-value text-danger">{{ summary.belowSafety }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">可用库存总量</div><div class="summary-value">{{ formatNumber(summary.availableQuantity) }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">可置货量合计</div><div class="summary-value">{{ formatNumber(summary.availableQuantity) }}</div></el-card></el-col>
     </el-row>
 
     <PageSection title="库存状态">
@@ -34,9 +34,45 @@
         </el-table-column>
         <el-table-column prop="item_code" label="编码" width="150" />
         <el-table-column prop="item_name" label="名称" min-width="180" />
-        <el-table-column prop="quantity" label="实际库存" width="120"><template #default="scope">{{ formatNumber(scope.row.quantity) }}</template></el-table-column>
-        <el-table-column prop="reserved_quantity" label="预计占用库存" width="130"><template #default="scope">{{ formatNumber(scope.row.reserved_quantity) }}</template></el-table-column>
-        <el-table-column prop="expected_available_quantity" label="预计可用库存" width="140"><template #default="scope">{{ formatNumber(scope.row.expected_available_quantity ?? scope.row.available_quantity) }}</template></el-table-column>
+        <el-table-column prop="quantity" label="实有库存" width="110">
+          <template #header>
+            <el-tooltip content="仓库里实际存在的数量" placement="top"><span>实有库存</span></el-tooltip>
+          </template>
+          <template #default="scope">{{ formatNumber(scope.row.quantity) }}</template>
+        </el-table-column>
+        <el-table-column prop="reserved_quantity" label="已占用" width="110">
+          <template #header>
+            <el-tooltip content="已被审批通过的客户订单锁定的数量（实际占用，不是预计值）" placement="top"><span>已占用</span></el-tooltip>
+          </template>
+          <template #default="scope">{{ formatNumber(scope.row.reserved_quantity) }}</template>
+        </el-table-column>
+        <el-table-column prop="available_quantity" label="可置货量" width="110">
+          <template #header>
+            <el-tooltip content="实有 − 已占用。决定现在能不能给订单置货、能不能发货" placement="top"><span>可置货量</span></el-tooltip>
+          </template>
+          <template #default="scope">
+            <span v-if="scope.row.available_quantity === undefined || scope.row.available_quantity === null" class="text-muted">-</span>
+            <span v-else>{{ formatNumber(scope.row.available_quantity) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="在途" width="100">
+          <template #header>
+            <el-tooltip content="采购在途 + 销售退货在途，尚未入库的数量" placement="top"><span>在途</span></el-tooltip>
+          </template>
+          <template #default="scope">{{ formatNumber(Number(scope.row.in_transit || 0) + Number(scope.row.purchase_in_transit || 0)) }}</template>
+        </el-table-column>
+        <el-table-column prop="expected_available_quantity" label="补货可用量" width="120">
+          <template #header>
+            <el-tooltip content="实有 + 在途 − 已占用。决定还需不需要补货；与可置货量口径不同，不可混用" placement="top"><span>补货可用量</span></el-tooltip>
+          </template>
+          <template #default="scope">
+            <!-- 原先写 expected_available_quantity ?? available_quantity:两者口径不同
+                 (前者含在途、后者不含),兜底会在不提示的情况下换一套算法。
+                 字段缺失时显示 - ,不做跨口径回退。 -->
+            <span v-if="scope.row.expected_available_quantity === undefined || scope.row.expected_available_quantity === null" class="text-muted">-</span>
+            <span v-else>{{ formatNumber(scope.row.expected_available_quantity) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="safety_stock_qty" label="安全库存" width="120"><template #default="scope">{{ formatNumber(scope.row.safety_stock_qty) }}</template></el-table-column>
         <el-table-column prop="avg_unit_cost" label="移动均价" width="120"><template #default="scope">{{ formatNumber(scope.row.avg_unit_cost) }}</template></el-table-column>
         <el-table-column prop="inventory_amount" label="库存金额" width="120"><template #default="scope">{{ formatNumber(scope.row.inventory_amount) }}</template></el-table-column>
@@ -277,6 +313,7 @@ import 'element-plus/es/components/row/style/css'
 import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/switch/style/css'
 import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/tooltip/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
@@ -293,6 +330,7 @@ import ElRow from 'element-plus/es/components/row/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'

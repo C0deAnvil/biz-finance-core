@@ -7,8 +7,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from models import BOM, FulfillmentDemand, Inventory, Material, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderItem, Role, SalesOrder, SalesOrderItem, TodoItem, User, Warehouse
-from services.core import create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, role_user_ids, write_operation_log
 from services.display import status_label
+from services.inventory_availability import (
+    material_production_commitment,
+    purchase_in_transit_for,
+    replenishment_available,
+    replenishment_available_of,
+)
 from services.request_trace import emit
 
 # ===== 补货需求进度状态机(实时推导,不落库) =====
@@ -28,18 +34,28 @@ DEMAND_PROGRESS_LABELS = {
 
 
 def _demand_related_purchase_order(db: Session, demand_id: int) -> PurchaseOrder | None:
+    """取该需求最近关联的采购单。
+
+    分批采购时一个需求会对应多张采购单,故取最新一张,
+    不能用 scalar_one_or_none()(多行会直接抛 MultipleResultsFound)。
+    """
     return db.execute(
-        select(PurchaseOrder).where(
+        select(PurchaseOrder)
+        .where(
             PurchaseOrder.replenishment_source_type == "fulfillment_demand",
             PurchaseOrder.replenishment_source_id == demand_id,
         )
-    ).scalar_one_or_none()
+        .order_by(PurchaseOrder.id.desc())
+    ).scalars().first()
 
 
 def _demand_related_production_task(db: Session, demand_id: int) -> ProductionTask | None:
+    """取该需求最近关联的生产任务(分批生产会有多个任务,同样取最新)。"""
     return db.execute(
-        select(ProductionTask).where(ProductionTask.fulfillment_demand_id == demand_id)
-    ).scalar_one_or_none()
+        select(ProductionTask)
+        .where(ProductionTask.fulfillment_demand_id == demand_id)
+        .order_by(ProductionTask.id.desc())
+    ).scalars().first()
 
 
 def _purchase_order_paid_amount(db: Session, order: PurchaseOrder) -> Decimal:
@@ -53,7 +69,25 @@ def _purchase_order_paid_amount(db: Session, order: PurchaseOrder) -> Decimal:
 
 
 def resolve_demand_progress(db: Session, demand: FulfillmentDemand) -> dict:
-    """实时推导补货需求进度状态。
+    """实时推导补货需求进度(阶段 + 数量进度)。
+
+    数量进度用于表达分批补货:原始需求量 / 已补货量 / 待补货量。
+    例如需求 100 只安排了 10 的生产,则 required=100、fulfilled=10、pending=90,
+    全部补齐后 pending=0 即视为该补货需求完成。
+    """
+    stage = _resolve_demand_stage(db, demand)
+    required = Decimal(demand.required_quantity or 0) or Decimal(demand.shortage_quantity or 0)
+    fulfilled = Decimal(demand.fulfilled_quantity or 0)
+    return {
+        **stage,
+        "required_quantity": float(required),
+        "fulfilled_quantity": float(fulfilled),
+        "pending_quantity": float(max(required - fulfilled, Decimal("0"))),
+    }
+
+
+def _resolve_demand_stage(db: Session, demand: FulfillmentDemand) -> dict:
+    """推导补货需求所处的流转阶段(不含数量,由 resolve_demand_progress 合并)。
 
     贸易型:待处理 → 采购中 → 已下单 → 待收货 → 待财务付款 → 已完成
     生产型:待处理 → 原料采购中 → 生产中 → 待入库 → 已完成
@@ -62,7 +96,10 @@ def resolve_demand_progress(db: Session, demand: FulfillmentDemand) -> dict:
         return {"progress_status": "cancelled", "progress_label": "已取消", "related_no": None, "related_status": None, "related_status_label": None}
     if demand.status == "pending_material":
         return {"progress_status": "pending_material", "progress_label": "待补料", "related_no": None, "related_status": None, "related_status_label": None}
-    if demand.status != "converted":
+    # 分批处理的需求:状态仍是 pending(还有剩余待补),但已有下游单据在跑,
+    # 此时不能笼统显示"待处理",应继续往下推导已关联单据的真实进度。
+    # 仅当一点都还没补时才是真正的"待处理"。
+    if demand.status != "converted" and Decimal(demand.fulfilled_quantity or 0) <= 0:
         return {"progress_status": "pending", "progress_label": "待处理", "related_no": None, "related_status": None, "related_status_label": None}
 
     if demand.fulfillment_mode == "trade":
@@ -103,17 +140,6 @@ def resolve_demand_progress(db: Session, demand: FulfillmentDemand) -> dict:
     if task.status in {"scrapped", "partially_scrapped", "cancelled"}:
         return {"progress_status": "pending", "progress_label": "待处理", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
     return {"progress_status": "producing", "progress_label": "生产中", "related_no": task.task_no, "related_status": task.status, "related_status_label": task_label}
-
-
-def role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    if not role_codes:
-        return []
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def ensure_fulfillment_demand_routing(
@@ -202,89 +228,37 @@ def ensure_fulfillment_demand_routing(
 
 
 def product_expected_available_quantity(db: Session, *, product_id: int, inventory: Inventory | None = None) -> Decimal:
-    """产品预计可用 = 实有 - 占用 - 未发货待发 + 采购在途 + 退货在途。"""
-    return_transit_quantity = Decimal("0")
+    """产品的补货可用量 = 实有 + 在途 - 占用(口径见 services/inventory_availability)。
+
+    改造前这里还额外减去了"未发货待发量(pending_sales)",但那批需求在财务审批时
+    已经写进 reserved_quantity,再减一次等于对同一笔需求重复扣减,会把库存充足的
+    订单算成缺货。故此项已移除。
+
+    inventory 传入时只算该仓库那一行;不传则跨全部仓库汇总。
+    """
     if inventory is not None:
-        available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
-        return_transit_quantity = Decimal(inventory.in_transit or 0)
-    else:
-        available_quantity = Decimal("0")
-        inventory_rows = db.execute(
-            select(Inventory).where(
-                Inventory.product_id == product_id,
-                Inventory.material_id.is_(None),
-            )
-        ).scalars().all()
-        for row in inventory_rows:
-            available_quantity += Decimal(row.quantity or 0) - Decimal(row.reserved_quantity or 0)
-            return_transit_quantity += Decimal(row.in_transit or 0)
-    pending_sales = db.execute(
-        select(
-            func.coalesce(func.sum(SalesOrderItem.quantity), 0),
-            func.coalesce(func.sum(SalesOrderItem.shipped_quantity), 0),
+        return replenishment_available_of(
+            inventory,
+            purchase_in_transit=purchase_in_transit_for(db, product_id=product_id),
         )
-        .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
-        .where(SalesOrder.status == "pending_shipment", SalesOrderItem.product_id == product_id)
-    ).one()
-    pending_sales_quantity = max(Decimal(pending_sales[0] or 0) - Decimal(pending_sales[1] or 0), Decimal("0"))
-    in_transit = db.execute(
-        select(
-            func.coalesce(func.sum(PurchaseOrderItem.quantity), 0),
-            func.coalesce(func.sum(PurchaseOrderItem.received_quantity), 0),
-        )
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
-        .where(
-            PurchaseOrder.status.in_(["purchasing", "partial_received", "pending_purchase_confirm", "fully_received"]),
-            PurchaseOrderItem.product_id == product_id,
-        )
-    ).one()
-    in_transit_quantity = max(Decimal(in_transit[0] or 0) - Decimal(in_transit[1] or 0), Decimal("0"))
-    return available_quantity - pending_sales_quantity + in_transit_quantity + return_transit_quantity
+    return replenishment_available(db, product_id=product_id)
 
 
 def material_expected_available_quantity(db: Session, *, material_id: int, inventory: Inventory | None = None) -> Decimal:
-    available_quantity = Decimal("0")
+    """原料的补货可用量 = 实有 + 采购在途 - 占用 - 在产任务已计划未领用量。
+
+    最后一项是原料特有的:排产后原料虽仍在仓库(实有未减),但已被任务预定,
+    不扣除会导致同一批原料重复许诺给多个生产任务。
+    """
+    commitment = material_production_commitment(db, material_id=material_id)
     if inventory is not None:
-        available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
-    planned_material_rows = db.execute(
-        select(
-            ProductionMaterialUsage.planned_quantity,
-            ProductionMaterialUsage.actual_quantity,
+        base = replenishment_available_of(
+            inventory,
+            purchase_in_transit=purchase_in_transit_for(db, material_id=material_id),
         )
-        .join(ProductionTask, ProductionTask.id == ProductionMaterialUsage.production_task_id)
-        .where(
-            ProductionMaterialUsage.material_id == material_id,
-            ProductionTask.status.not_in({
-                "completed",
-                "cancelled",
-                "scrapped",
-                "partially_scrapped",
-                "reworked",
-                "rework_pending",
-            }),
-        )
-    ).all()
-    planned_quantity = sum(
-        (
-            max(Decimal(row.planned_quantity or 0) - Decimal(row.actual_quantity or 0), Decimal("0"))
-            for row in planned_material_rows
-        ),
-        Decimal("0"),
-    )
-    available_quantity = max(available_quantity - planned_quantity, Decimal("0"))
-    in_transit = db.execute(
-        select(
-            func.coalesce(func.sum(PurchaseOrderItem.quantity), 0),
-            func.coalesce(func.sum(PurchaseOrderItem.received_quantity), 0),
-        )
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
-        .where(
-            PurchaseOrder.status.in_(["purchasing", "partial_received", "pending_purchase_confirm", "fully_received"]),
-            PurchaseOrderItem.material_id == material_id,
-        )
-    ).one()
-    in_transit_quantity = max(Decimal(in_transit[0] or 0) - Decimal(in_transit[1] or 0), Decimal("0"))
-    return available_quantity + in_transit_quantity
+    else:
+        base = replenishment_available(db, material_id=material_id)
+    return base - commitment
 
 
 def create_manual_fulfillment_demand(
@@ -305,6 +279,9 @@ def create_manual_fulfillment_demand(
         sales_order_item_id=None,
         product_id=product.id,
         fulfillment_mode=fulfillment_mode,
+        # required_quantity 记录原始需求量并保持不变,shortage_quantity 随补货进度递减
+        required_quantity=shortage_quantity,
+        fulfilled_quantity=0,
         shortage_quantity=shortage_quantity,
         status="pending",
         assigned_user_id=None,
@@ -355,6 +332,9 @@ def create_sales_shortage_demand(
         sales_order_item_id=order_item.id,
         product_id=order_item.product_id,
         fulfillment_mode=fulfillment_mode,
+        # 同上:原始需求量恒定,待补量随进度递减
+        required_quantity=shortage_quantity,
+        fulfilled_quantity=0,
         shortage_quantity=shortage_quantity,
         status="pending",
         assigned_user_id=None,
@@ -536,6 +516,69 @@ def _sync_low_stock_product_material_replenishment(
     )
 
 
+def _complete_low_stock_material_todos(db: Session, *, product: Product, inventory: Inventory) -> None:
+    """关闭该产品派生出的"原料补货"安全库存告警(仅生产型产品会有)。"""
+    if product.fulfillment_mode != "production":
+        return
+    rows = db.execute(
+        select(TodoItem).where(
+            TodoItem.business_type == "low_stock_product_material_replenishment",
+            TodoItem.business_id == inventory.id,
+            TodoItem.status != "completed",
+        )
+    ).scalars().all()
+    for todo in rows:
+        todo.status = "completed"
+
+
+def has_open_product_demand(db: Session, *, product_id: int) -> bool:
+    """该产品是否已存在"尚待处理"的正式补货需求(FulfillmentDemand)。
+
+    只认 pending / pending_material 两个待处理状态,**不认 converted**。
+    原因:converted 在本系统里是终态——补货需求转成采购单/生产任务后就停在
+    converted,没有任何代码把它推进到 completed。若把 converted 也算作"未完成",
+    则该产品只要历史上转过一次补货需求,安全库存告警就被永久压制,
+    库存跌到零也不会再报警。
+
+    converted 之后的进度由其下游单据(采购单/生产任务)承载,不再需要
+    安全库存告警去重:货到入库后库存回升,告警自然不会触发。
+    """
+    return db.execute(
+        select(FulfillmentDemand.id).where(
+            FulfillmentDemand.product_id == product_id,
+            FulfillmentDemand.status.in_(["pending", "pending_material"]),
+        )
+    ).first() is not None
+
+
+def has_open_material_demand(db: Session, *, material_id: int) -> bool:
+    """该原料是否已存在未完成的原料补货需求。
+
+    原料补货不走 FulfillmentDemand(该表只有 product_id、无 material_id),
+    而是以 business_type='raw_material_replenishment' 的待办承载,
+    business_id 指向 ProductionMaterialUsage.id,故需 join 回物料。
+    """
+    return db.execute(
+        select(TodoItem.id)
+        .join(ProductionMaterialUsage, ProductionMaterialUsage.id == TodoItem.business_id)
+        .where(
+            TodoItem.business_type == "raw_material_replenishment",
+            TodoItem.status != "completed",
+            ProductionMaterialUsage.material_id == material_id,
+        )
+    ).first() is not None
+
+
+# 为什么只"抑制告警"而不把两套机制合并成一套:
+#   FulfillmentDemand 是正式单据——有单号、要流转、不会自行消失;
+#   安全库存告警是自愈提醒——库存跌破即出现、回升即自动消除。
+# 二者职责不同,不是重复设计。真正的重复只发生在同一个缺口上:销售缺口生成了
+# 正式补货需求后,这个缺口同时把预计可用量压到安全库存以下,于是采购/生产会收到
+# 两份内容相同、来源不同的工作项。因此让正式单据优先、已有单据时不再发告警即可。
+# 若反过来把告警改造成 FulfillmentDemand,每次库存波动都会铸造一张需手工作废的
+# 正式单据,反而比现在更糟。
+
+
 def sync_product_low_stock_replenishment(
     db: Session,
     *,
@@ -573,28 +616,44 @@ def sync_product_low_stock_replenishment(
             )
         for todo in pending_todos:
             todo.status = "completed"
-        if product.fulfillment_mode == "production":
-            complete_low_stock_material_todos = db.execute(
-                select(TodoItem).where(
-                    TodoItem.business_type == "low_stock_product_material_replenishment",
-                    TodoItem.business_id == inventory.id,
-                    TodoItem.status != "completed",
-                )
-            ).scalars().all()
-            for todo in complete_low_stock_material_todos:
-                todo.status = "completed"
+        _complete_low_stock_material_todos(db, product=product, inventory=inventory)
         db.flush()
         return
+    # 已有正式补货需求在跑时,不再重复发安全库存告警(详见上方 has_open_product_demand 的说明)。
+    # 顺带关掉已存在的告警待办:该缺口已由正式单据接管,采购/生产不应收到两份。
+    # 正式需求完成后若库存仍偏低,下一次库存变动会重新触发告警(自愈特性不受影响)。
+    if has_open_product_demand(db, product_id=product.id):
+        for todo in pending_todos:
+            todo.status = "completed"
+        # 生产型产品还会派生"原料补货"告警,必须一并关闭。
+        # 否则该缺口已由正式单据接管、主告警已关,而原料告警会一直挂着无人清理
+        # (库存回升分支才有的清理逻辑,在正式需求未结束前走不到)。
+        _complete_low_stock_material_todos(db, product=product, inventory=inventory)
+        db.flush()
+        return
+
     fulfillment_mode = product.fulfillment_mode or "production"
     target_role = "purchase" if fulfillment_mode == "trade" else "production"
     module = "purchase" if fulfillment_mode == "trade" else "production"
     existing_user_ids = {todo.assigned_user_id for todo in pending_todos}
-    target_user_ids = resolve_workflow_recipients(
-        db,
-        target_role,
-        workflow="low_stock_replenishment",
-        business_type=business_type,
-        business_id=inventory.id,
+    # 告警要同时给"处理人"和"发现人":
+    #   处理人 = 采购(贸易型) / 生产(生产型),负责实际补货;
+    #   发现人 = 库管,盯着库存水位,并在待置货页用"提补货需求"把缺口转成正式单据。
+    # 原先只派给采购或生产,库管完全收不到低于安全库存的预警 ——
+    # 而库管才是最先需要知道、且有权提正式补货需求的人。
+    target_user_ids = list(
+        dict.fromkeys(
+            [
+                *resolve_workflow_recipients(
+                    db,
+                    target_role,
+                    workflow="low_stock_replenishment",
+                    business_type=business_type,
+                    business_id=inventory.id,
+                ),
+                *role_user_ids(db, "inventory", "inventory_super"),
+            ]
+        )
     )
     new_user_ids = [user_id for user_id in target_user_ids if user_id not in existing_user_ids]
     payload = {
@@ -610,12 +669,17 @@ def sync_product_low_stock_replenishment(
         f"产品 {product.name} 预计可用库存 {float(expected_available_quantity)}，低于安全库存 {float(safety_stock_qty)}，"
         f"建议补货 {float(shortage_quantity)}。|replenishment:{json.dumps(payload, ensure_ascii=False)}"
     )
+    # 库管的待办要落在 inventory 模块:待办点击跳转按 module 分流
+    # (api/routers/dashboard.py:_todo_route),采购/生产跳各自的工作台,
+    # 库管跳置货队列页 —— 那里才有"提补货需求"入口,且库管有权限进。
+    # 否则库管点开待办会跳到自己进不去的采购/生产页面。
+    inventory_user_ids = set(role_user_ids(db, "inventory", "inventory_super"))
     for user_id in target_user_ids:
         create_todo(
             db,
             title=f"安全库存补货需求：{product.name}",
             description=description,
-            module=module,
+            module="inventory" if user_id in inventory_user_ids else module,
             assigned_user_id=user_id,
             business_type=business_type,
             business_id=inventory.id,
@@ -625,7 +689,7 @@ def sync_product_low_stock_replenishment(
         if todo.assigned_user_id in target_user_ids:
             todo.title = f"安全库存补货需求：{product.name}"
             todo.description = description
-            todo.module = module
+            todo.module = "inventory" if todo.assigned_user_id in inventory_user_ids else module
     if new_user_ids:
         ensure_notification(
             db,
@@ -693,13 +757,30 @@ def sync_material_low_stock_replenishment(
             todo.status = "completed"
         db.flush()
         return
+
+    # 同产品侧:已有原料补货需求在跑时不再重复告警,并关掉已存在的重复告警待办
+    if has_open_material_demand(db, material_id=material.id):
+        for todo in pending_todos:
+            todo.status = "completed"
+        db.flush()
+        return
+
     existing_user_ids = {todo.assigned_user_id for todo in pending_todos}
-    target_user_ids = resolve_workflow_recipients(
-        db,
-        "purchase",
-        workflow="low_stock_replenishment",
-        business_type=business_type,
-        business_id=inventory.id,
+    # 同产品侧:库管也要收到原料的安全库存预警(他是盯水位、提正式补货需求的人),
+    # 原先只派给采购。
+    target_user_ids = list(
+        dict.fromkeys(
+            [
+                *resolve_workflow_recipients(
+                    db,
+                    "purchase",
+                    workflow="low_stock_replenishment",
+                    business_type=business_type,
+                    business_id=inventory.id,
+                ),
+                *role_user_ids(db, "inventory", "inventory_super"),
+            ]
+        )
     )
     new_user_ids = [user_id for user_id in target_user_ids if user_id not in existing_user_ids]
     payload = {
@@ -715,12 +796,14 @@ def sync_material_low_stock_replenishment(
         f"原料 {material.name} 预计可用库存 {float(expected_available_quantity)}，低于安全库存 {float(safety_stock_qty)}，"
         f"建议补货 {float(shortage_quantity)}。|replenishment:{json.dumps(payload, ensure_ascii=False)}"
     )
+    # 同产品侧:库管的待办落在 inventory 模块,才能跳到他有权限的页面
+    inventory_user_ids = set(role_user_ids(db, "inventory", "inventory_super"))
     for user_id in target_user_ids:
         create_todo(
             db,
             title=f"安全库存补货需求：{material.name}",
             description=description,
-            module="purchase",
+            module="inventory" if user_id in inventory_user_ids else "purchase",
             assigned_user_id=user_id,
             business_type=business_type,
             business_id=inventory.id,
@@ -730,7 +813,7 @@ def sync_material_low_stock_replenishment(
         if todo.assigned_user_id in target_user_ids:
             todo.title = f"安全库存补货需求：{material.name}"
             todo.description = description
-            todo.module = "purchase"
+            todo.module = "inventory" if todo.assigned_user_id in inventory_user_ids else "purchase"
     if new_user_ids:
         ensure_notification(
             db,

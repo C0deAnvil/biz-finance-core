@@ -41,6 +41,7 @@ from services.display import clean_display_text, payment_type_label, return_type
 from services.production_service import approve_special_request as approve_special_request_service
 from services.purchase_service import approve_purchase_order as approve_purchase_order_service, approve_purchase_payment_request as approve_purchase_payment_request_service
 from services.sales_service import approve_order as approve_sales_order_service, approve_return as approve_sales_return_service, approve_sales_receipt_request as approve_sales_receipt_request_service
+from services.workflow import purchase_arrival_status
 from services.workflow_repair import repair_sales_receipt_workflows
 from api.routers.reimbursements import audit_business_matter as audit_business_matter_service, audit_reimbursement as audit_reimbursement_service
 
@@ -277,6 +278,17 @@ def _pending_purchase_orders(current_user: User, db: Session) -> list[dict]:
     ]
 
 
+def _live_arrival_status(db: Session, row: PurchasePaymentRequest) -> str:
+    """付款申请对应采购单的实时到货状态。
+
+    不能直接用 row.arrival_status —— 那是建申请时的快照,
+    质检通过/入库完成后不会刷新(详见 _pending_purchase_payment_requests 注释)。
+    """
+    if not row.purchase_order_id:
+        return row.arrival_status
+    return purchase_arrival_status(db, row.purchase_order_id)
+
+
 def _pending_purchase_payment_requests(current_user: User, db: Session) -> list[dict]:
     if not _can_view_approval_type(current_user, "purchase_payment_request"):
         return []
@@ -288,6 +300,14 @@ def _pending_purchase_payment_requests(current_user: User, db: Session) -> list[
         .join(PurchaseOrder, PurchasePaymentRequest.purchase_order_id == PurchaseOrder.id)
         .where(PurchasePaymentRequest.status.in_(status_filter))
     ).scalars().all()
+    # PurchasePaymentRequest.arrival_status 是建申请那一刻的快照,只在创建收货单时
+    # 刷新过一次;若收货需要质检,那一刻质检还没通过,快照就停在 not_arrived,
+    # 之后质检通过/入库完成都不会再更新它 —— 于是明明已收货却一直显示"未到货"。
+    # 这里按采购单实时计算,不再读那个会过期的列。
+    arrival_map = {
+        order_id: purchase_arrival_status(db, order_id)
+        for order_id in {row.purchase_order_id for row in rows if row.purchase_order_id}
+    }
     return [
         _base_item(
             approval_type="purchase_payment_request",
@@ -306,7 +326,7 @@ def _pending_purchase_payment_requests(current_user: User, db: Session) -> list[
                 "requested_amount": float(row.requested_amount or 0),
                 "order_amount": float(row.order_amount or 0),
                 "other_fee_amount": float(row.other_fee_amount or 0),
-                "arrival_status": row.arrival_status,
+                "arrival_status": arrival_map.get(row.purchase_order_id, row.arrival_status),
                 "status_label": status_label(row.status),
             },
         )
@@ -995,8 +1015,9 @@ def _purchase_payment_request_detail(business_id: int, db: Session) -> dict:
         "order_amount": float(row.order_amount or 0),
         "other_fee_amount": float(row.other_fee_amount or 0),
         "actual_amount": float(row.actual_amount or 0),
-        "arrival_status": row.arrival_status,
-        "arrival_status_label": status_label(row.arrival_status),
+        # 同上:实时算,不读会过期的快照列
+        "arrival_status": _live_arrival_status(db, row),
+        "arrival_status_label": status_label(_live_arrival_status(db, row)),
         "status": row.status,
         "status_label": status_label(row.status),
         "payment_detail_remark": row.payment_detail_remark,

@@ -124,7 +124,15 @@ def _todo_route(todo: TodoItem) -> tuple[str, dict]:
         route = "/purchases/orders" if todo.module == "purchase" else "/production/tasks"
         return route, {"focusId": str(todo.business_id), "focusType": todo.business_type}
     if todo.business_type == "low_stock_replenishment" and todo.business_id is not None:
-        route = "/purchases/orders" if todo.module == "purchase" else "/production/tasks"
+        # 库管也会收到安全库存预警(他是盯水位、提正式补货需求的人),
+        # 但他没有采购/生产页面的权限 —— 必须跳到置货队列页,
+        # 那里的"提补货需求"入口才是库管能用的。
+        if todo.module == "inventory":
+            route = "/inventory/queues"
+        elif todo.module == "purchase":
+            route = "/purchases/orders"
+        else:
+            route = "/production/tasks"
         return route, {"focusId": str(todo.id), "focusType": todo.business_type}
     if todo.business_type == "low_stock_product_material_replenishment" and todo.business_id is not None:
         return "/purchases/orders", {"focusId": str(todo.id), "focusType": todo.business_type}

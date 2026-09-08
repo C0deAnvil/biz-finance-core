@@ -47,15 +47,27 @@
             <el-table-column label="财务修改" width="100">
               <template #default="scope"><el-tag v-if="scope.row.finance_edit_pending" type="warning">待确认</el-tag><span v-else>-</span></template>
             </el-table-column>
-            <el-table-column label="快捷操作" width="180" fixed="right" align="center">
+            <el-table-column label="快捷操作" width="230" fixed="right" align="center">
               <template #default="scope">
                 <el-button v-if="canConfirmFinanceEdit(scope.row)" class="queue-main-action" size="small" type="warning" @click="openOrderDetail(scope.row)">改单详情</el-button>
-                <el-tooltip v-else-if="scope.row.blocked_reason" :content="scope.row.blocked_reason" placement="top">
-                  <span>
-                    <el-button class="queue-main-action" size="small" type="info" disabled>已置货</el-button>
-                  </span>
-                </el-tooltip>
-                <el-button v-else class="queue-main-action" size="small" type="success" @click="openPlacementDialog(scope.row)">已置货</el-button>
+                <template v-else>
+                  <el-tooltip v-if="scope.row.blocked_reason" :content="scope.row.blocked_reason" placement="top">
+                    <span>
+                      <el-button class="queue-main-action" size="small" type="info" disabled>已置货</el-button>
+                    </span>
+                  </el-tooltip>
+                  <el-button v-else class="queue-main-action" size="small" type="success" @click="openPlacementDialog(scope.row)">已置货</el-button>
+                  <!-- 缺货时的补货入口必须独立于"已置货"按钮:
+                       库存不足正是"已置货"被禁用的原因,而提补货需求的弹窗原先只能
+                       从置货弹窗内打开 —— 越缺货越点不开,补不了货(死锁)。 -->
+                  <el-button
+                    v-if="rowShortages(scope.row).length"
+                    size="small"
+                    type="warning"
+                    plain
+                    @click="openRowDemand(scope.row)"
+                  >提补货需求</el-button>
+                </template>
               </template>
             </el-table-column>
           </el-table>
@@ -252,7 +264,13 @@
             <el-table-column label="已置货" width="90">
               <template #default="scope">{{ formatNumber(scope.row.placed_quantity) }}</template>
             </el-table-column>
-            <el-table-column label="可用库存" width="90">
+            <el-table-column label="本单可置量" width="110">
+              <template #header>
+                <el-tooltip
+                  content="本单已锁定未置的部分 + 仓库当前空闲量。同一产品有多条明细时该值已按行分配，不可相加理解"
+                  placement="top"
+                ><span>本单可置量</span></el-tooltip>
+              </template>
               <template #default="scope">{{ formatNumber(scope.row.available_quantity) }}</template>
             </el-table-column>
             <el-table-column label="本次置货" width="140">
@@ -285,8 +303,25 @@
       <el-table :data="myDemands" stripe border>
         <el-table-column prop="demand_no" label="补货单号" width="140" />
         <el-table-column prop="product_name" label="产品" min-width="140" />
-        <el-table-column prop="shortage_quantity" label="数量" width="90">
-          <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
+        <el-table-column label="补货进度" width="190">
+          <template #default="scope">
+            <!-- shortage_quantity 是"剩余待补量":需求 100 已补 10 时它是 90。
+                 单看这个数看不出进度,所以按 已补/共需 展示。 -->
+            <div class="demand-progress">
+              <el-progress
+                :percentage="demandProgressPercent(scope.row)"
+                :stroke-width="10"
+                :show-text="false"
+                :status="demandProgressPercent(scope.row) >= 100 ? 'success' : undefined"
+              />
+              <div class="demand-progress-text">
+                已补 {{ formatNumber(scope.row.fulfilled_quantity || 0) }} / 共需 {{ formatNumber(demandRequired(scope.row)) }}
+                <span v-if="demandPending(scope.row) > 0" class="demand-progress-pending">
+                  还差 {{ formatNumber(demandPending(scope.row)) }}
+                </span>
+              </div>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column prop="fulfillment_mode_label" label="类型" width="80" />
         <el-table-column prop="sales_order_no" label="来源订单" width="140">
@@ -414,6 +449,7 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/alert/style/css'
@@ -425,12 +461,15 @@ import 'element-plus/es/components/form/style/css'
 import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/row/style/css'
+import 'element-plus/es/components/progress/style/css'
 import 'element-plus/es/components/table/style/css'
+import 'element-plus/es/components/tooltip/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
+import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
@@ -440,7 +479,9 @@ import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
+import ElProgress from 'element-plus/es/components/progress/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 
 import { computed, onMounted, reactive, ref, watch } from 'vue'
@@ -632,8 +673,11 @@ async function submitManualDemand() {
       shortage_quantity: manualDemandForm.shortage_quantity,
       remark: manualDemandForm.remark || null,
     })
-    ElMessage.success(data?.msg || '补货需求已提交')
+    // post() 返回的是解包后的 payload.data,拿不到 payload.msg;
+    // 用返回体里的单号给出可追溯的提示
+    ElMessage.success(data?.demand_no ? `补货需求 ${data.demand_no} 已提交` : '补货需求已提交')
     manualDemandVisible.value = false
+    await load()
   } catch (e) {
     ElMessage.error(e?.message || '提交失败')
   } finally {
@@ -699,6 +743,27 @@ const DEMAND_PROGRESS_TAGS = {
   receiving: 'primary', pending_payment: 'danger', raw_purchasing: 'warning', producing: 'primary',
   pending_inbound: 'warning', completed: 'success', cancelled: 'info',
 }
+// 补货进度:后端返回 required_quantity(原始需求)/fulfilled_quantity(已补)/pending_quantity(待补)。
+// 老数据可能没有 required_quantity,此时退回 已补+剩余待补 推算,避免显示 0。
+function demandRequired(row) {
+  const required = Number(row?.required_quantity || 0)
+  if (required > 0) return required
+  return Number(row?.fulfilled_quantity || 0) + Number(row?.shortage_quantity || 0)
+}
+
+function demandPending(row) {
+  const pending = row?.pending_quantity
+  if (pending !== null && pending !== undefined) return Number(pending)
+  return Math.max(demandRequired(row) - Number(row?.fulfilled_quantity || 0), 0)
+}
+
+function demandProgressPercent(row) {
+  const required = demandRequired(row)
+  if (required <= 0) return 0
+  const percent = (Number(row?.fulfilled_quantity || 0) / required) * 100
+  return Math.min(Math.max(Math.round(percent), 0), 100)
+}
+
 function demandProgressTag(status) {
   return DEMAND_PROGRESS_TAGS[status] || 'info'
 }
@@ -707,6 +772,34 @@ const demandConfirmVisible = ref(false)
 const demandSubmitting = ref(false)
 const demandConfirmOrderNo = ref('')
 const demandConfirmItems = ref([])
+
+/** 该订单当前存在缺口的明细(缺口>0 才需要补货)。 */
+function rowShortages(row) {
+  return (row?.items || []).filter((it) => Number(it.shortage_quantity || 0) > 0)
+}
+
+/**
+ * 从待置货列表直接提补货需求。
+ *
+ * submitDemandConfirm 用 activePlacement.queue_id 提交,openDemandConfirm 用它取单号,
+ * 所以这里要先把当前行设为 activePlacement,再复用同一个确认弹窗
+ * (不新建第二套弹窗)。
+ */
+function openRowDemand(row) {
+  const shortages = rowShortages(row)
+  if (!shortages.length) {
+    ElMessage.info('该订单当前没有缺口，无需补货')
+    return
+  }
+  if (!row?.queue_id) {
+    // 后端对没有置货队列行的订单会返回 queue_id: null,
+    // 不挡住的话会拼出 /queues/undefined/... 这种请求
+    ElMessage.warning('该订单尚未进入置货队列，无法提补货需求')
+    return
+  }
+  activePlacement.value = row
+  openDemandConfirm(shortages)
+}
 
 function openDemandConfirm(shortages) {
   const rows = (shortages || []).filter((it) => Number(it.shortage_quantity || 0) > 0)
@@ -733,7 +826,21 @@ async function submitDemandConfirm() {
   demandSubmitting.value = true
   try {
     const resp = await post(`/api/inventory/queues/${activePlacement.value.queue_id}/replenishment-demands`, { items })
-    ElMessage.success(resp?.msg || '补货需求已提交')
+    // client.js 的 post() 返回的是解包后的 payload.data,拿不到 payload.msg,
+    // 所以 resp?.msg 恒为 undefined —— 这里用 data 里的计数自行拼提示。
+    const newCount = Number(resp?.new_count || 0)
+    const reusedCount = Number(resp?.reused_count || 0)
+    const reusedNos = (resp?.demands || []).filter((d) => d.reused).map((d) => d.demand_no).join('、')
+    if (newCount && reusedCount) {
+      ElMessage.success(`已提 ${newCount} 条补货需求；另有 ${reusedCount} 条已存在未完成需求（${reusedNos}），未重复提交`)
+    } else if (newCount) {
+      ElMessage.success(`已提 ${newCount} 条补货需求`)
+    } else if (reusedCount) {
+      // 重复点击时必须说清"没有重复提交",否则库管以为又提了一单
+      ElMessage.warning(`该订单已存在未完成的补货需求（${reusedNos}），未重复提交`)
+    } else {
+      ElMessage.info('当前没有需要补货的缺口')
+    }
     demandConfirmVisible.value = false
     await load()
   } catch (err) {
@@ -758,8 +865,8 @@ async function confirmFinanceEdit(row) {
   const orderId = resolveOrderId(row)
   if (!orderId || !canConfirmFinanceEdit(row)) return
   try {
-    const result = await post(`/api/sales/orders/${orderId}/finance-edit/confirm`, { note: '?????????' })
-    ElMessage.success('???????')
+    const result = await post(`/api/sales/orders/${orderId}/finance-edit/confirm`, { note: '已确认财务修改' })
+    ElMessage.success('财务修改已确认')
     const nextState = { ...(row.finance_edit_confirm_state || {}), pending: false }
     Object.assign(row, {
       finance_edit_confirm_state: nextState,
@@ -777,7 +884,7 @@ async function confirmFinanceEdit(row) {
     queues.shipment = patchRows(queues.shipment)
     queues.salesOrders = patchRows(queues.salesOrders)
   } catch (error) {
-    ElMessage.error(error.message || '????????')
+    ElMessage.error(error.message || '确认财务修改失败')
   }
 }
 
@@ -952,4 +1059,8 @@ watch(() => [route.query.focusId, route.query.focusType], () => {
     gap: 8px;
   }
 }
+
+.demand-progress { display: flex; flex-direction: column; gap: 4px; }
+.demand-progress-text { font-size: 12px; color: var(--el-text-color-regular); line-height: 1.4; }
+.demand-progress-pending { color: var(--el-color-warning); margin-left: 4px; }
 </style>

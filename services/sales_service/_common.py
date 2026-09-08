@@ -33,14 +33,13 @@ from models import (
 )
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
+from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.time_utils import now_local
 
 
@@ -86,20 +85,8 @@ from services.replenishment_service import create_sales_shortage_demand, ensure_
 from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
-from services.inventory_dimensions import sync_inventory_dimensions
 from services.time_utils import now_local
-
-
-def _role_user_ids(db: Session, *role_codes: str, exclude_user_id: int | None = None) -> list[int]:
-    user_ids = [
-        user.id
-        for user in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
-    if exclude_user_id is not None:
-        user_ids = [user_id for user_id in user_ids if user_id != exclude_user_id]
-    return list(dict.fromkeys(user_ids))
+from services.inventory_availability import placeable_of
 
 
 def _finished_warehouse(db: Session) -> Warehouse:
@@ -359,6 +346,23 @@ def _build_order_items(
 
 
 def _create_dispatch_queue(db: Session, sales_order_id: int) -> None:
+    """创建或重置该订单的置货队列行(幂等)。
+
+    inventory_dispatch_queues.sales_order_id 上有唯一约束,而提交审批这条路径
+    在"草稿提交"和"驳回后重新提交"时都会走到这里。原先无条件 insert,
+    导致销售按财务驳回意见改完再提交时必然撞 1062 Duplicate entry 而 500 ——
+    "驳回→修改→重提"这条路径整个走不通。
+    已有行时把状态重置回初始态即可,不再新增。
+    """
+    existing = db.execute(
+        select(InventoryDispatchQueue).where(
+            InventoryDispatchQueue.sales_order_id == sales_order_id
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.placement_status = "pending"
+        existing.shipment_status = "waiting_approval"
+        return
     db.add(
         InventoryDispatchQueue(
             sales_order_id=sales_order_id,
@@ -368,14 +372,11 @@ def _create_dispatch_queue(db: Session, sales_order_id: int) -> None:
     )
 
 
-def occupy_inventory_for_order(db: Session, *, order: SalesOrder) -> dict[int, Decimal]:
-    """财务审批通过后占用成品库存:reserved += min(明细数量, 当前可用量)。
-
-    返回各明细实际占用量,缺口部分(明细数量-占用量)由库管在置货环节生成补货需求。
-    """
+def _lock_finished_inventory_map(db: Session, *, order: SalesOrder) -> dict[int, Inventory]:
+    """按产品加行级锁取出成品仓库存行,防止并发占用导致超卖。"""
     warehouse = _finished_warehouse(db)
     product_ids = [item.product_id for item in order.items] or [-1]
-    inventory_map = {
+    return {
         row.product_id: row
         for row in db.execute(
             select(Inventory)
@@ -387,15 +388,59 @@ def occupy_inventory_for_order(db: Session, *, order: SalesOrder) -> dict[int, D
             .with_for_update()
         ).scalars().all()
     }
+
+
+def occupy_inventory_for_order(db: Session, *, order: SalesOrder) -> dict[int, Decimal]:
+    """财务审批通过后占用成品库存。**幂等**:重复调用不会叠加占用。
+
+    幂等的实现方式:以明细上已记录的 reserved_quantity 为准,只补足"还差多少",
+    而不是每次都加一遍。这一点很重要,因为本函数有 3 条调用路径
+    (财务审批 / 改价审批放行 / 财务改单放行),同一订单可能被走到多次。
+
+    占用量 = min(尚未占用的订单量, 当前可置货量)。缺口部分不在这里处理,
+    由库管在置货环节按需生成补货需求。
+
+    返回各明细本次新增的占用量。
+    """
+    inventory_map = _lock_finished_inventory_map(db, order=order)
     occupied_map: dict[int, Decimal] = {}
     for item in order.items:
         inventory = inventory_map.get(item.product_id)
-        available = max(Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0) if inventory else Decimal("0"), Decimal("0"))
-        occupy = min(Decimal(item.quantity or 0), available)
+        already = Decimal(item.reserved_quantity or 0)
+        # 已发货的部分不需要再占用(发货时已扣减实有并释放占用)
+        outstanding = max(
+            Decimal(item.quantity or 0) - Decimal(item.shipped_quantity or 0) - already,
+            Decimal("0"),
+        )
+        placeable = max(placeable_of(inventory), Decimal("0"))
+        occupy = min(outstanding, placeable)
         if occupy > 0 and inventory is not None:
             inventory.reserved_quantity = Decimal(inventory.reserved_quantity or 0) + occupy
+            item.reserved_quantity = already + occupy
         occupied_map[item.id] = occupy
     return occupied_map
+
+
+def release_order_reservation(db: Session, *, order: SalesOrder) -> Decimal:
+    """释放该订单剩余的占用库存(驳回/取消/作废时调用)。
+
+    不释放会造成占用永久泄漏——库存被一张已作废的订单锁死,别人也用不了。
+    以明细记录的占用量为准逐笔退还,并归零,保证可重复调用。
+    """
+    inventory_map = _lock_finished_inventory_map(db, order=order)
+    released_total = Decimal("0")
+    for item in order.items:
+        reserved = Decimal(item.reserved_quantity or 0)
+        if reserved <= 0:
+            continue
+        inventory = inventory_map.get(item.product_id)
+        if inventory is not None:
+            inventory.reserved_quantity = max(
+                Decimal(inventory.reserved_quantity or 0) - reserved, Decimal("0")
+            )
+        item.reserved_quantity = Decimal("0")
+        released_total += reserved
+    return released_total
 
 
 def _create_inventory_placement_todos(db: Session, *, order: SalesOrder) -> None:
@@ -562,11 +607,21 @@ def _create_fulfillment_demands(
     }
     created_demands: list[dict] = []
     for item in order.items:
-        available_quantity = inventory_map.get(item.product_id, Decimal("0"))
+        placed = Decimal(item.placed_quantity or 0)
+        # 本明细自己锁定但还没置的量,对本单来说是可用的(那批货别人拿不走);
+        # 只看"实有-总占用"会把已为本单锁定的货算成别人的,凭空造出等量缺口。
+        # 该函数会在每次启动的 repair_workflows 里被调用,若算错会持续生成假需求。
+        reserved_for_me = max(Decimal(item.reserved_quantity or 0) - placed, Decimal("0"))
+        # 散量全仓共享,边分配边扣,避免同产品多条明细重复计算
+        free_pool = inventory_map.get(item.product_id, Decimal("0"))
         remaining_order_quantity = max(
-            Decimal(item.quantity or 0) - Decimal(item.placed_quantity or 0) - Decimal(item.shipped_quantity or 0),
+            Decimal(item.quantity or 0) - placed - Decimal(item.shipped_quantity or 0),
             Decimal("0"),
         )
+        take_from_pool = min(free_pool, max(remaining_order_quantity - reserved_for_me, Decimal("0")))
+        if item.product_id in inventory_map:
+            inventory_map[item.product_id] = free_pool - take_from_pool
+        available_quantity = reserved_for_me + take_from_pool
         shortage_quantity = (
             Decimal(shortage_override.get(item.product_id, Decimal("0")))
             if shortage_override is not None
@@ -587,8 +642,12 @@ def _create_fulfillment_demands(
         ).scalars().first()
         if existing_demand is not None:
             if existing_demand.status == "pending":
+                # 尚未开始处理(无处理备注)的需求可直接改量;此时原始需求量同步更新,
+                # 已开始分批处理的需求不覆盖,避免把已补货进度算乱。
                 if not existing_demand.process_note:
                     existing_demand.shortage_quantity = shortage_quantity
+                    existing_demand.required_quantity = shortage_quantity
+                    existing_demand.fulfilled_quantity = 0
                 ensure_fulfillment_demand_routing(
                     db,
                     demand=existing_demand,
@@ -596,13 +655,7 @@ def _create_fulfillment_demands(
                     product=product,
                     current_user=current_user,
                 )
-                if existing_demand.fulfillment_mode == "production":
-                    _ensure_sales_order_material_replenishment_todos(
-                        db,
-                        order=order,
-                        demand=existing_demand,
-                        current_user=current_user,
-                    )
+                # 原料采购由生产人员确认数量后提交，不随成品补货自动生成。
             created_demands.append(
                 {
                     "id": existing_demand.id,
@@ -612,6 +665,10 @@ def _create_fulfillment_demands(
                     "fulfillment_mode": existing_demand.fulfillment_mode,
                     "fulfillment_mode_label": "采购" if existing_demand.fulfillment_mode == "trade" else "生产",
                     "shortage_quantity": float(existing_demand.shortage_quantity or shortage_quantity),
+                    # 复用了已存在的未完成需求(去重),不是新建。
+                    # 调用方据此区分提示文案:否则重复点"提补货需求"也报
+                    # "已提 N 条",库管分不清到底提没提。
+                    "reused": True,
                 }
             )
             continue
@@ -624,13 +681,7 @@ def _create_fulfillment_demands(
             current_user=current_user,
         )
         if demand is not None:
-            if demand.fulfillment_mode == "production":
-                _ensure_sales_order_material_replenishment_todos(
-                    db,
-                    order=order,
-                    demand=demand,
-                    current_user=current_user,
-                )
+            # 此处只创建成品生产需求，原料补货在生产页面单独确认。
             created_demands.append(
                 {
                     "id": demand.id,
@@ -640,6 +691,7 @@ def _create_fulfillment_demands(
                     "fulfillment_mode": demand.fulfillment_mode,
                     "fulfillment_mode_label": "采购" if demand.fulfillment_mode == "trade" else "生产",
                     "shortage_quantity": float(shortage_quantity),
+                    "reused": False,
                 }
             )
     return created_demands

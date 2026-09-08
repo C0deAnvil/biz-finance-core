@@ -36,7 +36,7 @@ from models import (
 )
 from responses import api_response
 from schemas.master_data import CustomerComplaintCreate, CustomerComplaintUpdate, CustomerCreate, CustomerTransferCreate, MaterialCreate, PackagingConfigCreate, ProductCreate, StandardPriceUpdate, SupplierCatalogItemInput, SupplierCreate
-from services.core import create_notification, create_todo, next_business_no, write_operation_log
+from services.core import _role_user_ids, create_notification, create_todo, next_business_no, write_operation_log
 from services.replenishment_service import product_expected_available_quantity
 from services.display import get_global_packaging_name, packaging_name_needs_repair, packaging_spec_text, upsert_default_packaging_config
 from services.organization import get_department_path_names
@@ -108,15 +108,6 @@ def _serialize_customer(row: Customer, order_count: int = 0) -> dict:
         "order_count": order_count,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
-
-
-def _role_user_ids(db: Session, *role_codes: str) -> list[int]:
-    return [
-        row.id
-        for row in db.execute(
-            select(User).join(Role, User.role_id == Role.id).where(Role.code.in_(role_codes), User.is_active.is_(True))
-        ).scalars().all()
-    ]
 
 
 def _serialize_customer_complaint(row: CustomerComplaint) -> dict:

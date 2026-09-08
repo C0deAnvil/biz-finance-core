@@ -63,11 +63,24 @@
         <el-form-item :label="texts.dialog.depositAmount">
           <span>{{ formatNumber(activeRow?.deposit_amount || 0) }}</span>
         </el-form-item>
-        <el-form-item :label="texts.dialog.voucherAmount">
-          <el-input-number v-model="decisionForm.voucher_amount" :min="0" style="width: 100%" />
-        </el-form-item>
-        <el-form-item :label="texts.dialog.note">
-          <el-input v-model="decisionForm.note" type="textarea" :rows="4" />
+        <!-- 已移除"到账金额"输入框:审批只判断这单能不能做,不代表钱已到账。
+             原先此处预填定金/全款并提交为 actual_amount,后端见 actual_amount>0
+             就写一笔应收+资金流水,导致财务点一次"通过"就凭空记一笔客户回款。
+             实际收款走"收款确认申请 → 财务登记"这条独立流程。 -->
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          class="mb-12"
+          title="审批仅确认单据是否可执行，不登记到账金额；实际收款请走收款确认流程。"
+        />
+        <el-form-item :label="texts.dialog.note" :required="decisionForm.decision === 'rejected'">
+          <el-input
+            v-model="decisionForm.note"
+            type="textarea"
+            :rows="4"
+            :placeholder="decisionForm.decision === 'rejected' ? '请填写驳回原因，销售需据此修改后重新提交' : '可填写审批意见'"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -81,24 +94,24 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/dialog/style/css'
 import 'element-plus/es/components/drawer/style/css'
 import 'element-plus/es/components/form/style/css'
-import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/table/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
-import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 
@@ -118,7 +131,7 @@ const auth = useAuthStore()
 const pagePermission = usePagePermission()
 const texts = {
   title: '销售订单审批',
-  description: '财务/董事长确认到账信息并审批客户订单；审批通过后占用库存并流转至库管置货。',
+  description: '财务/董事长审批客户订单（仅判断可否执行，不登记到账）；审批通过后占用库存并流转至库管置货。',
   columns: {
     orderNo: '订单号',
     customer: '客户',
@@ -160,8 +173,7 @@ const texts = {
   },
   messages: {
     success: '审批完成',
-    batchSuccess: '批量审批完成',
-    batchSkipped: '含定金的订单需手动录入凭证金额，已自动跳过'
+    batchSuccess: '批量审批完成'
   }
 }
 
@@ -172,7 +184,7 @@ const detailVisible = ref(false)
 const decisionVisible = ref(false)
 const detail = ref(null)
 const activeRow = ref(null)
-const decisionForm = reactive({ decision: 'approved', voucher_amount: 0, note: '' })
+const decisionForm = reactive({ decision: 'approved', note: '' })
 const canApproveOrders = computed(() => ['finance', 'chairman', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('approve'))
 const { pagination, total, pageSizes, pagedItems: pagedRows, ensureVisible } = useLocalPagination(rows)
 
@@ -208,9 +220,6 @@ async function showDetail(id) {
 function openApprove(row) {
   activeRow.value = row
   decisionForm.decision = 'approved'
-  decisionForm.voucher_amount = row.payment_type_label === '全款发货'
-    ? Number(row.total_amount || 0)
-    : Number(row.deposit_amount || 0)
   decisionForm.note = '审核通过'
   decisionVisible.value = true
 }
@@ -218,18 +227,19 @@ function openApprove(row) {
 function openReject(row) {
   activeRow.value = row
   decisionForm.decision = 'rejected'
-  decisionForm.voucher_amount = row.payment_type_label === '全款发货'
-    ? Number(row.total_amount || 0)
-    : Number(row.deposit_amount || 0)
   decisionForm.note = ''
   decisionVisible.value = true
 }
 
 async function submitDecision() {
+  // 驳回必须说明原因,否则销售不知道该改什么
+  if (decisionForm.decision === 'rejected' && !String(decisionForm.note || '').trim()) {
+    ElMessage.warning('请填写驳回原因')
+    return
+  }
+  // 不再提交 voucher_amount / actual_amount:审批不等于到账
   await post(`/api/sales/orders/${activeRow.value.id}/approve`, {
     decision: decisionForm.decision,
-    voucher_amount: decisionForm.voucher_amount,
-    actual_amount: decisionForm.voucher_amount,
     note: decisionForm.note
   })
   ElMessage.success(texts.messages.success)
@@ -238,21 +248,16 @@ async function submitDecision() {
 }
 
 async function batchApprove() {
-  const manualRows = selection.value.filter((row) => Number(row.deposit_amount || 0) > 0)
-  const autoRows = selection.value.filter((row) => Number(row.deposit_amount || 0) <= 0)
-  for (const row of autoRows) {
+  // 原先按"有无定金"拆两组并跳过有定金的单(因为那时要手填到账金额)。
+  // 现在审批不再登记金额,这个区分已无意义,选中的单可一次批完。
+  for (const row of selection.value) {
     await post(`/api/sales/orders/${row.id}/approve`, {
       decision: 'approved',
-      voucher_amount: row.payment_type_label === '全款发货' ? Number(row.total_amount || 0) : 0,
-      actual_amount: row.payment_type_label === '全款发货' ? Number(row.total_amount || 0) : 0,
       note: '批量审批通过'
     })
   }
-  if (autoRows.length) {
+  if (selection.value.length) {
     ElMessage.success(texts.messages.batchSuccess)
-  }
-  if (manualRows.length) {
-    ElMessage.warning(`${texts.messages.batchSkipped}：${manualRows.length} 条`)
   }
   await load()
 }

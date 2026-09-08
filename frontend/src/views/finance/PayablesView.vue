@@ -14,6 +14,23 @@
           <el-button v-if="canRegisterPayment" type="success" plain @click="openMergedRegisterDialog">登记付款</el-button>
           <el-button @click="exportPendingOrders">导出待付款订单</el-button>
         </template>
+        <el-row :gutter="12" class="filters-row">
+          <el-col :span="8">
+            <!-- 财务对账要按时间段查:原先本页只有弹窗里的"收付款日期"输入框,
+                   列表本身无法按区间过滤。 -->
+            <el-date-picker
+                v-model="filters.dateRange"
+                type="daterange"
+                range-separator="至"
+                start-placeholder="开始日期"
+                end-placeholder="结束日期"
+                value-format="YYYY-MM-DD"
+                style="width: 100%"
+                @change="load"
+            />
+          </el-col>
+        </el-row>
+
 
         <el-table :data="pagedPendingOrders" stripe :row-class-name="pendingRowClassName" @selection-change="handlePendingSelectionChange">
           <el-table-column v-if="canRegisterPayment" type="selection" width="52" />
@@ -611,9 +628,22 @@ async function applyFocus() {
   }
 }
 
+// 日期区间筛选(后端 /api/finance/payables 已支持 date_from/date_to)
+const filters = reactive({ dateRange: [] })
+
+function payablesUrl() {
+  const params = new URLSearchParams()
+  if (Array.isArray(filters.dateRange) && filters.dateRange.length === 2) {
+    if (filters.dateRange[0]) params.set('date_from', filters.dateRange[0])
+    if (filters.dateRange[1]) params.set('date_to', filters.dateRange[1])
+  }
+  const query = params.toString()
+  return `/api/finance/payables${query ? `?${query}` : ''}`
+}
+
 async function load() {
   const [data, methodData] = await Promise.all([
-    get('/api/finance/payables'),
+    get(payablesUrl()),
     get('/api/finance/payment-method-options?method_type=payment')
   ])
   Object.assign(summary, data.summary || {})
@@ -885,6 +915,7 @@ watch(
 <style scoped>
 .page-stack { display: flex; flex-direction: column; gap: 16px; }
 .summary-row { margin-bottom: 0; }
+.filters-row { margin-bottom: 16px; }
 .summary-label { color: #909399; margin-bottom: 8px; }
 .summary-value { font-size: 28px; font-weight: 700; color: #0f5c90; }
 .order-summary-card { margin-bottom: 16px; }
