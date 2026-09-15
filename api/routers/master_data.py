@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
@@ -13,6 +13,7 @@ from models import (
     AppSetting,
     Customer,
     CustomerComplaint,
+    CustomerTag,
     CustomerTransferRecord,
     Department,
     Inventory,
@@ -31,6 +32,7 @@ from models import (
     StandardPriceChangeLog,
     Supplier,
     SupplierCatalogItem,
+    SupplierTag,
     User,
     Warehouse,
 )
@@ -40,6 +42,21 @@ from services.core import _role_user_ids, create_notification, create_todo, next
 from services.replenishment_service import product_expected_available_quantity
 from services.display import get_global_packaging_name, packaging_name_needs_repair, packaging_spec_text, upsert_default_packaging_config
 from services.organization import get_department_path_names
+from services.tag_catalog import (
+    CUSTOMER_REGION_OPTIONS,
+    CUSTOMER_TYPE_OPTIONS,
+    SUPPLIER_TYPE_OPTIONS,
+    COMPANY_MANAGED_CUSTOMER_TAGS,
+    customer_region_label,
+    customer_tag_catalog,
+    customer_tag_dimension,
+    customer_type_label,
+    normalize_tags,
+    options_payload,
+    resolve_customer_tag,
+    star_level_from_tags,
+    supplier_type_label,
+)
 from services.time_utils import now_local
 
 
@@ -88,7 +105,89 @@ def update_purchase_approval_threshold(
     return api_response(data={"purchase_approval_amount_threshold": float(amount)})
 
 
-def _serialize_customer(row: Customer, order_count: int = 0) -> dict:
+def _load_customer_tag_map(db: Session, customer_ids: list[int]) -> dict[int, list[str]]:
+    """批量取客户标签，避免列表页 N+1 查询。"""
+    if not customer_ids:
+        return {}
+    rows = db.execute(
+        select(CustomerTag.customer_id, CustomerTag.tag)
+        .where(CustomerTag.customer_id.in_(customer_ids))
+        .order_by(CustomerTag.id.asc())
+    ).all()
+    tag_map: dict[int, list[str]] = {}
+    for customer_id, tag in rows:
+        tag_map.setdefault(customer_id, []).append(tag)
+    return tag_map
+
+
+def _load_supplier_tag_map(db: Session, supplier_ids: list[int]) -> dict[int, list[str]]:
+    if not supplier_ids:
+        return {}
+    rows = db.execute(
+        select(SupplierTag.supplier_id, SupplierTag.tag)
+        .where(SupplierTag.supplier_id.in_(supplier_ids))
+        .order_by(SupplierTag.id.asc())
+    ).all()
+    tag_map: dict[int, list[str]] = {}
+    for supplier_id, tag in rows:
+        tag_map.setdefault(supplier_id, []).append(tag)
+    return tag_map
+
+
+def _sync_customer_tags(db: Session, customer: Customer, tags: list[str] | None, current_user: User) -> None:
+    """按提交的标签集合做增量同步。销售端不可自行增删公司统一维护的价值标签。"""
+    if tags is None:
+        return
+    desired = normalize_tags(tags)
+    existing_rows = db.execute(select(CustomerTag).where(CustomerTag.customer_id == customer.id)).scalars().all()
+    existing = {row.tag: row for row in existing_rows}
+    role_code = current_user.role.code if current_user.role else ""
+    company_managed_locked = role_code == "sales"
+
+    if company_managed_locked:
+        # 销售提交的集合里，公司标以库中现状为准，防止误删/误加
+        desired = [tag for tag in desired if tag not in COMPANY_MANAGED_CUSTOMER_TAGS]
+        desired += [tag for tag in existing if tag in COMPANY_MANAGED_CUSTOMER_TAGS]
+
+    for tag in desired:
+        if tag not in existing:
+            db.add(
+                CustomerTag(
+                    customer_id=customer.id,
+                    tag=tag,
+                    dimension=customer_tag_dimension(tag),
+                    created_by_id=current_user.id,
+                )
+            )
+    for tag, row in existing.items():
+        if tag not in desired:
+            db.delete(row)
+        elif row.dimension != customer_tag_dimension(tag):
+            row.dimension = customer_tag_dimension(tag)
+
+    # 客户价值标签同步回 star_level，保持旧字段与既有筛选可用
+    star_level = star_level_from_tags(desired)
+    if star_level:
+        customer.star_level = star_level
+
+
+def _sync_supplier_tags(db: Session, supplier: Supplier, tags: list[str] | None, current_user: User) -> None:
+    if tags is None:
+        return
+    desired = normalize_tags(tags)
+    existing_rows = db.execute(select(SupplierTag).where(SupplierTag.supplier_id == supplier.id)).scalars().all()
+    existing = {row.tag: row for row in existing_rows}
+    for tag in desired:
+        if tag not in existing:
+            db.add(SupplierTag(supplier_id=supplier.id, tag=tag, created_by_id=current_user.id))
+    for tag, row in existing.items():
+        if tag not in desired:
+            db.delete(row)
+
+
+def _serialize_customer(row: Customer, order_count: int = 0, tags: list[str] | None = None) -> dict:
+    tag_codes = tags if tags is not None else []
+    tag_details = [resolve_customer_tag(code) for code in tag_codes]
     return {
         "id": row.id,
         "code": row.code,
@@ -100,6 +199,14 @@ def _serialize_customer(row: Customer, order_count: int = 0) -> dict:
         "unified_social_credit_code": row.unified_social_credit_code,
         "source_type": row.source_type,
         "source_type_label": "公司转交" if row.source_type == "company_transfer" else "个人开发",
+        "customer_type": row.customer_type,
+        "customer_type_label": customer_type_label(row.customer_type),
+        "region_type": row.region_type,
+        "region_type_label": customer_region_label(row.region_type),
+        "remark": row.remark,
+        "tags": tag_codes,
+        "tag_details": tag_details,
+        "tag_labels": [item["label"] for item in tag_details],
         "owner_user_id": row.owner_user_id,
         "owner_user_name": row.owner_user.full_name if row.owner_user else None,
         "created_by_id": row.created_by_id,
@@ -132,7 +239,7 @@ def _serialize_customer_complaint(row: CustomerComplaint) -> dict:
     }
 
 
-def _serialize_supplier(row: Supplier, order_count: int = 0) -> dict:
+def _serialize_supplier(row: Supplier, order_count: int = 0, tags: list[str] | None = None) -> dict:
     return {
         "id": row.id,
         "code": row.code,
@@ -141,6 +248,15 @@ def _serialize_supplier(row: Supplier, order_count: int = 0) -> dict:
         "phone": row.phone,
         "address": row.address,
         "status": row.status,
+        "status_label": "启用" if row.status == "enabled" else "停用",
+        "unified_social_credit_code": row.unified_social_credit_code,
+        "supplier_type": row.supplier_type,
+        "supplier_type_label": supplier_type_label(row.supplier_type),
+        "website": row.website,
+        "bank_name": row.bank_name,
+        "bank_account": row.bank_account,
+        "remark": row.remark,
+        "tags": tags if tags is not None else [],
         "purchase_order_count": order_count,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -308,6 +424,40 @@ def list_warehouses(current_user: User = Depends(get_current_user), db: Session 
     )
 
 
+@router.get("/customer-tag-catalog")
+def get_customer_tag_catalog(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """客户标签字典（销帮帮标签表 KP-44-0818）+ 客户档案枚举，供前端下拉渲染。
+
+    同时返回库内已出现的自定义标签，方便销售复用同事已经用过的说法。
+    """
+    known_codes = set()
+    for group in customer_tag_catalog():
+        known_codes.update(option["code"] for option in group["options"])
+    used_tags = db.execute(select(CustomerTag.tag).distinct()).scalars().all()
+    custom_tags = sorted({tag for tag in used_tags if tag not in known_codes})
+    return api_response(
+        data={
+            "dimensions": customer_tag_catalog(),
+            "custom_tags": custom_tags,
+            "customer_types": options_payload(CUSTOMER_TYPE_OPTIONS),
+            "region_types": options_payload(CUSTOMER_REGION_OPTIONS),
+            "company_managed_tags": sorted(COMPANY_MANAGED_CUSTOMER_TAGS),
+        }
+    )
+
+
+@router.get("/supplier-tag-catalog")
+def get_supplier_tag_catalog(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """供应商类型枚举 + 库内已用过的供应商标签（自由文本标签，便于复用）。"""
+    used_tags = sorted(set(db.execute(select(SupplierTag.tag).distinct()).scalars().all()))
+    return api_response(
+        data={
+            "supplier_types": options_payload(SUPPLIER_TYPE_OPTIONS),
+            "used_tags": used_tags,
+        }
+    )
+
+
 @router.get("/customers")
 def list_customers(
     page: int | None = Query(default=None, ge=1),
@@ -316,6 +466,9 @@ def list_customers(
     source_type: str | None = None,
     owner_user_id: int | None = None,
     star_level: str | None = None,
+    customer_type: str | None = None,
+    region_type: str | None = None,
+    tags: str | None = Query(default=None, description="标签 code，多个用英文逗号分隔，命中任意一个即返回"),
     start_date: date | None = None,
     end_date: date | None = None,
     current_user: User = Depends(get_current_user),
@@ -339,6 +492,15 @@ def list_customers(
         query = query.where(Customer.owner_user_id == owner_user_id)
     if star_level:
         query = query.where(Customer.star_level.ilike(f"%{star_level}%"))
+    if customer_type:
+        query = query.where(Customer.customer_type == customer_type)
+    if region_type:
+        query = query.where(Customer.region_type == region_type)
+    tag_filters = [item.strip() for item in (tags or "").split(",") if item.strip()]
+    if tag_filters:
+        query = query.where(
+            Customer.id.in_(select(CustomerTag.customer_id).where(CustomerTag.tag.in_(tag_filters)))
+        )
     if start_date:
         query = query.where(Customer.created_at >= datetime.combine(start_date, datetime.min.time()))
     if end_date:
@@ -355,7 +517,8 @@ def list_customers(
             select(SalesOrder.customer_id, func.count(SalesOrder.id)).where(SalesOrder.customer_id.in_(customer_ids or [-1])).group_by(SalesOrder.customer_id)
         ).all()
     }
-    items = [_serialize_customer(row, order_counts.get(row.id, 0)) for row in rows]
+    tag_map = _load_customer_tag_map(db, customer_ids)
+    items = [_serialize_customer(row, order_counts.get(row.id, 0), tag_map.get(row.id, [])) for row in rows]
     if page is None:
         return api_response(data=items)
     return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}})
@@ -392,13 +555,18 @@ def create_customer(
         star_level=payload.star_level,
         unified_social_credit_code=credit_code,
         source_type=source_type,
+        customer_type=payload.customer_type,
+        region_type=payload.region_type,
+        remark=(payload.remark or "").strip() or None,
         owner_user_id=owner_user_id,
         created_by_id=current_user.id,
     )
     db.add(customer)
+    db.flush()
+    _sync_customer_tags(db, customer, payload.tags, current_user)
     db.commit()
     db.refresh(customer)
-    return api_response(data=_serialize_customer(customer, 0))
+    return api_response(data=_serialize_customer(customer, 0, _load_customer_tag_map(db, [customer.id]).get(customer.id, [])))
 
 
 @router.put("/customers/{customer_id}")
@@ -424,16 +592,24 @@ def update_customer(
     role_code = current_user.role.code if current_user.role else ""
     if role_code == "sales" and customer.owner_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="销售只能维护本人负责的客户")
-    for field, value in payload.model_dump().items():
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "tags":
+            continue
         if field == "unified_social_credit_code":
             value = credit_code
+        if field == "remark":
+            value = (value or "").strip() or None
         if role_code == "sales" and field in {"owner_user_id", "source_type"}:
             continue
         setattr(customer, field, value)
+    _sync_customer_tags(db, customer, payload.tags, current_user)
     db.commit()
     db.refresh(customer)
     order_count = db.execute(select(func.count(SalesOrder.id)).where(SalesOrder.customer_id == customer.id)).scalar_one()
-    return api_response(msg="客户已更新", data=_serialize_customer(customer, order_count))
+    return api_response(
+        msg="客户已更新",
+        data=_serialize_customer(customer, order_count, _load_customer_tag_map(db, [customer.id]).get(customer.id, [])),
+    )
 
 
 @router.post("/customers/{customer_id}/transfer")
@@ -474,7 +650,7 @@ def transfer_customer(
     )
     db.commit()
     db.refresh(customer)
-    return api_response(data=_serialize_customer(customer))
+    return api_response(data=_serialize_customer(customer, 0, _load_customer_tag_map(db, [customer.id]).get(customer.id, [])))
 
 
 def _customer_has_relations(db: Session, customer_id: int) -> bool:
@@ -492,6 +668,7 @@ def delete_customer(
         raise HTTPException(status_code=404, detail="客户不存在")
     if _customer_has_relations(db, customer_id):
         raise HTTPException(status_code=409, detail="客户已关联销售订单，不可删除")
+    db.execute(delete(CustomerTag).where(CustomerTag.customer_id == customer_id))
     db.delete(customer)
     db.commit()
     return api_response(msg="客户已删除")
@@ -605,10 +782,11 @@ def list_suppliers(current_user: User = Depends(get_current_user), db: Session =
             select(SupplierCatalogItem.supplier_id, func.count(SupplierCatalogItem.id)).group_by(SupplierCatalogItem.supplier_id)
         ).all()
     }
+    tag_map = _load_supplier_tag_map(db, [row.id for row in rows])
     return api_response(
         data=[
             {
-                **_serialize_supplier(row, order_counts.get(row.id, 0)),
+                **_serialize_supplier(row, order_counts.get(row.id, 0), tag_map.get(row.id, [])),
                 "catalog_item_count": catalog_counts.get(row.id, 0),
             }
             for row in rows
@@ -625,6 +803,13 @@ def create_supplier(
     existing = db.execute(select(Supplier).where(Supplier.name == payload.name)).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="供应商已存在")
+    credit_code = (payload.unified_social_credit_code or "").strip() or None
+    if credit_code:
+        duplicate_code = db.execute(
+            select(Supplier).where(Supplier.unified_social_credit_code == credit_code)
+        ).scalar_one_or_none()
+        if duplicate_code:
+            raise HTTPException(status_code=409, detail="该统一社会信用代码对应供应商已存在，不能重复建档")
     supplier = Supplier(
         code=next_business_no(db, "GY"),
         name=payload.name,
@@ -632,12 +817,20 @@ def create_supplier(
         phone=payload.phone,
         address=payload.address,
         status=payload.status,
+        unified_social_credit_code=credit_code,
+        supplier_type=payload.supplier_type,
+        website=(payload.website or "").strip() or None,
+        bank_name=(payload.bank_name or "").strip() or None,
+        bank_account=(payload.bank_account or "").strip() or None,
+        remark=(payload.remark or "").strip() or None,
         created_by_id=current_user.id,
     )
     db.add(supplier)
+    db.flush()
+    _sync_supplier_tags(db, supplier, payload.tags, current_user)
     db.commit()
     db.refresh(supplier)
-    return api_response(data=_serialize_supplier(supplier, 0))
+    return api_response(data=_serialize_supplier(supplier, 0, _load_supplier_tag_map(db, [supplier.id]).get(supplier.id, [])))
 
 
 @router.put("/suppliers/{supplier_id}")
@@ -653,12 +846,29 @@ def update_supplier(
     duplicate = db.execute(select(Supplier).where(Supplier.name == payload.name, Supplier.id != supplier_id)).scalar_one_or_none()
     if duplicate:
         raise HTTPException(status_code=409, detail="供应商名称已存在")
-    for field, value in payload.model_dump().items():
+    credit_code = (payload.unified_social_credit_code or "").strip() or None
+    if credit_code:
+        duplicate_code = db.execute(
+            select(Supplier).where(Supplier.unified_social_credit_code == credit_code, Supplier.id != supplier_id)
+        ).scalar_one_or_none()
+        if duplicate_code:
+            raise HTTPException(status_code=409, detail="该统一社会信用代码对应供应商已存在，不能重复建档")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "tags":
+            continue
+        if field == "unified_social_credit_code":
+            value = credit_code
+        elif field in {"website", "bank_name", "bank_account", "remark"}:
+            value = (value or "").strip() or None
         setattr(supplier, field, value)
+    _sync_supplier_tags(db, supplier, payload.tags, current_user)
     db.commit()
     db.refresh(supplier)
     order_count = db.execute(select(func.count(PurchaseOrder.id)).where(PurchaseOrder.supplier_id == supplier.id)).scalar_one()
-    return api_response(msg="供应商已更新", data=_serialize_supplier(supplier, order_count))
+    return api_response(
+        msg="供应商已更新",
+        data=_serialize_supplier(supplier, order_count, _load_supplier_tag_map(db, [supplier.id]).get(supplier.id, [])),
+    )
 
 
 @router.get("/suppliers/{supplier_id}/catalog")
@@ -680,7 +890,7 @@ def get_supplier_catalog(
     purchase_order_count = db.execute(select(func.count(PurchaseOrder.id)).where(PurchaseOrder.supplier_id == supplier.id)).scalar_one()
     return api_response(
         data={
-            "supplier": _serialize_supplier(supplier, purchase_order_count),
+            "supplier": _serialize_supplier(supplier, purchase_order_count, _load_supplier_tag_map(db, [supplier.id]).get(supplier.id, [])),
             "items": [_serialize_supplier_catalog_item(row, latest_price_map) for row in rows],
         }
     )
@@ -790,6 +1000,7 @@ def delete_supplier(
         supplier.status = "disabled"
         db.commit()
         return api_response(msg="供应商已停用，因存在业务引用未执行物理删除", data={"id": supplier.id, "disabled": True})
+    db.execute(delete(SupplierTag).where(SupplierTag.supplier_id == supplier_id))
     db.delete(supplier)
     db.commit()
     return api_response(msg="供应商已删除")

@@ -99,7 +99,7 @@ def _notify_sales_order_shortage(db: Session, *, order: SalesOrder, current_user
     recipient_ids = list(dict.fromkeys([order.sales_user_id, *inventory_user_ids]))
     create_notification(
         db,
-        title="销售订单存在库存缺口(仅提醒)",
+        title="销售订单存在库存缺口",
         content=(
             f"客户订单 {order.order_no} 按预计可用库存(实有-占用+在途+在订)计算存在缺口："
             f"{'、'.join(shortage_lines)}。系统不自动生成补货需求，"

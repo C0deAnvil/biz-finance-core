@@ -112,7 +112,7 @@
           <template #default="scope">
             <el-button size="small" text type="info" @click="viewDemand(scope.row)">详情</el-button>
             <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建采购单</el-button>
-            <el-button v-if="scope.row.status === 'pending' && scope.row.demand_type !== 'raw_material'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
+            <el-button v-if="scope.row.status === 'pending' && scope.row.demand_type !== 'raw_material' && scope.row.source_type !== 'production_material_replenishment'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -506,7 +506,7 @@ function canConfirmPurchase(row) {
 async function applyFocus() {
   const focusType = String(route.query.focusType || '')
   const focusId = Number(route.query.focusId || 0)
-  if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment' || focusType === 'sales_order_material_replenishment' || focusType === 'low_stock_product_material_replenishment')) {
+  if (focusId && (focusType === 'fulfillment_demand' || focusType === 'raw_material_replenishment' || focusType === 'low_stock_replenishment' || (focusType === 'sales_order_material_replenishment' || focusType === 'production_material_replenishment') || focusType === 'low_stock_product_material_replenishment')) {
     const matchedDemand = fulfillmentDemands.value.find((item) => {
       if (focusType === 'raw_material_replenishment') {
         return (item.raw_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.raw_todo_id) === focusId || Number(item.usage_id) === focusId || String(item.id) === String(route.query.focusId || '')
@@ -514,7 +514,7 @@ async function applyFocus() {
       if (focusType === 'low_stock_replenishment') {
         return (item.low_stock_todo_ids || []).some((id) => Number(id) === focusId) || Number(item.low_stock_todo_id) === focusId || String(item.id) === `low-${focusId}`
       }
-      if (focusType === 'sales_order_material_replenishment' || focusType === 'low_stock_product_material_replenishment') {
+      if ((focusType === 'sales_order_material_replenishment' || focusType === 'production_material_replenishment') || focusType === 'low_stock_product_material_replenishment') {
         return Number(item.replenishment_source_id) === focusId || Number(item.sales_material_todo_id) === focusId
       }
       return Number(item.id) === focusId
@@ -678,6 +678,7 @@ async function handleOrderPaginationChange({ page, pageSize }) {
 
 function demandSourceLabel(row) {
   if (row?.source_type === 'low_stock_replenishment') return '安全库存补货'
+  if (row?.source_type === 'production_material_replenishment') return '生产原料补货'
   if (row?.source_type === 'sales_order_material_replenishment') return '销售订单生产原料'
   if (row?.source_type === 'low_stock_product_material_replenishment') return '安全库存生产原料'
   return row?.demand_type === 'raw_material' ? '生产领料缺料' : '客户订单缺货'
@@ -770,9 +771,20 @@ function mergeableRow(row) {
 }
 
 async function mergeDemands() {
-  const rows = selectedDemands.value.filter(mergeableRow)
+  // 同一 YL 会按原料显示多行，合并时每份来源只计一次。
+  const uniqueSources = new Map()
+  for (const row of selectedDemands.value.filter(mergeableRow)) {
+    const source = demandSourcePayload(row)
+    uniqueSources.set(`${source.source_type}:${source.source_id}`, row)
+  }
+  const rows = [...uniqueSources.values()]
   if (rows.length < 2) {
     ElMessage.warning('请至少勾选两条可合并的补货需求（安全库存补货暂不支持合并）')
+    return
+  }
+  const independent = rows.filter(row => row.source_type === 'production_material_replenishment')
+  if (independent.length && independent.length !== rows.length) {
+    ElMessage.warning('独立原料补货需求请只与其他独立原料补货需求合并')
     return
   }
   resetForm()
@@ -831,14 +843,14 @@ async function fetchDemandSuppliers(row) {
 
 function demandSourcePayload(row) {
   // 多需求合并时,将列表行还原为后端补给来源(sales_order_material_replenishment 等)
-  const sourceType = row.source_type === 'sales_order_material_replenishment' || row.source_type === 'low_stock_product_material_replenishment'
+  const sourceType = (row.source_type === 'sales_order_material_replenishment' || row.source_type === 'production_material_replenishment') || row.source_type === 'low_stock_product_material_replenishment'
     ? row.source_type
     : row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
       ? 'raw_material_replenishment'
       : row.demand_type === 'low_stock_product'
         ? 'low_stock_replenishment'
         : 'fulfillment_demand'
-  const sourceId = row.source_type === 'sales_order_material_replenishment' || row.source_type === 'low_stock_product_material_replenishment'
+  const sourceId = (row.source_type === 'sales_order_material_replenishment' || row.source_type === 'production_material_replenishment') || row.source_type === 'low_stock_product_material_replenishment'
     ? row.replenishment_source_id
     : row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material'
       ? row.usage_id
@@ -938,7 +950,7 @@ async function submit() {
   } else {
     payload = {
       ...payloadBase,
-      replenishment_source_type: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
+      replenishment_source_type: (activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'production_material_replenishment') || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
         ? activeDemand.value.source_type
         : activeDemand.value?.demand_type === 'raw_material'
         ? 'raw_material_replenishment'
@@ -947,7 +959,7 @@ async function submit() {
           : form.fulfillment_demand_id
             ? 'fulfillment_demand'
             : null,
-      replenishment_source_id: activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
+      replenishment_source_id: (activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'production_material_replenishment') || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
         ? activeDemand.value.replenishment_source_id
         : activeDemand.value?.demand_type === 'raw_material'
         ? activeDemand.value.usage_id

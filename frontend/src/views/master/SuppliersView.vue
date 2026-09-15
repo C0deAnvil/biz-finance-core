@@ -14,6 +14,12 @@
           <el-option label="启用" value="enabled" />
           <el-option label="停用" value="disabled" />
         </el-select>
+        <el-select v-model="filters.supplier_type" clearable placeholder="供应商类型" class="w-160">
+          <el-option v-for="item in supplierTypes" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select v-model="filters.tags" multiple collapse-tags collapse-tags-tooltip clearable placeholder="标签" class="w-200">
+          <el-option v-for="tag in allTags" :key="tag" :label="tag" :value="tag" />
+        </el-select>
         <el-button @click="load">刷新</el-button>
         <el-button @click="exportTable">导出</el-button>
         <el-button v-if="canManage" type="primary" @click="openCreate">新增供应商</el-button>
@@ -22,8 +28,20 @@
       <el-table :data="pagedRows" stripe>
         <el-table-column prop="code" label="供应商编码" width="150" />
         <el-table-column prop="name" label="供应商名称" min-width="180" />
+        <el-table-column prop="supplier_type_label" label="供应商类型" width="130">
+          <template #default="scope">{{ scope.row.supplier_type_label || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="contact_name" label="联系人" width="140" />
         <el-table-column prop="phone" label="联系电话" width="160" />
+        <el-table-column label="标签" min-width="200">
+          <template #default="scope">
+            <el-tag v-for="tag in scope.row.tags || []" :key="tag" size="small" type="info" class="tag-chip">{{ tag }}</el-tag>
+            <span v-if="!(scope.row.tags || []).length">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="unified_social_credit_code" label="统一社会信用代码" min-width="190" show-overflow-tooltip>
+          <template #default="scope">{{ scope.row.unified_social_credit_code || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="purchase_order_count" label="采购单数" width="100" />
         <el-table-column prop="catalog_item_count" label="商品名录数" width="110" />
         <el-table-column label="状态" width="110">
@@ -31,7 +49,19 @@
             <el-tag :type="scope.row.status === 'enabled' ? 'success' : 'info'">{{ scope.row.status === 'enabled' ? '启用' : '停用' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="address" label="地址" min-width="220" show-overflow-tooltip />
+        <el-table-column prop="address" label="供应商地址" min-width="220" show-overflow-tooltip />
+        <el-table-column label="开户行 / 账号" min-width="220" show-overflow-tooltip>
+          <template #default="scope">{{ bankText(scope.row) }}</template>
+        </el-table-column>
+        <el-table-column label="官网" min-width="180" show-overflow-tooltip>
+          <template #default="scope">
+            <el-link v-if="scope.row.website" :href="normalizeUrl(scope.row.website)" target="_blank" type="primary">{{ scope.row.website }}</el-link>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip>
+          <template #default="scope">{{ scope.row.remark || '-' }}</template>
+        </el-table-column>
         <el-table-column label="操作" :width="canManage ? 300 : 100" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openCatalog(scope.row)">详情</el-button>
@@ -51,15 +81,46 @@
       />
     </PageSection>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑供应商' : '新增供应商'" width="680px">
-      <el-form :model="form" label-width="90px">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑供应商' : '新增供应商'" width="820px">
+      <el-form :model="form" label-width="120px">
+        <el-divider content-position="left">基础信息</el-divider>
         <el-row :gutter="16">
-          <el-col :span="12"><el-form-item label="供应商名称"><el-input v-model="form.name" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="供应商名称" required><el-input v-model="form.name" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="供应商类型"><el-select v-model="form.supplier_type" clearable placeholder="请选择" style="width: 100%"><el-option v-for="item in supplierTypes" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="状态"><el-select v-model="form.status" style="width: 100%"><el-option label="启用" value="enabled" /><el-option label="停用" value="disabled" /></el-select></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="联系人"><el-input v-model="form.contact_name" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="联系电话"><el-input v-model="form.phone" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="统一社会信用代码"><el-input v-model="form.unified_social_credit_code" placeholder="18 位统一社会信用代码" /></el-form-item></el-col>
         </el-row>
-        <el-form-item label="地址"><el-input v-model="form.address" /></el-form-item>
+
+        <el-divider content-position="left">联系方式</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="12"><el-form-item label="联系人" required><el-input v-model="form.contact_name" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="联系电话" required><el-input v-model="form.phone" /></el-form-item></el-col>
+        </el-row>
+        <el-form-item label="供应商地址"><el-input v-model="form.address" /></el-form-item>
+        <el-form-item label="官网"><el-input v-model="form.website" placeholder="如：https://www.example.com" /></el-form-item>
+
+        <el-divider content-position="left">开票与收款</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="12"><el-form-item label="开户行名称"><el-input v-model="form.bank_name" placeholder="如：中国银行XX支行" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="银行账号"><el-input v-model="form.bank_account" /></el-form-item></el-col>
+        </el-row>
+
+        <el-divider content-position="left">标签与备注</el-divider>
+        <el-form-item label="标签">
+          <el-select
+            v-model="form.tags"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="可直接输入新标签后回车，如：长期合作 / 价格优 / 账期好"
+            style="width: 100%"
+          >
+            <el-option v-for="tag in allTags" :key="tag" :label="tag" :value="tag" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" placeholder="合作历史、资质情况、注意事项等" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -70,9 +131,23 @@
     <el-drawer v-model="catalogVisible" size="58%" :title="catalogSupplier ? `${catalogSupplier.name} - 可供货名录` : '供应商名录详情'">
       <div v-if="catalogSupplier" class="drawer-meta">
         <div><strong>供应商编码：</strong>{{ catalogSupplier.code }}</div>
+        <div><strong>供应商类型：</strong>{{ catalogSupplier.supplier_type_label || '-' }}</div>
         <div><strong>联系人：</strong>{{ catalogSupplier.contact_name || '-' }}</div>
         <div><strong>联系电话：</strong>{{ catalogSupplier.phone || '-' }}</div>
-        <div><strong>地址：</strong>{{ catalogSupplier.address || '-' }}</div>
+        <div><strong>统一社会信用代码：</strong>{{ catalogSupplier.unified_social_credit_code || '-' }}</div>
+        <div><strong>官网：</strong>
+          <el-link v-if="catalogSupplier.website" :href="normalizeUrl(catalogSupplier.website)" target="_blank" type="primary">{{ catalogSupplier.website }}</el-link>
+          <span v-else>-</span>
+        </div>
+        <div><strong>开户行名称：</strong>{{ catalogSupplier.bank_name || '-' }}</div>
+        <div><strong>银行账号：</strong>{{ catalogSupplier.bank_account || '-' }}</div>
+        <div class="drawer-meta-full"><strong>供应商地址：</strong>{{ catalogSupplier.address || '-' }}</div>
+        <div class="drawer-meta-full">
+          <strong>标签：</strong>
+          <el-tag v-for="tag in catalogSupplier.tags || []" :key="tag" size="small" type="info" class="tag-chip">{{ tag }}</el-tag>
+          <span v-if="!(catalogSupplier.tags || []).length">-</span>
+        </div>
+        <div class="drawer-meta-full"><strong>备注：</strong>{{ catalogSupplier.remark || '-' }}</div>
       </div>
 
       <div class="detail-toolbar">
@@ -153,7 +228,9 @@ import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/card/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/divider/style/css'
 import 'element-plus/es/components/drawer/style/css'
+import 'element-plus/es/components/link/style/css'
 import 'element-plus/es/components/empty/style/css'
 import 'element-plus/es/components/form/style/css'
 import 'element-plus/es/components/input/style/css'
@@ -171,10 +248,12 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElEmpty from 'element-plus/es/components/empty/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElLink from 'element-plus/es/components/link/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
@@ -200,8 +279,28 @@ const dialogVisible = ref(false)
 const catalogVisible = ref(false)
 const editingId = ref(null)
 const catalogSupplier = ref(null)
-const filters = reactive({ keyword: '', status: '' })
-const form = reactive({ name: '', contact_name: '', phone: '', address: '', status: 'enabled' })
+const filters = reactive({ keyword: '', status: '', supplier_type: '', tags: [] })
+const supplierTypes = ref([])
+const usedTags = ref([])
+
+function emptyForm() {
+  return {
+    name: '',
+    contact_name: '',
+    phone: '',
+    address: '',
+    status: 'enabled',
+    unified_social_credit_code: '',
+    supplier_type: '',
+    website: '',
+    bank_name: '',
+    bank_account: '',
+    remark: '',
+    tags: []
+  }
+}
+
+const form = reactive(emptyForm())
 const catalogRows = ref([])
 const priceHistoryVisible = ref(false)
 const priceHistoryRows = ref([])
@@ -211,12 +310,25 @@ const priceHistorySummary = ref(null)
 const canManage = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const canManageCatalog = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code))
 
+const allTags = computed(() => {
+  const set = new Set(usedTags.value)
+  rows.value.forEach((item) => (item.tags || []).forEach((tag) => set.add(tag)))
+  return [...set].sort()
+})
+
 const filteredRows = computed(() => {
   const keyword = filters.keyword.trim().toLowerCase()
   return rows.value.filter((item) => {
     if (filters.status && item.status !== filters.status) return false
+    if (filters.supplier_type && item.supplier_type !== filters.supplier_type) return false
+    if (filters.tags.length) {
+      const tags = item.tags || []
+      if (!filters.tags.every((tag) => tags.includes(tag))) return false
+    }
     if (!keyword) return true
-    return [item.name, item.contact_name, item.phone, item.code].filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword))
+    return [item.name, item.contact_name, item.phone, item.code, item.unified_social_credit_code, item.address, item.bank_name, item.bank_account, item.website, item.remark, ...(item.tags || [])]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword))
   })
 })
 const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(filteredRows)
@@ -225,8 +337,36 @@ const linkedCount = computed(() => filteredRows.value.filter((item) => Number(it
 const catalogCount = computed(() => filteredRows.value.reduce((total, item) => total + Number(item.catalog_item_count || 0), 0))
 
 function resetForm() {
-  Object.assign(form, { name: '', contact_name: '', phone: '', address: '', status: 'enabled' })
+  Object.assign(form, emptyForm())
   editingId.value = null
+}
+
+function normalizeUrl(url) {
+  const value = String(url || '').trim()
+  if (!value) return ''
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`
+}
+
+function bankText(row) {
+  const parts = [row.bank_name, row.bank_account].filter(Boolean)
+  return parts.length ? parts.join(' / ') : '-'
+}
+
+function buildPayload(source) {
+  return {
+    name: (source.name || '').trim(),
+    contact_name: (source.contact_name || '').trim(),
+    phone: (source.phone || '').trim(),
+    address: (source.address || '').trim(),
+    status: source.status || 'enabled',
+    unified_social_credit_code: (source.unified_social_credit_code || '').trim() || null,
+    supplier_type: source.supplier_type || null,
+    website: (source.website || '').trim() || null,
+    bank_name: (source.bank_name || '').trim() || null,
+    bank_account: (source.bank_account || '').trim() || null,
+    remark: (source.remark || '').trim() || null,
+    tags: source.tags || []
+  }
 }
 
 function normalizeCatalogRows(items = []) {
@@ -247,6 +387,12 @@ function normalizeCatalogRows(items = []) {
 
 async function load() {
   rows.value = await get('/api/master-data/suppliers')
+}
+
+async function loadTagCatalog() {
+  const data = await get('/api/master-data/supplier-tag-catalog')
+  supplierTypes.value = data.supplier_types || []
+  usedTags.value = data.used_tags || []
 }
 
 async function loadCatalogOptions() {
@@ -270,7 +416,14 @@ function openEdit(row) {
     contact_name: row.contact_name,
     phone: row.phone,
     address: row.address,
-    status: row.status || 'enabled'
+    status: row.status || 'enabled',
+    unified_social_credit_code: row.unified_social_credit_code || '',
+    supplier_type: row.supplier_type || '',
+    website: row.website || '',
+    bank_name: row.bank_name || '',
+    bank_account: row.bank_account || '',
+    remark: row.remark || '',
+    tags: [...(row.tags || [])]
   })
   dialogVisible.value = true
 }
@@ -352,16 +505,21 @@ async function openPriceHistory(row) {
 }
 
 async function submit() {
+  if (!form.name.trim() || !form.contact_name.trim() || !form.phone.trim()) {
+    ElMessage.warning('请填写供应商名称、联系人和联系电话')
+    return
+  }
+  const payload = buildPayload(form)
   if (editingId.value) {
-    await put(`/api/master-data/suppliers/${editingId.value}`, form)
+    await put(`/api/master-data/suppliers/${editingId.value}`, payload)
     ElMessage.success('供应商已更新')
   } else {
-    await post('/api/master-data/suppliers', form)
+    await post('/api/master-data/suppliers', payload)
     ElMessage.success('供应商已新增')
   }
   dialogVisible.value = false
   resetForm()
-  await load()
+  await Promise.all([load(), loadTagCatalog()])
 }
 
 async function saveCatalog() {
@@ -379,10 +537,7 @@ async function saveCatalog() {
 
 async function toggleStatus(row) {
   await put(`/api/master-data/suppliers/${row.id}`, {
-    name: row.name,
-    contact_name: row.contact_name,
-    phone: row.phone,
-    address: row.address,
+    ...buildPayload(row),
     status: row.status === 'enabled' ? 'disabled' : 'enabled'
   })
   ElMessage.success(`供应商已${row.status === 'enabled' ? '停用' : '启用'}`)
@@ -397,11 +552,27 @@ async function removeSupplier(row) {
 }
 
 function exportTable() {
-  exportRowsToCsv('suppliers', filteredRows.value)
+  exportRowsToCsv('suppliers', filteredRows.value.map((item) => ({
+    供应商编码: item.code,
+    供应商名称: item.name,
+    供应商类型: item.supplier_type_label || '',
+    状态: item.status === 'enabled' ? '启用' : '停用',
+    统一社会信用代码: item.unified_social_credit_code || '',
+    联系人: item.contact_name,
+    联系电话: item.phone,
+    供应商地址: item.address || '',
+    官网: item.website || '',
+    开户行名称: item.bank_name || '',
+    银行账号: item.bank_account || '',
+    标签: (item.tags || []).join('、'),
+    采购单数: item.purchase_order_count,
+    商品名录数: item.catalog_item_count,
+    备注: item.remark || ''
+  })))
 }
 
 onMounted(async () => {
-  await load()
+  await Promise.all([load(), loadTagCatalog()])
 })
 </script>
 
@@ -413,7 +584,11 @@ onMounted(async () => {
 .drawer-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-bottom: 16px; color: #606266; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
 .price-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 12px; color: #303133; font-weight: 600; }
+.drawer-meta-full { grid-column: 1 / -1; }
+.tag-chip { margin-right: 6px; margin-bottom: 4px; }
 .w-260 { width: 260px; }
+.w-200 { width: 200px; }
+.w-160 { width: 160px; }
 .w-140 { width: 140px; }
 .mt-16 { margin-top: 16px; }
 </style>

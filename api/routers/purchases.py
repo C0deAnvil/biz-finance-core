@@ -836,6 +836,7 @@ def list_purchase_fulfillment_demands(
             TodoItem.business_type.in_(
                 [
                     "sales_order_material_replenishment",
+                    "production_material_replenishment",
                     "low_stock_product_material_replenishment",
                 ]
             ),
@@ -844,7 +845,12 @@ def list_purchase_fulfillment_demands(
         ).order_by(TodoItem.created_at.desc(), TodoItem.id.desc())
     ).scalars().all()
     sales_material_demands = []
+    seen_material_sources = set()
     for todo in sales_material_rows:
+        source_key = (todo.business_type, todo.business_id)
+        if source_key in seen_material_sources:
+            continue
+        seen_material_sources.add(source_key)
         raw_description = todo.description or ""
         payload = {}
         marker = "|sales_order_material_replenishment:"
@@ -853,13 +859,18 @@ def list_purchase_fulfillment_demands(
                 payload = json.loads(raw_description.split(marker, 1)[1])
             except Exception:
                 payload = {}
+        if todo.business_type == "sales_order_material_replenishment":
+            from services.material_replenishment_confirmation import confirmed_material_quantities
+            confirmed = confirmed_material_quantities(raw_description, payload)
+            payload["items"] = [{**item, "shortage_quantity": float(confirmed[int(item["material_id"])])}
+                                for item in payload.get("items", []) if int(item.get("material_id") or 0) in confirmed]
         for item in payload.get("items", []):
             sales_material_demands.append(
                 {
                     "id": f"sales-raw-{todo.id}-{item.get('material_id')}",
                     "sales_material_todo_id": todo.id,
                     "replenishment_source_id": todo.business_id,
-                    "demand_no": payload.get("fulfillment_demand_no") or f"YL-{todo.id}",
+                    "demand_no": payload.get("raw_material_demand_no") or payload.get("fulfillment_demand_no") or f"YL-{todo.id}",
                     "demand_type": (
                         "low_stock_product_raw_material"
                         if todo.business_type == "low_stock_product_material_replenishment"

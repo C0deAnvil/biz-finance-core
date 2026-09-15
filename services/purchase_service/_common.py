@@ -17,6 +17,7 @@ from models import (
     FulfillmentDemand,
     Inventory,
     Material,
+    MaterialReplenishmentDemand,
     PayableRecord,
     Product,
     ProductionMaterialUsage,
@@ -63,6 +64,7 @@ REPLENISHMENT_SOURCE_TYPES = {
     "low_stock_product_material_replenishment",
     "fulfillment_demand",
     "sales_order_material_replenishment",
+    "production_material_replenishment",
 }
 
 
@@ -86,6 +88,7 @@ from models import (
     FulfillmentDemand,
     Inventory,
     Material,
+    MaterialReplenishmentDemand,
     PayableRecord,
     Product,
     ProductionMaterialUsage,
@@ -132,6 +135,7 @@ REPLENISHMENT_SOURCE_TYPES = {
     "low_stock_product_material_replenishment",
     "fulfillment_demand",
     "sales_order_material_replenishment",
+    "production_material_replenishment",
 }
 
 
@@ -523,9 +527,29 @@ def _parse_sales_order_material_replenishment_payload(todo: TodoItem) -> dict:
     if marker not in description:
         return {}
     try:
-        return json.loads(description.split(marker, 1)[1])
+        payload = json.loads(description.split(marker, 1)[1])
     except (TypeError, ValueError):
         return {}
+    if todo.business_type == "sales_order_material_replenishment":
+        from services.material_replenishment_confirmation import confirmed_material_quantities
+        confirmed = confirmed_material_quantities(description, payload)
+        payload["items"] = [{**item, "shortage_quantity": float(confirmed[int(item["material_id"])])}
+                            for item in payload.get("items", []) if int(item.get("material_id") or 0) in confirmed]
+    return payload
+
+
+def _validate_material_batches_items(batches, items):
+    required, supplied = {}, {}
+    for batch in batches:
+        for item in batch.items_json:
+            mid = int(item["material_id"])
+            required[mid] = required.get(mid, Decimal("0")) + Decimal(str(item["shortage_quantity"]))
+    for item in items:
+        if item.product_id or not item.material_id:
+            raise HTTPException(status_code=409, detail="原料补货采购单只能包含来源需求中的原料")
+        supplied[item.material_id] = supplied.get(item.material_id, Decimal("0")) + Decimal(item.quantity)
+    if supplied != required:
+        raise HTTPException(status_code=409, detail="采购数量必须等于所选原料补货需求的合计数量；剩余缺口请另提补货需求")
 
 
 def _validate_purchase_order_replenishment_items(
@@ -535,7 +559,13 @@ def _validate_purchase_order_replenishment_items(
     source_id: int,
     items,
 ) -> None:
-    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment"}:
+    if source_type == "production_material_replenishment":
+        batch = db.get(MaterialReplenishmentDemand, source_id)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="原料补货需求不存在")
+        _validate_material_batches_items([batch], items)
+        return
+    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment", "production_material_replenishment"}:
         todos = db.execute(
             select(TodoItem).where(
                 TodoItem.business_type == source_type,
@@ -551,6 +581,8 @@ def _validate_purchase_order_replenishment_items(
             ),
             {},
         )
+        if not payload.get("items"):
+            raise HTTPException(status_code=409, detail="原料补货需求尚未人工确认")
         shortage_map = {
             int(item["material_id"]): Decimal(str(item.get("shortage_quantity") or 0))
             for item in payload.get("items", [])
@@ -633,6 +665,17 @@ def _load_purchase_replenishment_source(
     if source_type not in REPLENISHMENT_SOURCE_TYPES:
         raise HTTPException(status_code=409, detail="不支持的补货来源类型")
 
+    if source_type == "production_material_replenishment":
+        batch = db.scalar(select(MaterialReplenishmentDemand).where(MaterialReplenishmentDemand.id == source_id).with_for_update())
+        if batch is None:
+            raise HTTPException(status_code=404, detail="原料补货需求不存在")
+        if batch.purchase_order_id and batch.purchase_order_id != existing_order_id:
+            raise HTTPException(status_code=409, detail="该原料补货需求已关联采购单，不能重复建单")
+        if validate_items:
+            _validate_material_batches_items([batch], items)
+        return {"source_type": source_type, "source_id": source_id, "batch": batch,
+                "payload": {"items": batch.items_json}}
+
     existing_order = db.execute(
         select(PurchaseOrder).where(
             PurchaseOrder.replenishment_source_type == source_type,
@@ -645,7 +688,7 @@ def _load_purchase_replenishment_source(
             detail=f"该补货来源已关联采购订单 {existing_order.order_no}，不能重复创建采购订单",
         )
 
-    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment"}:
+    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment", "production_material_replenishment"}:
         pending_todos = db.execute(
             select(TodoItem).where(
                 TodoItem.business_type == source_type,
@@ -769,7 +812,7 @@ def _load_purchase_replenishment_source(
 def _filter_purchase_items_for_source(source: dict, items) -> list:
     """从合并采购明细中,过滤出属于某个补货来源的商品明细。"""
     source_type = source["source_type"]
-    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment"}:
+    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment", "production_material_replenishment"}:
         wanted = {int(i["material_id"]) for i in (source.get("payload") or {}).get("items", []) if i.get("material_id")}
         return [it for it in items if it.material_id in wanted]
     if source_type == "raw_material_replenishment":
@@ -795,7 +838,10 @@ def _complete_purchase_replenishment_source(
     source_type = source["source_type"]
     source_id = source["source_id"]
 
-    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment"}:
+    if source_type == "production_material_replenishment":
+        source["batch"].purchase_order_id = order.id
+
+    if source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment", "production_material_replenishment"}:
         completed_todos = complete_todos(db, business_type=source_type, business_id=source_id)
         payload = source.get("payload") or {}
         order_no = payload.get("sales_order_no") or payload.get("source_no") or "补货来源"
@@ -965,6 +1011,11 @@ def _reopen_purchase_replenishment_source(
 ) -> None:
     source_type = order.replenishment_source_type
     source_id = order.replenishment_source_id
+    if source_type == "production_material_replenishment":
+        batches = db.scalars(select(MaterialReplenishmentDemand).where(MaterialReplenishmentDemand.purchase_order_id == order.id).with_for_update()).all()
+        for batch in batches:
+            batch.purchase_order_id = None
+            _reopen_completed_replenishment_todos(db, source_type=source_type, source_id=batch.id, module="purchase")
     if not source_type or not source_id:
         return
 
@@ -1024,7 +1075,7 @@ def _reopen_purchase_replenishment_source(
             created_by_id=current_user.id,
             category="warning",
         )
-    elif source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment"}:
+    elif source_type in {"sales_order_material_replenishment", "low_stock_product_material_replenishment", "production_material_replenishment"}:
         todos = _reopen_completed_replenishment_todos(
             db,
             source_type=source_type,
@@ -1039,7 +1090,7 @@ def _reopen_purchase_replenishment_source(
             ),
             {},
         )
-        source_no = source_payload.get("sales_order_no") or source_payload.get("source_no") or "补货来源"
+        source_no = source_payload.get("raw_material_demand_no") or source_payload.get("sales_order_no") or source_payload.get("source_no") or "补货来源"
         product_name = source_payload.get("product_name") or "生产原料"
         title = (
             "安全库存成品生产原料采购需求已恢复"

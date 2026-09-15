@@ -66,6 +66,7 @@ TODO_ROUTE_BY_BUSINESS_TYPE = {
     "stock_take_task": "/inventory/stock-takes",
     "low_stock_alert": "/inventory/stocks",
     "raw_material_replenishment": "/purchases/orders",
+    "production_material_replenishment": "/purchases/orders",
     "low_stock_product_material_replenishment": "/purchases/orders",
     "reimbursement_payment": "/finance/reimbursements",
 }

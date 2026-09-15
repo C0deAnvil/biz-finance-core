@@ -19,6 +19,7 @@ from models import (
     ProductionMaterialUsage,
     ProductionTask,
     Product,
+    PurchaseOrder,
     QualityTask,
     Role,
     SalesOrder,
@@ -115,111 +116,51 @@ def _is_special_material_request(task: ProductionTask, usage: ProductionMaterial
     return Decimal(usage.requested_quantity or 0) > _allowed_quantity(task, usage) or usage.manager_approval_status != "not_required"
 
 
-def _create_raw_material_demands_for_task(
-    db: Session,
-    *,
-    task: ProductionTask,
-    demand: FulfillmentDemand,
-    raw_material_demands: list,
-    current_user: User,
-) -> list[str]:
-    """转生产任务时原料不足,为生产补货需求创建原料采购待办(数量可自定义),返回编号列表。
-
-    载体复用 sales_order_material_replenishment(采购侧已支持展示与转采购单),
-    关联生产补货需求 demand_no,避免重复提交。
-    """
+def _create_raw_material_demands_for_task(db: Session, *, task, demand, raw_material_demands, current_user) -> list[str]:
+    """每次人工提交创建独立 YL 需求，已有数量和采购单保持独立。"""
     import json
+    from models import MaterialReplenishmentDemand
+    from services.material_replenishment_service import SOURCE_TYPE, material_demand_progress
 
     if not raw_material_demands:
         return []
-    bom = db.execute(
-        select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == demand.product_id)
-    ).unique().scalar_one_or_none()
-    if bom is None or not bom.items:
-        return []
-    material_map = {
-        row.id: row
-        for row in db.execute(select(Material).where(Material.id.in_([r.material_id for r in raw_material_demands] or [-1]))).scalars().all()
-    }
-    shortage_items = []
+    # 同一 BH 的并发提交串行校验，避免两个请求同时补同一个缺口。
+    db.execute(select(FulfillmentDemand).where(FulfillmentDemand.id == demand.id).with_for_update()).scalar_one()
+    progress = material_demand_progress(db, demand, lock_stock=True)
+    progress_map = {item["material_id"]: item for item in progress["items"]}
+    requested = {}
     for raw in raw_material_demands:
-        shortage_quantity = Decimal(str(raw.shortage_quantity))
-        if shortage_quantity <= 0:
-            continue
-        material = material_map.get(raw.material_id)
-        shortage_items.append(
-            {
-                "material_id": raw.material_id,
-                "material_name": material.name if material else f"原料#{raw.material_id}",
-                "required_quantity": float(shortage_quantity),
-                "expected_available_quantity": 0,
-                "shortage_quantity": float(shortage_quantity),
-            }
-        )
-    if not shortage_items:
-        return []
-
-    business_type = "sales_order_material_replenishment"
-    pending_todos = db.execute(
-        select(TodoItem).where(
-            TodoItem.business_type == business_type,
-            TodoItem.business_id == demand.id,
-            TodoItem.status != "completed",
-        )
-    ).scalars().all()
-    purchase_user_ids = resolve_workflow_recipients(
-        db,
-        "purchase",
-        workflow=business_type,
-        business_type=business_type,
-        business_id=demand.id,
-    )
-    task_no = task.task_no if task else "待创建"
-    production_quantity = float(task.planned_quantity or 0) if task else float(demand.shortage_quantity or 0)
-    payload = {
-        "sales_order_id": demand.sales_order_id,
-        "sales_order_no": demand.source_order_no,
-        "fulfillment_demand_id": demand.id,
-        "fulfillment_demand_no": demand.demand_no,
-        "product_id": demand.product_id,
-        "product_name": demand.product.name if demand.product else None,
-        "production_quantity": production_quantity,
-        "items": shortage_items,
-    }
-    description = (
-        f"生产任务 {task_no} 原料不足,生产补货需求 {demand.demand_no} 存在原料缺口，"
-        f"共 {len(shortage_items)} 种原料，请采购人员处理。"
-        f"|sales_order_material_replenishment:{json.dumps(payload, ensure_ascii=False)}"
-    )
-    demand_nos: list[str] = []
-    for user_id in purchase_user_ids:
-        todo = next((row for row in pending_todos if row.assigned_user_id == user_id), None)
-        if todo is None:
-            create_todo(
-                db,
-                title=f"待采购生产原料 {demand.demand_no}",
-                description=description,
-                module="purchase",
-                assigned_user_id=user_id,
-                business_type=business_type,
-                business_id=demand.id,
-                priority="high",
-            )
-        else:
-            todo.description = description
-            todo.status = "pending"
-    raw_no = f"YL-{demand.id}"
-    demand_nos.append(raw_no)
-    create_notification(
-        db,
-        title="新增原料采购补货需求",
-        content=f"生产任务 {task_no} 原料不足，已通知采购处理（关联补货需求 {demand.demand_no}）。",
-        module="purchase",
-        recipient_user_ids=list(dict.fromkeys([*purchase_user_ids, current_user.id])),
-        created_by_id=current_user.id,
-        category="warning",
-    )
-    return demand_nos
+        requested[raw.material_id] = requested.get(raw.material_id, Decimal("0")) + Decimal(raw.shortage_quantity)
+    shortage_items = []
+    for mid, quantity in requested.items():
+        item = progress_map.get(mid)
+        if not item or item["required_quantity"] <= 0:
+            raise HTTPException(status_code=409, detail="原料必须属于当前生产需求的 BOM")
+        remaining = Decimal(str(item["remaining_replenishment_quantity"]))
+        if quantity <= 0 or quantity > remaining:
+            raise HTTPException(status_code=409, detail=f"{item['material_name']} 本次补货数量应大于 0 且不超过剩余缺口 {remaining}")
+        shortage_items.append({"material_id": mid, "material_name": item["material_name"],
+                               "required_quantity": item["required_quantity"],
+                               "expected_available_quantity": item["stock_available_quantity"],
+                               "shortage_quantity": float(quantity)})
+    batch = MaterialReplenishmentDemand(demand_no=next_business_no(db, "YL"), fulfillment_demand_id=demand.id,
+                                        created_by_id=current_user.id, items_json=shortage_items)
+    db.add(batch)
+    db.flush()
+    payload = {"sales_order_id": demand.sales_order_id, "sales_order_no": demand.source_order_no,
+               "fulfillment_demand_id": demand.id, "fulfillment_demand_no": demand.demand_no,
+               "raw_material_demand_no": batch.demand_no, "product_id": demand.product_id,
+               "product_name": demand.product.name if demand.product else None, "items": shortage_items}
+    recipients = resolve_workflow_recipients(db, "purchase", workflow="sales_order_material_replenishment",
+                                              business_type=SOURCE_TYPE, business_id=batch.id)
+    for user_id in recipients:
+        create_todo(db, title=f"待采购原料 {batch.demand_no}",
+                    description=f"原料补货需求 {batch.demand_no}，来源 {demand.demand_no}。|sales_order_material_replenishment:{json.dumps(payload, ensure_ascii=False)}",
+                    module="purchase", assigned_user_id=user_id, business_type=SOURCE_TYPE, business_id=batch.id, priority="high")
+    create_notification(db, title="新增原料采购补货需求", content=f"{demand.demand_no} 已提交独立原料补货需求 {batch.demand_no}。",
+                        module="purchase", recipient_user_ids=list(dict.fromkeys([*recipients, current_user.id])),
+                        created_by_id=current_user.id, category="warning")
+    return [batch.demand_no]
 
 
 def _create_raw_material_replenishment_notice(
@@ -357,116 +298,32 @@ def _max_producible_quantity_from_raw_stock(
     ).unique().scalar_one_or_none()
     if bom is None or not bom.items:
         return Decimal("0"), []
-    raw_warehouse = _raw_warehouse(db)
-    material_ids = [item.material_id for item in bom.items if item.standard_quantity and item.standard_quantity > 0]
-    inventory_rows = db.execute(
-        select(Inventory)
-        .where(
-            Inventory.warehouse_id == raw_warehouse.id,
-            Inventory.material_id.in_(material_ids or [-1]),
-            Inventory.product_id.is_(None),
-        )
-        .with_for_update()
-    ).scalars().all() if material_ids else []
-    inventory_map = {row.material_id: row for row in inventory_rows}
-    planned_material_rows = db.execute(
-        select(
-            ProductionMaterialUsage.material_id,
-            ProductionMaterialUsage.planned_quantity,
-            ProductionMaterialUsage.actual_quantity,
-        )
-        .join(ProductionTask, ProductionTask.id == ProductionMaterialUsage.production_task_id)
-        .where(
-            ProductionTask.status.not_in(_PRODUCTION_TASK_NON_RESERVING_STATUSES),
-            ProductionMaterialUsage.material_id.in_(material_ids or [-1]),
-        )
-    ).all() if material_ids else []
-    planned_by_material: dict[int, Decimal] = {}
-    for material_id, planned_quantity, actual_quantity in planned_material_rows:
-        outstanding_quantity = max(
-            Decimal(planned_quantity or 0) - Decimal(actual_quantity or 0),
-            Decimal("0"),
-        )
-        planned_by_material[material_id] = planned_by_material.get(material_id, Decimal("0")) + outstanding_quantity
-    max_quantity: Decimal | None = None
-    material_rows: list[dict] = []
-    for bom_item in bom.items:
-        inventory = inventory_map.get(bom_item.material_id)
-        stock_available_quantity = max(
-            Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
-            if inventory is not None
-            else Decimal("0"),
-            Decimal("0"),
-        )
-        planned_quantity = planned_by_material.get(bom_item.material_id, Decimal("0"))
-        available_quantity = max(stock_available_quantity - planned_quantity, Decimal("0"))
-        standard_quantity = Decimal(bom_item.standard_quantity or 0)
-        if standard_quantity <= 0:
+    from services.material_replenishment_service import material_stock_availability
+    ids = [item.material_id for item in bom.items if item.standard_quantity > 0]
+    stocks = material_stock_availability(db, ids, lock=True)
+    names = {m.id: m.name for m in db.scalars(select(Material).where(Material.id.in_(ids or [-1])))}
+    rows = []
+    maximum = None
+    for item in bom.items:
+        standard = Decimal(item.standard_quantity or 0)
+        if standard <= 0:
             continue
-        item_max_quantity = available_quantity / standard_quantity
-        max_quantity = item_max_quantity if max_quantity is None else min(max_quantity, item_max_quantity)
-        material_name = inventory.material.name if inventory is not None and inventory.material else f"原料#{bom_item.material_id}"
-        material_rows.append(
-            {
-                "material_id": bom_item.material_id,
-                "material_name": material_name,
-                "available_quantity": float(available_quantity),
-                "stock_available_quantity": float(stock_available_quantity),
-                "reserved_by_production_quantity": float(planned_quantity),
-                "required_per_product": float(standard_quantity),
-            }
-        )
-    return max(max_quantity or Decimal("0"), Decimal("0")), material_rows
+        stock = stocks[item.material_id]
+        quantity = stock["available_quantity"] / standard
+        maximum = quantity if maximum is None else min(maximum, quantity)
+        rows.append({"material_id": item.material_id, "material_name": names.get(item.material_id),
+                     "available_quantity": float(stock["available_quantity"]),
+                     "stock_available_quantity": float(max(stock["quantity"] - stock["reserved_quantity"], Decimal("0"))),
+                     "reserved_by_production_quantity": float(stock["production_reserved_quantity"]),
+                     "required_per_product": float(standard)})
+    return maximum or Decimal("0"), rows
 
 
-def raw_material_shortage_detail(
-    db: Session,
-    *,
-    product_id: int,
-    planned_quantity: Decimal,
-) -> list[dict]:
-    """按指定生产数量计算每种原料的缺口明细(需要/可用/缺口)。"""
-    bom = db.execute(
-        select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == product_id)
-    ).unique().scalar_one_or_none()
-    if bom is None or not bom.items:
-        return []
-    raw_warehouse = _raw_warehouse(db)
-    material_ids = [item.material_id for item in bom.items if item.standard_quantity and item.standard_quantity > 0]
-    inventory_rows = db.execute(
-        select(Inventory)
-        .where(
-            Inventory.warehouse_id == raw_warehouse.id,
-            Inventory.material_id.in_(material_ids or [-1]),
-            Inventory.product_id.is_(None),
-        )
-    ).scalars().all() if material_ids else []
-    inventory_map = {row.material_id: row for row in inventory_rows}
-    rows: list[dict] = []
-    for bom_item in bom.items:
-        standard_quantity = Decimal(bom_item.standard_quantity or 0)
-        if standard_quantity <= 0:
-            continue
-        inventory = inventory_map.get(bom_item.material_id)
-        available_quantity = max(
-            Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
-            if inventory is not None
-            else Decimal("0"),
-            Decimal("0"),
-        )
-        required_quantity = Decimal(planned_quantity) * standard_quantity
-        shortage_quantity = max(required_quantity - available_quantity, Decimal("0"))
-        material_name = inventory.material.name if inventory is not None and inventory.material else f"原料#{bom_item.material_id}"
-        rows.append(
-            {
-                "material_id": bom_item.material_id,
-                "material_name": material_name,
-                "required_quantity": float(required_quantity),
-                "available_quantity": float(available_quantity),
-                "shortage_quantity": float(shortage_quantity),
-            }
-        )
-    return rows
+def raw_material_shortage_detail(db: Session, *, product_id: int, planned_quantity: Decimal) -> list[dict]:
+    _, materials = _max_producible_quantity_from_raw_stock(db, product_id=product_id)
+    return [{**item, "required_quantity": float(planned_quantity * Decimal(str(item["required_per_product"]))),
+             "shortage_quantity": float(max(planned_quantity * Decimal(str(item["required_per_product"])) - Decimal(str(item["available_quantity"])), Decimal("0")))}
+            for item in materials]
 
 
 def _ensure_inventory_stock_for_approval(

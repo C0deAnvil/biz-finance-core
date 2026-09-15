@@ -55,6 +55,8 @@ from services.display import calculate_bag_count, get_default_packaging_config, 
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
+from models import MaterialReplenishmentDemand
+from services.purchase_service._common import _validate_material_batches_items
 
 
 REPLENISHMENT_SOURCE_TYPES = {
@@ -84,6 +86,8 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
             raise HTTPException(status_code=409, detail="合并建单至少需要选择两条补货需求")
         # 先逐个加载来源(校验存在性 / 防重复),再按来源拆分明细校验
         loaded_sources = []
+        if len({(src.source_type, src.source_id) for src in replenishment_sources}) != len(replenishment_sources):
+            raise HTTPException(status_code=409, detail="不能重复选择同一补货来源")
         for src in replenishment_sources:
             source = _load_purchase_replenishment_source(
                 db,
@@ -95,7 +99,14 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
             if source is None:
                 raise HTTPException(status_code=409, detail="补货来源无效")
             loaded_sources.append(source)
+        batch_sources = [source for source in loaded_sources if source["source_type"] == "production_material_replenishment"]
+        if batch_sources:
+            if len(batch_sources) != len(loaded_sources):
+                raise HTTPException(status_code=409, detail="独立原料补货需求请只与其他独立原料補货需求合并")
+            _validate_material_batches_items([source["batch"] for source in batch_sources], payload.items)
         for source in loaded_sources:
+            if source["source_type"] == "production_material_replenishment":
+                continue
             source_items = _filter_purchase_items_for_source(source, payload.items)
             if not source_items:
                 raise HTTPException(status_code=409, detail="补货来源对应的商品未包含在采购明细中")
@@ -228,7 +239,10 @@ def update_purchase_order(order_id: int, payload: PurchaseOrderUpdate, current_u
     if not payload.items:
         raise HTTPException(status_code=400, detail="采购订单至少需要一条明细")
     _validate_supplier_catalog(db, payload.supplier_id, payload.items)
-    if order.replenishment_source_type and order.replenishment_source_id:
+    if order.replenishment_source_type == "production_material_replenishment":
+        batches = db.scalars(select(MaterialReplenishmentDemand).where(MaterialReplenishmentDemand.purchase_order_id == order.id)).all()
+        _validate_material_batches_items(batches, payload.items)
+    elif order.replenishment_source_type and order.replenishment_source_id:
         _validate_purchase_order_replenishment_items(
             db,
             source_type=order.replenishment_source_type,

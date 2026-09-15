@@ -1,9 +1,13 @@
+import json
+from decimal import Decimal
+
 from sqlalchemy import select
 
 from database import SessionLocal
-from helpers import create_bom, create_material, create_production_product, uniq
-from models import SalesOrder, User
+from helpers import create_bom, create_material, create_production_product, create_supplier, uniq
+from models import PurchaseOrder, SalesOrder, TodoItem, User
 from services.sales_service import _create_fulfillment_demands
+from services.material_replenishment_confirmation import confirmed_material_quantities
 
 
 def test_sales_demand_requires_explicit_material_confirmation(client, login):
@@ -51,3 +55,11 @@ def test_sales_demand_requires_explicit_material_confirmation(client, login):
     data = client.get(f"{url}/material-progress").json()["data"]
     assert data["items"][0]["submitted_quantity"] == 80
     assert data["can_produce"] is False
+
+
+def test_confirmation_origin_and_partial_confirmation():
+    payload = {"items": [{"material_id": 1, "shortage_quantity": 4427.12}]}
+    assert confirmed_material_quantities("客户订单 XS 原料缺口", payload) == {}
+    assert confirmed_material_quantities("生产任务 待创建 原料不足", payload) == {1: Decimal("4427.12")}
+    payload["confirmed_material_quantities"] = {"2": 9000}
+    assert confirmed_material_quantities("生产任务 待创建 原料不足", payload) == {2: Decimal("9000")}

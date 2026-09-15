@@ -33,7 +33,9 @@ tmp_*.json
 tmp_*.txt
 yecai.db
 startup.log
-ystemctl status nginx  # 你目录里那个名称错误的文件，最好忽略它
+# 目录里两个名称错误的文件（.gitignore 的模式行不支持行尾注释，注释必须独占一行）
+ystemctl status nginx
+frontend/ystemctl status mysqld
 
 # ============= 前端 Node =============
 node_modules/

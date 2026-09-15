@@ -156,13 +156,20 @@
             <template #default="scope">{{ formatNumber(scope.row.required_quantity) }}</template>
           </el-table-column>
           <el-table-column label="库存可用" width="90">
-            <template #default="scope">{{ formatNumber(scope.row.stock_available_quantity) }}</template>
+            <template #default="scope">
+              <el-tooltip :content="`实有 ${formatNumber(scope.row.stock_quantity)} − 库存占用 ${formatNumber(scope.row.stock_reserved_quantity)} − 生产未领用占用 ${formatNumber(scope.row.production_reserved_quantity)}`">
+                <span>{{ formatNumber(scope.row.stock_available_quantity) }}</span>
+              </el-tooltip>
+            </template>
           </el-table-column>
           <el-table-column label="已提交补货" width="100">
             <template #default="scope">{{ formatNumber(scope.row.submitted_quantity) }}</template>
           </el-table-column>
           <el-table-column label="已到货" width="90">
             <template #default="scope">{{ formatNumber(scope.row.received_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="已提交未入库" width="110">
+            <template #default="scope">{{ formatNumber(scope.row.outstanding_quantity) }}</template>
           </el-table-column>
           <el-table-column label="状态" width="130">
             <template #default="scope">
@@ -181,14 +188,26 @@
                 :precision="2"
                 size="small"
                 style="width: 140px"
-                :disabled="scope.row.satisfied || Number(scope.row.submitted_quantity) > 0"
+                :disabled="scope.row.shortage <= 0 || !materialProgressData.can_edit_replenishment"
               />
             </template>
           </el-table-column>
         </el-table>
         <div v-if="!materialProgressData.can_produce" class="material-progress-tip">
-          在右侧「本次补货数量」中填写数量后提交，生成原料采购补货需求。已提交的原料请等待采购处理；质检入库且可用库存满足需求后，可继续转建任务。
+          <template v-if="materialProgressData.can_edit_replenishment">
+            每次提交新建独立原料补货需求。可追加量 = 需求数量 − 库存可用 − 已提交未入库量；已有采购单不影响继续补足剩余缺口。
+          </template>
+          <template v-else>当前生产补货需求已处理，不能再追加原料补货。</template>
         </div>
+        <el-table v-if="materialProgressData.replenishment_demands?.length" :data="materialProgressData.replenishment_demands" size="small" class="mb-12">
+          <el-table-column prop="demand_no" label="已提交原料需求号" />
+          <el-table-column label="补货明细" min-width="240">
+            <template #default="scope">{{ scope.row.items.map(item => `${item.material_name} ${formatNumber(item.shortage_quantity)}`).join('；') }}</template>
+          </el-table-column>
+          <el-table-column label="关联采购单">
+            <template #default="scope">{{ scope.row.purchase_order_no || '待采购处理' }}</template>
+          </el-table-column>
+        </el-table>
       </template>
       <template #footer>
         <el-button @click="materialProgressVisible = false">关闭</el-button>
@@ -922,13 +941,12 @@ async function openMaterialProgress(row) {
     materialProgressItems.value = (progress.items || []).map((item) => {
       const stockAvailable = Number(item.stock_available_quantity || 0)
       const required = Number(item.required_quantity || 0)
-      const submitted = Number(item.submitted_quantity || 0)
-      const shortage = Math.max(required - stockAvailable, 0)
+      const shortage = Number(item.remaining_replenishment_quantity || 0)
       return {
         ...item,
         shortage,
-        suggest_quantity: shortage > 0 && submitted <= 0 ? shortage : 0,
-        satisfied: shortage <= 0,
+        suggest_quantity: progress.can_edit_replenishment ? shortage : 0,
+        satisfied: required <= stockAvailable,
       }
     })
     materialProgressVisible.value = true

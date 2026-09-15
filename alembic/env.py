@@ -10,6 +10,17 @@ from alembic import context
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_dir)
 
+# 迁移的数据库地址优先取环境变量 DATABASE_URL（来自 .env），
+# 取不到才回落到 alembic.ini 里的 sqlalchemy.url。
+# 这样各环境（本机 / 测试 / 服务器）只改自己的 .env，alembic.ini 不用动，
+# 也避免出现「应用连 A 库、迁移跑 B 库」的错位。
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(project_dir, '.env'))
+except ImportError:  # 未安装 python-dotenv 时退化为只读系统环境变量
+    pass
+
 from models import Base
 
 # this is the Alembic Config object, which provides
@@ -26,6 +37,10 @@ if config.config_file_name is not None:
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
 target_metadata = Base.metadata
+
+
+def get_database_url() -> str:
+    return os.getenv("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -45,7 +60,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = get_database_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -64,8 +79,11 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    section = config.get_section(config.config_ini_section, {}) or {}
+    # 直接覆写 section 字典，绕开 configparser 的 % 插值，密码含 % 也不会出错
+    section["sqlalchemy.url"] = get_database_url()
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

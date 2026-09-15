@@ -12,6 +12,10 @@ class CustomerCreate(BaseModel):
     unified_social_credit_code: str | None = Field(default=None, max_length=60)
     source_type: str = Field(default="personal_development", pattern="^(personal_development|company_transfer)$")
     owner_user_id: int | None = None
+    customer_type: str | None = Field(default=None, pattern="^(importer|dealer|factory|trading|agent)$")
+    region_type: str | None = Field(default=None, pattern="^(domestic|overseas)$")
+    remark: str | None = Field(default=None, max_length=2000)
+    tags: list[str] | None = Field(default=None, max_length=30)
 
 
 class CustomerTransferCreate(BaseModel):
@@ -39,6 +43,16 @@ class SupplierCreate(BaseModel):
     phone: str = Field(..., max_length=30)
     address: str = Field(..., max_length=255)
     status: str = Field(default="enabled", pattern="^(enabled|disabled)$")
+    unified_social_credit_code: str | None = Field(default=None, max_length=60)
+    supplier_type: str | None = Field(
+        default=None,
+        pattern="^(trader|manufacturer|manufacturer_trader|service|logistics|other)$",
+    )
+    website: str | None = Field(default=None, max_length=255)
+    bank_name: str | None = Field(default=None, max_length=150)
+    bank_account: str | None = Field(default=None, max_length=60)
+    remark: str | None = Field(default=None, max_length=2000)
+    tags: list[str] | None = Field(default=None, max_length=30)
 
 
 class SupplierCatalogItemInput(BaseModel):

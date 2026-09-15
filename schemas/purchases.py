@@ -23,7 +23,7 @@ class PurchaseOrderCreate(BaseModel):
     items: list[PurchaseOrderItemInput]
     replenishment_source_type: str | None = Field(
         default=None,
-        pattern="^(raw_material_replenishment|low_stock_replenishment|low_stock_product_material_replenishment|fulfillment_demand|sales_order_material_replenishment)$",
+        pattern="^(raw_material_replenishment|low_stock_replenishment|low_stock_product_material_replenishment|fulfillment_demand|sales_order_material_replenishment|production_material_replenishment)$",
     )
     replenishment_source_id: int | None = Field(default=None, gt=0)
     # 多补货需求合并建单:多个来源同时转成一个采购订单(按原料/产品聚合)

@@ -336,6 +336,9 @@ class Customer(TimestampMixin, Base):
     owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     unified_social_credit_code = Column(String(60), nullable=True, unique=True)
     source_type = Column(String(30), nullable=False, default="personal_development")
+    customer_type = Column(String(30), nullable=True)
+    region_type = Column(String(20), nullable=True)
+    remark = Column(Text, nullable=True)
     archived_at = Column(DateTime, nullable=True)
     ext_json = Column(JSON, nullable=True)
 
@@ -350,8 +353,9 @@ class CustomerTag(TimestampMixin, Base):
     )
 
     id = Column(Integer, primary_key=True)
-    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True)
     tag = Column(String(50), nullable=False)
+    dimension = Column(String(30), nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     customer = relationship("Customer")
@@ -460,7 +464,31 @@ class Supplier(TimestampMixin, Base):
     phone = Column(String(30), nullable=False)
     address = Column(String(255), nullable=False)
     status = Column(String(30), nullable=False, default="enabled")
+    unified_social_credit_code = Column(String(60), nullable=True, unique=True)
+    supplier_type = Column(String(30), nullable=True, index=True)
+    website = Column(String(255), nullable=True)
+    bank_name = Column(String(150), nullable=True)
+    bank_account = Column(String(60), nullable=True)
+    remark = Column(Text, nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class SupplierTag(TimestampMixin, Base):
+    __tablename__ = "supplier_tags"
+    __table_args__ = (
+        UniqueConstraint("supplier_id", "tag", name="uq_supplier_tag"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False, index=True)
+    tag = Column(String(50), nullable=False)
+    dimension = Column(String(30), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    supplier = relationship("Supplier")
+    created_by = relationship("User", foreign_keys=[created_by_id])
 
 
 class SupplierAIResult(TimestampMixin, Base):
@@ -858,6 +886,17 @@ class FulfillmentDemand(TimestampMixin, Base):
     assigned_user = relationship("User", foreign_keys=[assigned_user_id])
     processed_by = relationship("User", foreign_keys=[processed_by_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class MaterialReplenishmentDemand(TimestampMixin, Base):
+    __tablename__ = "material_replenishment_demands"
+
+    id = Column(Integer, primary_key=True)
+    demand_no = Column(String(60), nullable=False, unique=True)
+    fulfillment_demand_id = Column(Integer, ForeignKey("fulfillment_demands.id"), nullable=False, index=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    items_json = Column(JSON, nullable=False)
+    purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=True, index=True)
 
 
 # ===== 移库 =====
