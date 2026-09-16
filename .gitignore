@@ -54,3 +54,14 @@ frontend/*.local
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# ============= 旧系统数据（明文客户资料，坚决不上传） =============
+old_data/export/
+old_data/*.bak
+old_data/*.sql
+old_data/**/*.csv
+old_data/**/*.json
+# 例外：导出/诊断脚本本身不含数据，要进版本控制
+!old_data/export_from_sqlserver.sql
+!old_data/export_from_sqlserver.bat
+!old_data/inspect_export.py

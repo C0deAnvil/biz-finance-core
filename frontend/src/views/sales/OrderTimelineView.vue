@@ -131,6 +131,19 @@
           </el-table>
           <el-empty v-else description="暂无状态流转记录" :image-size="60" />
         </PageSection>
+
+        <!-- 发货照片：库管在「发货出库」时上传，销售在此直接查看 -->
+        <PageSection title="发货照片" description="库管确认发货出库时拍摄的现场照片">
+          <PhotoAttachments
+            v-if="currentOrderId"
+            :key="`timeline-ship-${currentOrderId}`"
+            business-type="sales_order"
+            :business-id="currentOrderId"
+            attachment-type="发货照片"
+            title="发货现场"
+            readonly
+          />
+        </PageSection>
       </div>
     </template>
   </div>
@@ -149,10 +162,14 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 
 import { computed, onMounted, ref } from 'vue'
+
+// 当前时间轴对应的客户订单 id，发货照片按订单归档
+const currentOrderId = ref(null)
 import { useRoute, useRouter } from 'vue-router'
 
 import { get } from '../../api/client'
 import PageSection from '../../components/PageSection.vue'
+import PhotoAttachments from '../../components/PhotoAttachments.vue'
 import { formatDateTime, formatNumber, statusType } from '../../utils/format'
 
 const route = useRoute()
@@ -320,6 +337,7 @@ function openDoc(doc) {
 // ===== 加载 =====
 async function load() {
   const orderId = Number(route.query.id || route.params.id || 0)
+  currentOrderId.value = orderId || null
   if (!orderId) {
     timeline.value = null
     return

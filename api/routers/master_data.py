@@ -41,6 +41,7 @@ from schemas.master_data import CustomerComplaintCreate, CustomerComplaintUpdate
 from services.core import _role_user_ids, create_notification, create_todo, next_business_no, write_operation_log
 from services.replenishment_service import product_expected_available_quantity
 from services.display import get_global_packaging_name, packaging_name_needs_repair, packaging_spec_text, upsert_default_packaging_config
+from services.customer_activity import register_customer_transfer
 from services.organization import get_department_path_names
 from services.tag_catalog import (
     CUSTOMER_REGION_OPTIONS,
@@ -53,6 +54,8 @@ from services.tag_catalog import (
     customer_type_label,
     normalize_tags,
     options_payload,
+    province_catalog,
+    province_region,
     resolve_customer_tag,
     star_level_from_tags,
     supplier_type_label,
@@ -203,7 +206,12 @@ def _serialize_customer(row: Customer, order_count: int = 0, tags: list[str] | N
         "customer_type_label": customer_type_label(row.customer_type),
         "region_type": row.region_type,
         "region_type_label": customer_region_label(row.region_type),
+        "region_province": row.region_province,
+        "region_group": province_region(row.region_province),
         "remark": row.remark,
+        "last_transferred_at": row.last_transferred_at.isoformat() if row.last_transferred_at else None,
+        "churn_repurchase_at": row.churn_repurchase_at.isoformat() if row.churn_repurchase_at else None,
+        "last_order_at": row.last_order_at.isoformat() if row.last_order_at else None,
         "tags": tag_codes,
         "tag_details": tag_details,
         "tag_labels": [item["label"] for item in tag_details],
@@ -441,6 +449,7 @@ def get_customer_tag_catalog(current_user: User = Depends(get_current_user), db:
             "custom_tags": custom_tags,
             "customer_types": options_payload(CUSTOMER_TYPE_OPTIONS),
             "region_types": options_payload(CUSTOMER_REGION_OPTIONS),
+            "provinces": province_catalog(),
             "company_managed_tags": sorted(COMPANY_MANAGED_CUSTOMER_TAGS),
         }
     )
@@ -468,6 +477,8 @@ def list_customers(
     star_level: str | None = None,
     customer_type: str | None = None,
     region_type: str | None = None,
+    region_province: str | None = None,
+    churn_repurchase_only: bool = False,
     tags: str | None = Query(default=None, description="标签 code，多个用英文逗号分隔，命中任意一个即返回"),
     start_date: date | None = None,
     end_date: date | None = None,
@@ -496,6 +507,10 @@ def list_customers(
         query = query.where(Customer.customer_type == customer_type)
     if region_type:
         query = query.where(Customer.region_type == region_type)
+    if region_province:
+        query = query.where(Customer.region_province == region_province)
+    if churn_repurchase_only:
+        query = query.where(Customer.churn_repurchase_at.is_not(None))
     tag_filters = [item.strip() for item in (tags or "").split(",") if item.strip()]
     if tag_filters:
         query = query.where(
@@ -557,6 +572,7 @@ def create_customer(
         source_type=source_type,
         customer_type=payload.customer_type,
         region_type=payload.region_type,
+        region_province=payload.region_province,
         remark=(payload.remark or "").strip() or None,
         owner_user_id=owner_user_id,
         created_by_id=current_user.id,
@@ -592,8 +608,9 @@ def update_customer(
     role_code = current_user.role.code if current_user.role else ""
     if role_code == "sales" and customer.owner_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="销售只能维护本人负责的客户")
+    system_managed_fields = {"last_transferred_at", "churn_repurchase_at", "last_order_at"}
     for field, value in payload.model_dump(exclude_unset=True).items():
-        if field == "tags":
+        if field == "tags" or field in system_managed_fields:
             continue
         if field == "unified_social_credit_code":
             value = credit_code
@@ -638,6 +655,7 @@ def transfer_customer(
     )
     customer.owner_user_id = target_user.id
     customer.source_type = "company_transfer"
+    register_customer_transfer(db, customer=customer, transferred_at=record.transferred_at)
     db.add(record)
     create_notification(
         db,

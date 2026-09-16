@@ -440,6 +440,18 @@
         </el-table-column>
       </el-table>
 
+      <template v-if="detail?.id">
+        <el-divider content-position="left">发货照片</el-divider>
+        <PhotoAttachments
+          :key="`sales-detail-ship-${detail.id}`"
+          business-type="sales_order"
+          :business-id="detail.id"
+          attachment-type="发货照片"
+          title="库管发货现场照片"
+          readonly
+        />
+      </template>
+
       <div class="drawer-actions mt-16">
         <el-button @click="detailVisible = false">关闭</el-button>
         <el-button v-if="detail && canConfirmFinanceEdit(detail)" type="warning" @click="confirmFinanceEdit(detail)">确认财务修改</el-button>
@@ -517,6 +529,7 @@ import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/divider/style/css'
 import 'element-plus/es/components/drawer/style/css'
 import 'element-plus/es/components/form/style/css'
 import 'element-plus/es/components/input-number/style/css'
@@ -537,6 +550,7 @@ import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
@@ -555,6 +569,7 @@ import { useRouteFocus } from '../../composables/useRouteFocus'
 
 import { get, post, put, remove } from '../../api/client'
 import AttachmentUploader from '../../components/AttachmentUploader.vue'
+import PhotoAttachments from '../../components/PhotoAttachments.vue'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'

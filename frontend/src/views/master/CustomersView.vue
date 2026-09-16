@@ -23,6 +23,15 @@
         <el-table-column label="客户类型" width="120">
           <template #default="scope">{{ scope.row.customer_type_label || '-' }}</template>
         </el-table-column>
+        <el-table-column label="地区" width="130">
+          <template #default="scope">
+            <span v-if="scope.row.region_province">
+              {{ scope.row.region_province }}
+              <el-tag v-if="scope.row.region_group" size="small" type="info" class="region-tag">{{ scope.row.region_group }}</el-tag>
+            </span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="国内/海外" width="110">
           <template #default="scope">
             <el-tag v-if="scope.row.region_type" size="small" :type="scope.row.region_type === 'overseas' ? 'warning' : 'success'">{{ scope.row.region_type_label }}</el-tag>
@@ -47,6 +56,18 @@
           <template #default="scope">{{ scope.row.owner_user_name || '-' }}</template>
         </el-table-column>
         <el-table-column prop="created_at" label="建档时间" width="170" />
+        <el-table-column label="转交日期" width="150">
+          <template #default="scope">{{ shortDate(scope.row.last_transferred_at) }}</template>
+        </el-table-column>
+        <el-table-column label="流失复购日期" width="150">
+          <template #default="scope">
+            <el-tag v-if="scope.row.churn_repurchase_at" type="danger" size="small">{{ shortDate(scope.row.churn_repurchase_at) }}</el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="末次下单" width="150">
+          <template #default="scope">{{ shortDate(scope.row.last_order_at) }}</template>
+        </el-table-column>
         <el-table-column prop="star_level" label="客户星级" width="110" />
         <el-table-column prop="order_count" label="关联订单" width="100" />
         <el-table-column prop="address" label="客户地址" min-width="220" show-overflow-tooltip />
@@ -90,6 +111,16 @@
           <el-select v-model="filters.region_type" clearable style="width:100%">
             <el-option v-for="item in regionTypes" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="地区">
+          <el-select v-model="filters.region_province" clearable filterable placeholder="按省份筛选" style="width:100%">
+            <el-option-group v-for="group in provinceGroups" :key="group.region" :label="group.region">
+              <el-option v-for="province in group.provinces" :key="province" :label="province" :value="province" />
+            </el-option-group>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="流失复购">
+          <el-checkbox v-model="filters.churn_repurchase_only">只看发生过流失复购的客户</el-checkbox>
         </el-form-item>
         <el-form-item label="客户标签">
           <el-select v-model="filters.tags" multiple filterable collapse-tags collapse-tags-tooltip clearable placeholder="命中任意一个标签即返回" style="width:100%">
@@ -167,6 +198,15 @@
           <el-col :span="12"><el-form-item label="客户名称" required><el-input v-model="form.name" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="客户类型"><el-select v-model="form.customer_type" clearable placeholder="进口商 / 经销商 / 工厂 / 贸易公司 / 代理商" style="width:100%"><el-option v-for="item in customerTypes" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="国内/海外"><el-select v-model="form.region_type" clearable placeholder="请选择" style="width:100%"><el-option v-for="item in regionTypes" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item></el-col>
+          <el-col :span="12">
+            <el-form-item label="地区">
+              <el-select v-model="form.region_province" clearable filterable placeholder="按省份选择" style="width:100%">
+                <el-option-group v-for="group in provinceGroups" :key="group.region" :label="group.region">
+                  <el-option v-for="province in group.provinces" :key="province" :label="province" :value="province" />
+                </el-option-group>
+              </el-select>
+            </el-form-item>
+          </el-col>
           <el-col :span="12"><el-form-item label="信用代码"><el-input v-model="form.unified_social_credit_code" placeholder="统一社会信用代码" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="联系人" required><el-input v-model="form.contact_name" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="联系电话" required><el-input v-model="form.phone" /></el-form-item></el-col>
@@ -225,6 +265,14 @@
             <el-option v-for="tag in customTags" :key="tag" :label="tag" :value="tag" />
           </el-select>
         </el-form-item>
+
+        <el-divider content-position="left">系统记录（自动维护，不可编辑）</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="8"><el-form-item label="转交日期"><el-input :model-value="shortDate(systemFields.last_transferred_at)" disabled /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="末次下单"><el-input :model-value="shortDate(systemFields.last_order_at)" disabled /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="流失复购"><el-input :model-value="shortDate(systemFields.churn_repurchase_at)" disabled /></el-form-item></el-col>
+        </el-row>
+        <div class="field-hint">流失复购：客户下新单时，若距上一笔订单超过 365 天且本单金额大于 100 元，系统自动记录并打上 T 标签。</div>
 
         <el-divider content-position="left">备注</el-divider>
         <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" placeholder="客户背景、合作历史、注意事项等" /></el-form-item>
@@ -294,6 +342,7 @@ import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/card/style/css'
+import 'element-plus/es/components/checkbox/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/dialog/style/css'
@@ -310,6 +359,7 @@ import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
+import ElCheckbox from 'element-plus/es/components/checkbox/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
@@ -344,11 +394,14 @@ const complaintMode = ref('create')
 const editingId = ref(null)
 const activeComplaint = ref(null)
 const activeCustomer = ref(null)
-const filters = reactive({ keyword: '', source_type: '', owner_user_id: null, star_level: '', customer_type: '', region_type: '', tags: [], created_range: [] })
+const filters = reactive({ keyword: '', source_type: '', owner_user_id: null, star_level: '', customer_type: '', region_type: '', region_province: '', churn_repurchase_only: false, tags: [], created_range: [] })
 const tagDimensions = ref([])
 const customTags = ref([])
 const customerTypes = ref([])
 const regionTypes = ref([])
+const provinceGroups = ref([])
+// 系统自动维护的三个日期，编辑弹窗里只读展示
+const systemFields = reactive({ last_transferred_at: null, last_order_at: null, churn_repurchase_at: null })
 const companyManagedTags = ref([])
 
 function emptyForm() {
@@ -362,6 +415,7 @@ function emptyForm() {
     source_type: 'personal_development',
     customer_type: '',
     region_type: '',
+    region_province: '',
     remark: '',
     owner_user_id: null
   }
@@ -393,6 +447,11 @@ const TAG_DIMENSION_COLORS = {
   demand: 'warning',
   status: 'info',
   source: 'info'
+}
+
+function shortDate(value) {
+  if (!value) return '-'
+  return String(value).slice(0, 10)
 }
 
 function tagColor(dimension) {
@@ -440,6 +499,7 @@ function buildPayload() {
     source_type: form.source_type || 'personal_development',
     customer_type: form.customer_type || null,
     region_type: form.region_type || null,
+    region_province: form.region_province || null,
     remark: (form.remark || '').trim() || null,
     owner_user_id: form.owner_user_id || null,
     tags: collectFormTags()
@@ -456,12 +516,13 @@ const activeOrderCustomerCount = computed(() => filteredRows.value.filter((item)
 
 function resetForm() {
   Object.assign(form, emptyForm())
+  Object.assign(systemFields, { last_transferred_at: null, last_order_at: null, churn_repurchase_at: null })
   applyTagsToSelection([])
   editingId.value = null
 }
 
 function resetFilters() {
-  Object.assign(filters, { keyword: '', source_type: '', owner_user_id: null, star_level: '', customer_type: '', region_type: '', tags: [], created_range: [] })
+  Object.assign(filters, { keyword: '', source_type: '', owner_user_id: null, star_level: '', customer_type: '', region_type: '', region_province: '', churn_repurchase_only: false, tags: [], created_range: [] })
   pagination.page = 1
   load()
 }
@@ -487,6 +548,8 @@ async function load() {
   if (filters.star_level) params.set('star_level', filters.star_level)
   if (filters.customer_type) params.set('customer_type', filters.customer_type)
   if (filters.region_type) params.set('region_type', filters.region_type)
+  if (filters.region_province) params.set('region_province', filters.region_province)
+  if (filters.churn_repurchase_only) params.set('churn_repurchase_only', 'true')
   if (filters.tags.length) params.set('tags', filters.tags.join(','))
   if (startDate) params.set('start_date', startDate)
   if (endDate) params.set('end_date', endDate)
@@ -516,6 +579,7 @@ async function loadTagCatalog() {
   customTags.value = data.custom_tags || []
   customerTypes.value = data.customer_types || []
   regionTypes.value = data.region_types || []
+  provinceGroups.value = data.provinces || []
   companyManagedTags.value = data.company_managed_tags || []
   applyTagsToSelection([])
 }
@@ -537,8 +601,14 @@ function openEdit(row) {
     source_type: row.source_type || 'personal_development',
     customer_type: row.customer_type || '',
     region_type: row.region_type || '',
+    region_province: row.region_province || '',
     remark: row.remark || '',
     owner_user_id: row.owner_user_id || null
+  })
+  Object.assign(systemFields, {
+    last_transferred_at: row.last_transferred_at,
+    last_order_at: row.last_order_at,
+    churn_repurchase_at: row.churn_repurchase_at
   })
   applyTagsToSelection(row.tags || [])
   dialogVisible.value = true
@@ -643,6 +713,8 @@ function exportTable() {
     联系电话: item.phone,
     客户类型: item.customer_type_label || '',
     国内海外: item.region_type_label || '',
+    地区: item.region_province || '',
+    大区: item.region_group || '',
     标签: (item.tag_details || []).map((tag) => `${tag.code} ${tag.label}`).join('、'),
     统一社会信用代码: item.unified_social_credit_code,
     建档来源: item.source_type_label,
@@ -651,6 +723,9 @@ function exportTable() {
     客户星级: item.star_level,
     关联订单数: item.order_count,
     客户地址: item.address,
+    转交日期: shortDate(item.last_transferred_at),
+    末次下单: shortDate(item.last_order_at),
+    流失复购日期: shortDate(item.churn_repurchase_at),
     备注: item.remark || ''
   })))
 }
@@ -669,6 +744,7 @@ onMounted(async () => {
 .tag-option-label { margin-right: 12px; }
 .tag-option-note { color: #909399; font-size: 12px; }
 .field-hint { color: #909399; font-size: 12px; line-height: 1.6; }
+.region-tag { margin-left: 4px; }
 .w-260 { width: 260px; }
 .w-160 { width: 160px; }
 .w-140 { width: 140px; }

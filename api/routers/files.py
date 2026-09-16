@@ -1,4 +1,4 @@
-﻿import mimetypes
+import mimetypes
 import re
 import uuid
 import zipfile
@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from config import settings
 from database import get_db
@@ -142,6 +142,25 @@ def _notify_order_attachment_uploaded(
     )
 
 
+def _serialize_attachment(row: Attachment) -> dict:
+    """附件序列化。照片墙需要 mime_type 判断是否图片，created_at 与上传人用于展示来源。"""
+    return {
+        'id': row.id,
+        'business_type': row.business_type,
+        'business_id': row.business_id,
+        'attachment_type': row.attachment_type,
+        'original_name': row.original_name,
+        'relative_path': row.relative_path,
+        'mime_type': row.mime_type,
+        'verified_by_id': row.verified_by_id,
+        'verified_by_name': row.verified_by.full_name if row.verified_by else None,
+        'verified_at': row.verified_at.isoformat() if row.verified_at else None,
+        'uploaded_by_id': row.uploaded_by_id,
+        'uploaded_by_name': row.uploaded_by.full_name if row.uploaded_by else None,
+        'created_at': row.created_at.isoformat() if row.created_at else None,
+    }
+
+
 @router.post('/upload')
 async def upload_file(
     business_type: str = Form(...),
@@ -227,23 +246,20 @@ def get_attachment(attachment_id: int, current_user: User = Depends(get_current_
 
 
 @router.get('/business/{business_type}/{business_id}')
-def list_attachments(business_type: str, business_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rows = db.execute(
+def list_attachments(
+    business_type: str,
+    business_id: int,
+    attachment_type: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = (
         select(Attachment)
+        .options(joinedload(Attachment.uploaded_by), joinedload(Attachment.verified_by))
         .where(Attachment.business_type == business_type, Attachment.business_id == business_id)
         .order_by(Attachment.created_at.desc())
-    ).scalars().all()
-    return api_response(
-        data=[
-            {
-                'id': row.id,
-                'attachment_type': row.attachment_type,
-                'original_name': row.original_name,
-                'relative_path': row.relative_path,
-                'verified_by_id': row.verified_by_id,
-                'verified_at': row.verified_at.isoformat() if row.verified_at else None,
-                'uploaded_by_id': row.uploaded_by_id,
-            }
-            for row in rows
-        ]
     )
+    if attachment_type:
+        query = query.where(Attachment.attachment_type == attachment_type)
+    rows = db.execute(query).scalars().all()
+    return api_response(data=[_serialize_attachment(row) for row in rows])

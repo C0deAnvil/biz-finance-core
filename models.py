@@ -338,7 +338,11 @@ class Customer(TimestampMixin, Base):
     source_type = Column(String(30), nullable=False, default="personal_development")
     customer_type = Column(String(30), nullable=True)
     region_type = Column(String(20), nullable=True)
+    region_province = Column(String(40), nullable=True, index=True)
     remark = Column(Text, nullable=True)
+    last_transferred_at = Column(DateTime, nullable=True)
+    churn_repurchase_at = Column(DateTime, nullable=True, index=True)
+    last_order_at = Column(DateTime, nullable=True)
     archived_at = Column(DateTime, nullable=True)
     ext_json = Column(JSON, nullable=True)
 

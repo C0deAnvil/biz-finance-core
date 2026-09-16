@@ -210,6 +210,16 @@
           <el-input v-model="shipmentForm.remark" type="textarea" :rows="3" placeholder="可填写分批发货、库存不足或其他特殊说明" />
         </el-form-item>
       </el-form>
+      <el-divider content-position="left">发货照片</el-divider>
+      <PhotoAttachments
+        v-if="shipmentOrderId"
+        :key="`ship-${shipmentOrderId}`"
+        business-type="sales_order"
+        :business-id="shipmentOrderId"
+        attachment-type="发货照片"
+        title="发货照片"
+      />
+      <div class="shipment-photo-hint">照片会同步到客户订单详情与订单全链时间轴，销售可直接查看。</div>
       <template #footer>
         <el-button @click="shipmentDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="shipmentSubmitting" @click="submitShipment">确认出库并发货</el-button>
@@ -439,6 +449,16 @@
           </el-table-column>
           <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
         </el-table>
+        <el-divider content-position="left">发货照片</el-divider>
+        <PhotoAttachments
+          v-if="detailOrderId"
+          :key="`detail-ship-${detailOrderId}`"
+          business-type="sales_order"
+          :business-id="detailOrderId"
+          attachment-type="发货照片"
+          title="发货照片"
+          readonly
+        />
       </template>
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
@@ -457,6 +477,7 @@ import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/divider/style/css'
 import 'element-plus/es/components/form/style/css'
 import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/input-number/style/css'
@@ -475,6 +496,7 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
@@ -490,6 +512,7 @@ import { useRoute } from 'vue-router'
 import { get, post } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import PhotoAttachments from '../../components/PhotoAttachments.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { formatDateTime, formatNumber, statusLabel, statusType } from '../../utils/format'
 
@@ -549,6 +572,10 @@ async function handleSalesOrderPaginationChange({ page, pageSize }) {
   await load()
 }
 
+// 发货弹窗 / 订单详情 当前对应的客户订单 id，照片按订单归档
+const shipmentOrderId = ref(null)
+const detailOrderId = ref(null)
+
 function resolveOrderId(row) {
   return row?.order_id ?? row?.id ?? null
 }
@@ -558,6 +585,7 @@ async function openOrderDetail(row) {
   if (!orderId) return
   try {
     orderDetail.value = await get(`/api/inventory/sales-orders/${orderId}`)
+    detailOrderId.value = orderId
     detailVisible.value = true
   } catch (error) {
     ElMessage.error(error.message || '获取订单详情失败')
@@ -915,6 +943,7 @@ async function openShipmentDialog(row) {
   }
   try {
     const detail = await get(`/api/inventory/sales-orders/${orderId}`)
+    shipmentOrderId.value = orderId
     activeShipment.value = row
     shipmentForm.items = buildShipmentItems({
       items: (detail.items || []).map((item) => ({
@@ -1063,4 +1092,5 @@ watch(() => [route.query.focusId, route.query.focusType], () => {
 .demand-progress { display: flex; flex-direction: column; gap: 4px; }
 .demand-progress-text { font-size: 12px; color: var(--el-text-color-regular); line-height: 1.4; }
 .demand-progress-pending { color: var(--el-color-warning); margin-left: 4px; }
+.shipment-photo-hint { margin-top: 8px; color: #909399; font-size: 12px; }
 </style>

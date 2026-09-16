@@ -1,4 +1,4 @@
-﻿from decimal import Decimal
+from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +14,7 @@ class CustomerCreate(BaseModel):
     owner_user_id: int | None = None
     customer_type: str | None = Field(default=None, pattern="^(importer|dealer|factory|trading|agent)$")
     region_type: str | None = Field(default=None, pattern="^(domestic|overseas)$")
+    region_province: str | None = Field(default=None, max_length=40)
     remark: str | None = Field(default=None, max_length=2000)
     tags: list[str] | None = Field(default=None, max_length=30)
 

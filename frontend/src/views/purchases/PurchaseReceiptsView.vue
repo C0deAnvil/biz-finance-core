@@ -78,6 +78,18 @@
         <el-form-item label="初步验收">
           <el-input v-model="form.preliminary_acceptance_note" type="textarea" :rows="3" placeholder="记录外观、包装、数量初验、异常说明等，便于后续追溯" />
         </el-form-item>
+        <el-form-item label="到货照片">
+          <PhotoAttachments
+            v-if="selectedOrderId"
+            :key="`receipt-${selectedOrderId}`"
+            business-type="purchase_order"
+            :business-id="selectedOrderId"
+            attachment-type="到货照片"
+            title="到货照片"
+            class="receipt-photos"
+          />
+          <span v-else class="photo-placeholder">请先选择采购单</span>
+        </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.remark" /></el-form-item>
 
         <el-form-item label="是否质检">
@@ -120,6 +132,17 @@
         <el-descriptions-item label="初步验收" :span="2">{{ detail.preliminary_acceptance_note || '-' }}</el-descriptions-item>
         <el-descriptions-item label="备注" :span="2">{{ detail.remark || '-' }}</el-descriptions-item>
       </el-descriptions>
+      <template v-if="detail?.purchase_order_id">
+        <el-divider content-position="left">到货照片</el-divider>
+        <PhotoAttachments
+          :key="`receipt-detail-${detail.purchase_order_id}`"
+          business-type="purchase_order"
+          :business-id="detail.purchase_order_id"
+          attachment-type="到货照片"
+          title="到货照片"
+          readonly
+        />
+      </template>
       <div v-if="canExecuteInventoryRequest(detail)" class="detail-actions mt-16">
         <el-button type="success" @click="executeInventoryRequest(detail)">一键入库</el-button>
         <el-button type="primary" plain @click="goInventoryExecute(detail)">去库存作业执行</el-button>
@@ -153,6 +176,7 @@ import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/divider/style/css'
 import 'element-plus/es/components/drawer/style/css'
 import 'element-plus/es/components/form/style/css'
 import 'element-plus/es/components/input-number/style/css'
@@ -171,6 +195,7 @@ import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
@@ -188,6 +213,7 @@ import { useRouter } from 'vue-router'
 import { get, post } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import PhotoAttachments from '../../components/PhotoAttachments.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useAuthStore } from '../../stores/auth'
@@ -415,4 +441,6 @@ onMounted(async () => {
 .status-tabs { margin-bottom: 12px; }
 .mt-16 { margin-top: 16px; }
 .detail-actions { display: flex; gap: 12px; justify-content: flex-end; }
+.receipt-photos { width: 100%; }
+.photo-placeholder { color: #909399; font-size: 13px; }
 </style>

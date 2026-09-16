@@ -33,6 +33,7 @@ from models import (
 )
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
+from services.customer_activity import register_customer_order
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
@@ -159,6 +160,15 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
 
     order.total_amount = _build_order_items(db, order_id=order.id, payload_items=effective_items) + Decimal(order.transport_fee or 0)
 
+    # 末次下单时间 / 流失复购判定：距上一笔订单 > 365 天且本单 > 100 元即记为流失复购，并自动打 T 标签
+    churn_result = register_customer_order(
+        db,
+        customer=customer,
+        order_amount=order.total_amount,
+        order_time=order.created_at,
+        created_by_id=current_user.id,
+    )
+
     # 草稿阶段:不创建置货队列/审批待办,不做库存占用,不生成补货需求
     # 缺口仅提醒销售与库管:财务审批通过后由库管在置货环节按需生成补货需求
     _notify_sales_order_shortage(db, order=order, current_user=current_user)
@@ -187,6 +197,8 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
             "replenishment_created": False,
             "replenishment_demands": [],
             "shipment_deferred_by_shortage": False,
+            "churn_repurchase": churn_result.get("churn_repurchase", False),
+            "churn_gap_days": churn_result.get("gap_days"),
         }
     )
 

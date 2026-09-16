@@ -1,1259 +1,1273 @@
 [
- {
-  "path": "/dashboard",
-  "name": "dashboard",
-  "title": "首页",
-  "group": "工作台",
-  "menu_roles": [
-   "sales",
-   "inventory",
-   "purchase",
-   "production",
-   "quality",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/dashboard",
-    "ttl_ms": 30000
-   }
-  ],
-  "preload_roles": []
- },
- {
-  "path": "/approvals",
-  "name": "approvals",
-  "title": "审批中心",
-  "group": "工作台",
-  "menu_roles": [
-   "production",
-   "quality",
-   "finance",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "finance",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/approvals/pending",
-    "ttl_ms": 30000
-   },
-   {
-    "url": "/api/approvals/history",
-    "ttl_ms": 30000
-   }
-  ]
- },
- {
-  "path": "/analytics",
-  "name": "analytics",
-  "title": "统计分析",
-  "group": "经营分析",
-  "menu_roles": [
-   "sales",
-   "inventory",
-   "purchase",
-   "production",
-   "quality",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/analytics/metrics",
-    "ttl_ms": 60000
-   }
-  ]
- },
- {
-  "path": "/customer-ai",
-  "name": "customer-ai",
-  "title": "客户智能分析",
-  "group": "经营分析",
-  "menu_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/customer-ai/customers",
-    "ttl_ms": 60000
-   }
-  ]
- },
- {
-  "path": "/supplier-ai",
-  "name": "supplier-ai",
-  "title": "供应商智能分析",
-  "group": "经营分析",
-  "menu_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/supplier-ai/suppliers",
-    "ttl_ms": 60000
-   }
-  ]
- },
- {
-  "path": "/customers",
-  "name": "customers",
-  "title": "客户管理",
-  "group": "主数据",
-  "menu_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/master-data/customers",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/suppliers",
-  "name": "suppliers",
-  "title": "供应商管理",
-  "group": "主数据",
-  "menu_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/master-data/suppliers",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/products",
-  "name": "products",
-  "title": "产品主数据",
-  "group": "主数据",
-  "menu_roles": [
-   "sales",
-   "purchase",
-   "inventory",
-   "production",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "purchase",
-   "inventory",
-   "production",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/master-data/products",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/standard-prices",
-  "name": "standard-prices",
-  "title": "标准价格表",
-  "group": "主数据",
-  "menu_roles": [
-   "sales",
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/master-data/standard-prices",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/materials",
-  "name": "materials",
-  "title": "原料主数据",
-  "group": "主数据",
-  "menu_roles": [
-   "purchase",
-   "inventory",
-   "production",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "inventory",
-   "production",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/master-data/materials",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/packaging-configs",
-  "name": "packaging-configs",
-  "title": "包装主数据",
-  "group": "主数据",
-  "menu_roles": [
-   "sales",
-   "purchase",
-   "inventory",
-   "production",
-   "quality",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "purchase",
-   "inventory",
-   "production",
-   "quality",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/master-data/packaging-configs?entity_type=global&active_only=true",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/flow-board",
-  "name": "flow-board",
-  "title": "订单全链看板",
-  "group": "销售管理",
-  "menu_roles": [
-   "sales",
-   "inventory",
-   "purchase",
-   "production",
-   "quality",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "inventory",
-   "purchase",
-   "production",
-   "quality",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/sales/flow-board",
-    "ttl_ms": 30000
-   }
-  ]
- },
- {
-  "path": "/sales/orders",
-  "name": "sales-orders",
-  "title": "客户订单",
-  "group": "销售管理",
-  "menu_roles": [
-   "sales",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/sales/orders",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/customers",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/master-data/products",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/sales/settlements",
-  "name": "sales-settlements",
-  "title": "销售结算协同",
-  "group": "销售管理",
-  "menu_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/sales/settlements",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/sales/returns",
-  "name": "sales-returns",
-  "title": "销售退换货",
-  "group": "销售管理",
-  "menu_roles": [
-   "sales",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/sales/returns",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/sales/orders",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/sales/logistics",
-  "name": "sales-logistics",
-  "title": "客户订单物流",
-  "group": "销售管理",
-  "menu_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "sales",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/logistics/options",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/logistics?module=sales",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/sales/approvals",
-  "name": "sales-approvals",
-  "title": "客户订单审批",
-  "group": "销售管理",
-  "menu_roles": [
-   "finance",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/sales/approvals/pending",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/inventory/queues",
-  "name": "inventory-queues",
-  "title": "库存作业看板",
-  "group": "库存管理",
-  "menu_roles": [
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin",
-   "inventory_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/inventory/queues",
-    "ttl_ms": 30000
-   }
-  ]
- },
- {
-  "path": "/inventory/stocks",
-  "name": "inventory-stocks",
-  "title": "库存状态",
-  "group": "库存管理",
-  "menu_roles": [
-   "inventory",
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "inventory",
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin",
-   "inventory_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/inventory/stocks",
-    "ttl_ms": 30000
-   }
-  ]
- },
- {
-  "path": "/inventory/stock-takes",
-  "name": "inventory-stock-takes",
-  "title": "库存盘点",
-  "group": "库存管理",
-  "menu_roles": [
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin",
-   "inventory_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/inventory/stock-takes",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/warehouses",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/inventory/logistics",
-  "name": "inventory-logistics",
-  "title": "库存物流",
-  "group": "库存管理",
-  "menu_roles": [
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin",
-   "inventory_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/logistics/options",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/logistics?module=inventory",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/purchases/orders",
-  "name": "purchase-orders",
-  "title": "采购订单",
-  "group": "采购管理",
-  "menu_roles": [
-   "purchase",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/purchases/orders",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/suppliers",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/master-data/products",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/master-data/materials",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/purchases/settlements",
-  "name": "purchase-settlements",
-  "title": "采购结算协同",
-  "group": "采购管理",
-  "menu_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/purchases/settlements",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/purchases/receipts",
-  "name": "purchase-receipts",
-  "title": "采购到货",
-  "group": "采购管理",
-  "menu_roles": [
-   "purchase",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/purchases/receipts",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/purchases/orders",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/warehouses",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/purchases/returns",
-  "name": "purchase-returns",
-  "title": "退货处理",
-  "group": "采购管理",
-  "menu_roles": [
-   "purchase",
-   "finance",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "finance",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/purchases/returns",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/purchases/orders",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/warehouses",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/purchases/approvals",
-  "name": "purchase-approvals",
-  "title": "采购审批",
-  "group": "采购管理",
-  "menu_roles": [],
-  "preload_roles": [],
-  "warmers": [
-   {
-    "url": "/api/purchases/approvals/pending",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/purchases/approvals/history",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/purchases/logistics",
-  "name": "purchase-logistics",
-  "title": "采购物流",
-  "group": "采购管理",
-  "menu_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "purchase",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/logistics/options",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/logistics?module=purchase",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/production/boms",
-  "name": "production-boms",
-  "title": "配方管理",
-  "group": "生产管理",
-  "menu_roles": [
-   "production",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "preload_roles": [
-   "production",
-   "manager",
-   "chairman",
-   "system_admin",
-   "master_data_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/production/boms",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/products",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/master-data/materials",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/production/plans",
-  "name": "production-plans",
-  "title": "生产计划",
-  "group": "生产管理",
-  "menu_roles": [
-   "production",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "production",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/production/plans",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/production/plan-users",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/master-data/products",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/production/tasks",
-  "name": "production-tasks",
-  "title": "生产任务",
-  "group": "生产管理",
-  "menu_roles": [
-   "production",
-   "quality",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "production",
-   "quality",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/production/tasks",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/products",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/production/approvals",
-  "name": "production-approvals",
-  "title": "领料审批",
-  "group": "生产管理",
-  "menu_roles": [
-   "production",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "production",
-   "inventory",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/production/special-requests",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/quality/tasks",
-  "name": "quality-tasks",
-  "title": "质检任务",
-  "group": "质量管理",
-  "menu_roles": [
-   "quality",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "quality",
-   "manager",
-   "chairman",
-   "system_admin",
-   "quality_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/quality/tasks",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/master-data/warehouses",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/finance/receivables",
-  "name": "finance-receivables",
-  "title": "应收管理",
-  "group": "财务管理",
-  "menu_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "finance_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/finance/receivables",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/finance/refunds",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/sales/orders",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/finance/payables",
-  "name": "finance-payables",
-  "title": "应付管理",
-  "group": "财务管理",
-  "menu_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "finance_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/finance/payables",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/purchases/orders",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/finance/quality-costs",
-  "name": "finance-quality-costs",
-  "title": "质量成本台账",
-  "group": "财务管理",
-  "menu_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "finance_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/finance/quality-costs",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/finance/reimbursements",
-  "name": "finance-reimbursements",
-  "title": "报销管理",
-  "group": "财务管理",
-  "menu_roles": [
-   "sales",
-   "inventory",
-   "purchase",
-   "production",
-   "quality",
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "finance",
-   "system_admin",
-   "finance_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/reimbursements",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/finance/cash-flows",
-  "name": "finance-cash-flows",
-  "title": "资金流水",
-  "group": "财务管理",
-  "menu_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "finance_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/finance/cash-flows",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/finance/reports",
-  "name": "finance-reports",
-  "title": "财务报表",
-  "group": "财务管理",
-  "menu_roles": [
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_roles": [
-   "finance",
-   "manager",
-   "chairman",
-   "system_admin",
-   "finance_super"
-  ],
-  "warmers": [
-   {
-    "url": "/api/finance/reports/summary",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/finance/receivables",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/finance/payables",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/finance/cash-flows",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/finance/quality-costs",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/admin/org-units",
-  "name": "admin-org-units",
-  "title": "组织架构",
-  "group": "系统管理",
-  "menu_roles": [
-   "system_admin"
-  ],
-  "preload_roles": [
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/admin/org-units",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/admin/users",
-  "name": "admin-users",
-  "title": "用户管理",
-  "group": "系统管理",
-  "menu_roles": [
-   "system_admin"
-  ],
-  "preload_roles": [
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/admin/users",
-    "ttl_ms": 45000
-   },
-   {
-    "url": "/api/admin/org-units?flat=true",
-    "ttl_ms": 120000
-   },
-   {
-    "url": "/api/master-data/roles",
-    "ttl_ms": 120000
-   }
-  ]
- },
- {
-  "path": "/admin/module-permissions",
-  "name": "admin-module-permissions",
-  "title": "模块权限分配",
-  "group": "系统管理",
-  "menu_roles": [
-   "system_admin",
-   "sales",
-   "inventory",
-   "purchase",
-   "production",
-   "quality",
-   "finance"
-  ],
-  "preload_roles": [
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/admin/module-permissions/options",
-    "ttl_ms": 45000
-   }
-  ]
- },
- {
-  "path": "/admin/logs",
-  "name": "admin-logs",
-  "title": "系统日志",
-  "group": "系统管理",
-  "menu_roles": [
-   "system_admin"
-  ],
-  "preload_roles": [
-   "system_admin"
-  ],
-  "warmers": [
-   {
-    "url": "/api/admin/logs",
-    "ttl_ms": 30000
-   },
-   {
-    "url": "/api/admin/todos",
-    "ttl_ms": 30000
-   },
-   {
-    "url": "/api/admin/notifications",
-    "ttl_ms": 30000
-   }
-  ]
- },
- {
-  "path": "/inventory/transfers",
-  "name": "移库管理",
-  "title": "移库管理",
-  "preload_roles": [
-   "inventory",
-   "inventory_super",
-   "quality",
-   "quality_super",
-   "manager",
-   "chairman",
-   "system_admin"
-  ],
-  "preload_apis": [],
-  "loader": "/inventory/transfers"
- },
- {
-  "path": "/sales/order-timeline",
-  "name": "sales-order-timeline",
-  "title": "订单全链时间轴",
-  "group": "销售管理",
-  "menu_roles": [],
-  "preload_roles": [],
-  "warmers": []
- },
- {
-  "path": "/notifications",
-  "name": "notifications",
-  "title": "通知中心",
-  "group": "工作台",
-  "menu_roles": [
-   "sales",
-   "finance",
-   "inventory",
-   "production",
-   "purchase",
-   "quality",
-   "manager",
-   "chairman",
-   "master_data_admin",
-   "system_admin"
-  ],
-  "preload_roles": [],
-  "warmers": []
- }
+  {
+    "path": "/dashboard",
+    "name": "dashboard",
+    "title": "首页",
+    "group": "工作台",
+    "menu_roles": [
+      "sales",
+      "inventory",
+      "purchase",
+      "production",
+      "quality",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/dashboard",
+        "ttl_ms": 30000
+      }
+    ],
+    "preload_roles": []
+  },
+  {
+    "path": "/approvals",
+    "name": "approvals",
+    "title": "审批中心",
+    "group": "工作台",
+    "menu_roles": [
+      "production",
+      "quality",
+      "finance",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "finance",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/approvals/pending",
+        "ttl_ms": 30000
+      },
+      {
+        "url": "/api/approvals/history",
+        "ttl_ms": 30000
+      }
+    ]
+  },
+  {
+    "path": "/analytics",
+    "name": "analytics",
+    "title": "统计分析",
+    "group": "经营分析",
+    "menu_roles": [
+      "sales",
+      "inventory",
+      "purchase",
+      "production",
+      "quality",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/analytics/metrics",
+        "ttl_ms": 60000
+      }
+    ]
+  },
+  {
+    "path": "/customer-ai",
+    "name": "customer-ai",
+    "title": "客户智能分析",
+    "group": "经营分析",
+    "menu_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/customer-ai/customers",
+        "ttl_ms": 60000
+      }
+    ]
+  },
+  {
+    "path": "/supplier-ai",
+    "name": "supplier-ai",
+    "title": "供应商智能分析",
+    "group": "经营分析",
+    "menu_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/supplier-ai/suppliers",
+        "ttl_ms": 60000
+      }
+    ]
+  },
+  {
+    "path": "/customers",
+    "name": "customers",
+    "title": "客户管理",
+    "group": "主数据",
+    "menu_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/master-data/customers",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/suppliers",
+    "name": "suppliers",
+    "title": "供应商管理",
+    "group": "主数据",
+    "menu_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/master-data/suppliers",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/products",
+    "name": "products",
+    "title": "产品主数据",
+    "group": "主数据",
+    "menu_roles": [
+      "sales",
+      "purchase",
+      "inventory",
+      "production",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "purchase",
+      "inventory",
+      "production",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/master-data/products",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/standard-prices",
+    "name": "standard-prices",
+    "title": "标准价格表",
+    "group": "主数据",
+    "menu_roles": [
+      "sales",
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/master-data/standard-prices",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/materials",
+    "name": "materials",
+    "title": "原料主数据",
+    "group": "主数据",
+    "menu_roles": [
+      "purchase",
+      "inventory",
+      "production",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "inventory",
+      "production",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/master-data/materials",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/packaging-configs",
+    "name": "packaging-configs",
+    "title": "包装主数据",
+    "group": "主数据",
+    "menu_roles": [
+      "sales",
+      "purchase",
+      "inventory",
+      "production",
+      "quality",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "purchase",
+      "inventory",
+      "production",
+      "quality",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/master-data/packaging-configs?entity_type=global&active_only=true",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/flow-board",
+    "name": "flow-board",
+    "title": "订单全链看板",
+    "group": "销售管理",
+    "menu_roles": [
+      "sales",
+      "inventory",
+      "purchase",
+      "production",
+      "quality",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "inventory",
+      "purchase",
+      "production",
+      "quality",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/sales/flow-board",
+        "ttl_ms": 30000
+      }
+    ]
+  },
+  {
+    "path": "/sales/orders",
+    "name": "sales-orders",
+    "title": "客户订单",
+    "group": "销售管理",
+    "menu_roles": [
+      "sales",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/sales/orders",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/customers",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/master-data/products",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/sales/settlements",
+    "name": "sales-settlements",
+    "title": "销售结算协同",
+    "group": "销售管理",
+    "menu_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/sales/settlements",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/sales/returns",
+    "name": "sales-returns",
+    "title": "销售退换货",
+    "group": "销售管理",
+    "menu_roles": [
+      "sales",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/sales/returns",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/sales/orders",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/sales/logistics",
+    "name": "sales-logistics",
+    "title": "客户订单物流",
+    "group": "销售管理",
+    "menu_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "sales",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/logistics/options",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/logistics?module=sales",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/sales/approvals",
+    "name": "sales-approvals",
+    "title": "客户订单审批",
+    "group": "销售管理",
+    "menu_roles": [
+      "finance",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/sales/approvals/pending",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/inventory/queues",
+    "name": "inventory-queues",
+    "title": "库存作业看板",
+    "group": "库存管理",
+    "menu_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin",
+      "inventory_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/inventory/queues",
+        "ttl_ms": 30000
+      }
+    ]
+  },
+  {
+    "path": "/inventory/stocks",
+    "name": "inventory-stocks",
+    "title": "库存状态",
+    "group": "库存管理",
+    "menu_roles": [
+      "inventory",
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "inventory",
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin",
+      "inventory_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/inventory/stocks",
+        "ttl_ms": 30000
+      }
+    ]
+  },
+  {
+    "path": "/inventory/stock-takes",
+    "name": "inventory-stock-takes",
+    "title": "库存盘点",
+    "group": "库存管理",
+    "menu_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin",
+      "inventory_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/inventory/stock-takes",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/warehouses",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/inventory/logistics",
+    "name": "inventory-logistics",
+    "title": "库存物流",
+    "group": "库存管理",
+    "menu_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin",
+      "inventory_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/logistics/options",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/logistics?module=inventory",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/purchases/orders",
+    "name": "purchase-orders",
+    "title": "采购订单",
+    "group": "采购管理",
+    "menu_roles": [
+      "purchase",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/purchases/orders",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/suppliers",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/master-data/products",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/master-data/materials",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/purchases/settlements",
+    "name": "purchase-settlements",
+    "title": "采购结算协同",
+    "group": "采购管理",
+    "menu_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/purchases/settlements",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/purchases/receipts",
+    "name": "purchase-receipts",
+    "title": "采购到货",
+    "group": "采购管理",
+    "menu_roles": [
+      "purchase",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/purchases/receipts",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/purchases/orders",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/warehouses",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/purchases/returns",
+    "name": "purchase-returns",
+    "title": "退货处理",
+    "group": "采购管理",
+    "menu_roles": [
+      "purchase",
+      "finance",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "finance",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/purchases/returns",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/purchases/orders",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/warehouses",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/purchases/approvals",
+    "name": "purchase-approvals",
+    "title": "采购审批",
+    "group": "采购管理",
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": [
+      {
+        "url": "/api/purchases/approvals/pending",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/purchases/approvals/history",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/purchases/logistics",
+    "name": "purchase-logistics",
+    "title": "采购物流",
+    "group": "采购管理",
+    "menu_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "purchase",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/logistics/options",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/logistics?module=purchase",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/production/boms",
+    "name": "production-boms",
+    "title": "配方管理",
+    "group": "生产管理",
+    "menu_roles": [
+      "production",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "preload_roles": [
+      "production",
+      "manager",
+      "chairman",
+      "system_admin",
+      "master_data_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/production/boms",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/products",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/master-data/materials",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/production/plans",
+    "name": "production-plans",
+    "title": "生产计划",
+    "group": "生产管理",
+    "menu_roles": [
+      "production",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "production",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/production/plans",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/production/plan-users",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/master-data/products",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/production/tasks",
+    "name": "production-tasks",
+    "title": "生产任务",
+    "group": "生产管理",
+    "menu_roles": [
+      "production",
+      "quality",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "production",
+      "quality",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/production/tasks",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/products",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/production/approvals",
+    "name": "production-approvals",
+    "title": "领料审批",
+    "group": "生产管理",
+    "menu_roles": [
+      "production",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "production",
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/production/special-requests",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/quality/tasks",
+    "name": "quality-tasks",
+    "title": "质检任务",
+    "group": "质量管理",
+    "menu_roles": [
+      "quality",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "quality",
+      "manager",
+      "chairman",
+      "system_admin",
+      "quality_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/quality/tasks",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/master-data/warehouses",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/finance/receivables",
+    "name": "finance-receivables",
+    "title": "应收管理",
+    "group": "财务管理",
+    "menu_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "finance_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/finance/receivables",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/finance/refunds",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/sales/orders",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/finance/payables",
+    "name": "finance-payables",
+    "title": "应付管理",
+    "group": "财务管理",
+    "menu_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "finance_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/finance/payables",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/purchases/orders",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/finance/quality-costs",
+    "name": "finance-quality-costs",
+    "title": "质量成本台账",
+    "group": "财务管理",
+    "menu_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "finance_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/finance/quality-costs",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/finance/reimbursements",
+    "name": "finance-reimbursements",
+    "title": "报销管理",
+    "group": "财务管理",
+    "menu_roles": [
+      "sales",
+      "inventory",
+      "purchase",
+      "production",
+      "quality",
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "finance",
+      "system_admin",
+      "finance_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/reimbursements",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/finance/cash-flows",
+    "name": "finance-cash-flows",
+    "title": "资金流水",
+    "group": "财务管理",
+    "menu_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "finance_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/finance/cash-flows",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/finance/reports",
+    "name": "finance-reports",
+    "title": "财务报表",
+    "group": "财务管理",
+    "menu_roles": [
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "finance",
+      "manager",
+      "chairman",
+      "system_admin",
+      "finance_super"
+    ],
+    "warmers": [
+      {
+        "url": "/api/finance/reports/summary",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/finance/receivables",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/finance/payables",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/finance/cash-flows",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/finance/quality-costs",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/admin/org-units",
+    "name": "admin-org-units",
+    "title": "组织架构",
+    "group": "系统管理",
+    "menu_roles": [
+      "system_admin"
+    ],
+    "preload_roles": [
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/admin/org-units",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/admin/users",
+    "name": "admin-users",
+    "title": "用户管理",
+    "group": "系统管理",
+    "menu_roles": [
+      "system_admin"
+    ],
+    "preload_roles": [
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/admin/users",
+        "ttl_ms": 45000
+      },
+      {
+        "url": "/api/admin/org-units?flat=true",
+        "ttl_ms": 120000
+      },
+      {
+        "url": "/api/master-data/roles",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/admin/module-permissions",
+    "name": "admin-module-permissions",
+    "title": "模块权限分配",
+    "group": "系统管理",
+    "menu_roles": [
+      "system_admin",
+      "sales",
+      "inventory",
+      "purchase",
+      "production",
+      "quality",
+      "finance"
+    ],
+    "preload_roles": [
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/admin/module-permissions/options",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
+    "path": "/admin/logs",
+    "name": "admin-logs",
+    "title": "系统日志",
+    "group": "系统管理",
+    "menu_roles": [
+      "system_admin"
+    ],
+    "preload_roles": [
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/admin/logs",
+        "ttl_ms": 30000
+      },
+      {
+        "url": "/api/admin/todos",
+        "ttl_ms": 30000
+      },
+      {
+        "url": "/api/admin/notifications",
+        "ttl_ms": 30000
+      }
+    ]
+  },
+  {
+    "path": "/inventory/transfers",
+    "name": "inventory-transfers",
+    "title": "移库管理",
+    "group": "库存管理",
+    "menu_roles": [
+      "inventory",
+      "quality",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "inventory",
+      "inventory_super",
+      "quality",
+      "quality_super",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/inventory/transfers",
+        "ttl_ms": 30000
+      },
+      {
+        "url": "/api/master-data/warehouses",
+        "ttl_ms": 120000
+      }
+    ]
+  },
+  {
+    "path": "/sales/order-timeline",
+    "name": "sales-order-timeline",
+    "title": "订单全链时间轴",
+    "group": "销售管理",
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
+  },
+  {
+    "path": "/notifications",
+    "name": "notifications",
+    "title": "通知中心",
+    "group": "工作台",
+    "menu_roles": [
+      "sales",
+      "finance",
+      "inventory",
+      "production",
+      "purchase",
+      "quality",
+      "manager",
+      "chairman",
+      "master_data_admin",
+      "system_admin"
+    ],
+    "preload_roles": [],
+    "warmers": []
+  }
 ]
