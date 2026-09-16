@@ -21,6 +21,8 @@ build/
 *.db
 *.sql
 *.sql.gz
+# 例外：scripts/ 下是维护用的 DDL/DML 脚本，不含任何业务数据，需要版本化
+!scripts/*.sql
 *.dump
 *.bak
 
