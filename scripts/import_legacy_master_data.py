@@ -781,6 +781,45 @@ def build_name_disambiguation(rows: list[dict], kind_map: dict[str, str], kind: 
     return result
 
 
+def _with_suffix(name: str, suffix: str, limit: int = 150) -> str:
+    """加后缀且保证总长不超限——截的是名字本身，后缀必须完整保留。"""
+    room = limit - len(suffix)
+    if room < 1:
+        return suffix[-limit:]
+    return name[:room] + suffix
+
+
+def make_name_claimer(db: Session, model, report: Report, label: str):
+    """名称唯一约束的兜底。
+
+    build_name_disambiguation 只解决「旧库内部重名」。这里解决另一种撞车：
+    旧库的名字和目标库里**已有**的记录重名，而两边编码对不上，
+    所以按 code 匹配的 upsert 发现不了，直到 flush 才抛 1062。
+
+    占用时按 名称（旧编码） 改写，仍撞就再挂 ·2、·3。
+    """
+    taken = {n for n in db.execute(select(model.name)).scalars().all() if n}
+
+    def claim(name: str, code: str, existing_name: str | None = None) -> str:
+        if existing_name is not None:
+            if existing_name == name:
+                return name          # 本来就是这条记录自己的名字
+            taken.discard(existing_name)
+        if name not in taken:
+            taken.add(name)
+            return name
+        candidate = _with_suffix(name, f"（{code}）")
+        n = 2
+        while candidate in taken:
+            candidate = _with_suffix(name, f"（{code}·{n}）")
+            n += 1
+        taken.add(candidate)
+        report.count(label, "因重名改写")
+        return candidate
+
+    return claim
+
+
 def import_customers(
     db: Session,
     rows: list[dict],
@@ -799,6 +838,7 @@ def import_customers(
     used_credit_codes = {
         code for code in db.execute(select(Customer.unified_social_credit_code)).scalars().all() if code
     }
+    claim_name = make_name_claimer(db, Customer, report, "客户")
     mapping: dict[str, Customer] = {}
 
     for row in rows:
@@ -830,6 +870,7 @@ def import_customers(
         # 只按 code 匹配。旧库编码零重复且基本无空值，
         # 再按 name 兜底会让 493 家重名客户互相覆盖，丢数据。
         existing = db.execute(select(Customer).where(Customer.code == code)).scalar_one_or_none()
+        name = claim_name(name, code, existing.name if existing is not None else None)
 
         owner = user_map.get(owner_of.get(old_id, ""))
         if owner_of.get(old_id) and owner is None:
@@ -896,6 +937,7 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
         code for code in db.execute(select(Supplier.unified_social_credit_code)).scalars().all() if code
     }
     name_overrides = build_name_disambiguation(rows, kind_map, "supplier", "btypeid", "bname", "busercode")
+    claim_name = make_name_claimer(db, Supplier, report, "供应商")
     count = 0
     for row in rows:
         old_id = s(row.get("btypeid"))
@@ -919,6 +961,7 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
             used_credit_codes.add(credit_code)
 
         existing = db.execute(select(Supplier).where(Supplier.code == code)).scalar_one_or_none()
+        name = claim_name(name, code, existing.name if existing is not None else None)
 
         values = dict(
             code=code,
