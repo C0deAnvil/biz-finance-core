@@ -1028,13 +1028,19 @@ def delete_supplier(
 def list_products(
     page: int | None = Query(default=None, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
+    keyword: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = select(Product).order_by(Product.created_at.desc(), Product.id.desc())
+    if keyword and keyword.strip():
+        term = keyword.strip()
+        query = query.where(or_(Product.product_code.contains(term, autoescape=True),
+                                Product.name.contains(term, autoescape=True),
+                                Product.specification.contains(term, autoescape=True)))
     total = None
     if page is not None:
-        total = db.execute(select(func.count(Product.id))).scalar_one()
+        total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
         query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
     product_ids = [row.id for row in rows]
@@ -1250,13 +1256,19 @@ def delete_product(
 def list_materials(
     page: int | None = Query(default=None, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
+    keyword: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = select(Material).order_by(Material.created_at.desc(), Material.id.desc())
+    if keyword and keyword.strip():
+        term = keyword.strip()
+        query = query.where(or_(Material.material_code.contains(term, autoescape=True),
+                                Material.name.contains(term, autoescape=True),
+                                Material.specification.contains(term, autoescape=True)))
     total = None
     if page is not None:
-        total = db.execute(select(func.count(Material.id))).scalar_one()
+        total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
         query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
     material_ids = [row.id for row in rows]
@@ -1361,6 +1373,7 @@ def list_packaging_configs(
     entity_type: str | None = None,
     entity_id: int | None = None,
     active_only: bool = False,
+    keyword: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1371,6 +1384,8 @@ def list_packaging_configs(
         query = query.where(PackagingConfig.entity_id == entity_id)
     if active_only:
         query = query.where(PackagingConfig.is_active.is_(True))
+    if keyword and keyword.strip():
+        query = query.where(PackagingConfig.packaging_name.contains(keyword.strip(), autoescape=True))
     rows = db.execute(query).scalars().all()
     return api_response(data=[_serialize_packaging(row) for row in rows])
 

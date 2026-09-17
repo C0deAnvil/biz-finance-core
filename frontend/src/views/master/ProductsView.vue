@@ -6,6 +6,16 @@
       <el-button v-if="canManage" type="primary" @click="openCreate">新增产品</el-button>
     </template>
 
+    <el-form inline @submit.prevent="search">
+      <el-form-item label="搜索产品">
+        <el-input v-model="keyword" clearable placeholder="产品编码 / 名称 / 规格" style="width: 300px; max-width: 100%" @clear="search" />
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" native-type="submit">搜索</el-button>
+        <el-button @click="resetSearch">重置</el-button>
+      </el-form-item>
+    </el-form>
+
     <el-table :data="pagedRows" stripe>
       <el-table-column prop="product_code" label="产品编码" width="140" />
       <el-table-column prop="name" label="产品名称" min-width="180" />
@@ -127,6 +137,8 @@ import { formatNumber } from '../../utils/format'
 
 const auth = useAuthStore()
 const rows = ref([])
+const keyword = ref('')
+const appliedKeyword = ref('')
 const packagingOptions = ref([])
 const dialogVisible = ref(false)
 const editingId = ref(null)
@@ -188,9 +200,20 @@ function openEdit(row) {
   dialogVisible.value = true
 }
 
+async function search() {
+  appliedKeyword.value = keyword.value.trim()
+  pagination.page = 1
+  await load()
+}
+
+async function resetSearch() {
+  keyword.value = ''
+  await search()
+}
+
 async function load() {
   const [productRows, packagingRows] = await Promise.all([
-    get(`/api/master-data/products?page=${pagination.page}&page_size=${pagination.pageSize}`),
+    get(`/api/master-data/products?page=${pagination.page}&page_size=${pagination.pageSize}&keyword=${encodeURIComponent(appliedKeyword.value)}`),
     get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
   ])
   rows.value = productRows?.items || []

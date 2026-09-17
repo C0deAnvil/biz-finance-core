@@ -1,4 +1,4 @@
-"""旧系统（SQL Server · 管家婆 niaosu2020）主数据导入。
+"""旧系统（SQL Server · 管家婆，niaosu2020 / shiji2020 等同结构库）主数据导入。
 
 用法
     # 1) 试运行：只读旧数据、打印将要发生的变更，不写库；同时生成两个待复核 csv
@@ -8,6 +8,9 @@
 
     # 3) 正式导入
     python scripts/import_legacy_master_data.py --source old_data/export --apply
+
+    # 追加另一套旧库：保留已有记录，遇到唯一键冲突跳过
+    python scripts/import_legacy_master_data.py --source old_data/export_shiji2020 --skip-conflicts --apply
 
 设计要点
     · 幂等：一律按 code 匹配 upsert，重复执行不会产生重复数据
@@ -31,7 +34,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import or_, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from config import settings  # noqa: E402
@@ -80,22 +83,30 @@ def to_pinyin(name: str) -> str:
 # ======================================================================
 # 工具
 # ======================================================================
-def load_json(source: Path, filename: str) -> list[dict]:
+def load_json(source: Path, filename: str, *, strict: bool = False) -> list[dict]:
     """读 sqlcmd 导出的 FOR JSON 结果。文件不存在返回空列表。"""
     path = source / filename
     if not path.exists():
+        if strict:
+            raise ValueError(f"缺少导出文件：{path}；请完整导出后重试")
         print(f"    [跳过] 找不到 {filename}")
         return []
-    raw = path.read_text(encoding="utf-8-sig", errors="replace").strip()
+    raw = path.read_text(encoding="utf-8-sig", errors="strict" if strict else "replace").strip()
     if not raw:
+        if strict:
+            raise ValueError(f"导出文件为空：{path}；无数据的文件应为 []")
         return []
     # sqlcmd 会把超长 JSON 按行折断，拼回来即可
     raw = "".join(line.strip() for line in raw.splitlines() if not line.startswith("-"))
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
+        if strict:
+            raise ValueError(f"导出文件 JSON 损坏：{path}") from exc
         print(f"    [错误] {filename} 解析失败：{exc}")
         return []
+    if strict and (not isinstance(data, list) or not all(isinstance(row, dict) for row in data)):
+        raise ValueError(f"导出文件应为对象数组：{path}")
     return data if isinstance(data, list) else [data]
 
 
@@ -154,9 +165,47 @@ CREDIT_CODE_PATTERN = re.compile(r"^[0-9A-HJ-NPQRTUWXY]{18}$")
 class Report:
     """收集导入过程中的统计与告警，最后统一打印。"""
 
-    def __init__(self):
+    def __init__(self, skip_conflicts: bool = False):
         self.stats: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.warnings: list[str] = []
+        self.skip_conflicts = skip_conflicts
+        self.pending: list = []  # 试运行中新建的对象，不加入数据库会话
+        self.seen: dict[str, set] = defaultdict(set)
+
+    def conflicts(self, db: Session, model, label: str, **keys) -> list:
+        """使用目标库自身的比较规则检查唯一键；同时检查试运行的待新增对象。"""
+        if not self.skip_conflicts:
+            return []
+        keys = {key: value for key, value in keys.items() if value not in (None, "")}
+        matches = list(db.execute(select(model).where(or_(
+            *(getattr(model, key) == value for key, value in keys.items())
+        ))).scalars())
+        for obj in self.pending:
+            if isinstance(obj, model) and any(
+                s(getattr(obj, key)).casefold() == s(value).casefold() for key, value in keys.items()
+            ):
+                if obj not in matches:
+                    matches.append(obj)
+        if matches:
+            self.count(label, "冲突跳过")
+        return matches
+
+    def remember(self, db: Session, obj, apply: bool):
+        if self.skip_conflicts:
+            if apply:
+                # SessionLocal 关闭 autoflush；逐条 flush 才能发现同一批里的重复。
+                db.flush()
+            else:
+                self.pending.append(obj)
+
+    def reuse(self, matches: list, mapping: dict, old_id: str, **identity):
+        """只有身份字段完全一致才复用关联，防止两套旧库相同编码指向不同实体。"""
+        if len(matches) == 1 and all(
+            s(getattr(matches[0], key)) == s(value) for key, value in identity.items()
+        ):
+            mapping[old_id] = matches[0]
+        else:
+            self.warn(f"旧 id {old_id} 的冲突档案身份不一致，跳过其关联映射，请人工核对")
 
     def count(self, section: str, key: str, n: int = 1):
         self.stats[section][key] += n
@@ -228,6 +277,10 @@ def import_departments(db: Session, rows: list[dict], report: Report, apply: boo
         if not old_id or not name:
             continue
         code = truncate(first_nonempty(row.get("dusercode"), f"OLD_{old_id}"), 50)
+        conflicts = report.conflicts(db, Department, "部门", code=code, name=name)
+        if conflicts:
+            report.reuse(conflicts, mapping, old_id, code=code, name=name)
+            continue
         existing = db.execute(select(Department).where(Department.code == code)).scalar_one_or_none()
         if existing is None:
             existing = db.execute(select(Department).where(Department.name == name)).scalar_one_or_none()
@@ -246,6 +299,7 @@ def import_departments(db: Session, rows: list[dict], report: Report, apply: boo
             existing.name = name
             report.count("部门", "已存在")
         mapping[old_id] = existing
+        report.remember(db, existing, apply)
         parent_old = s(row.get("parid"))
         if parent_old and parent_old != old_id:
             pending_parent.append((old_id, parent_old))
@@ -384,6 +438,10 @@ def import_employees(
             pinyin = re.sub(r"[^a-z0-9]", "", s(row.get("enamepy")).lower()) or f"emp{old_id}"
             report.warn(f"员工 {name} 无法生成拼音，用户名回退为 cphw_{pinyin}，请人工确认")
         username = f"cphw_{pinyin}"[:50]
+        conflicts = report.conflicts(db, User, "员工", username=username)
+        if conflicts:
+            report.reuse(conflicts, mapping, old_id, username=username, full_name=truncate(name, 100))
+            continue
 
         existing = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
         if existing is None and username in used_usernames:
@@ -431,6 +489,7 @@ def import_employees(
             report.count("员工", "已存在")
         mapping[old_id] = existing
 
+        report.remember(db, existing, apply)
     if apply:
         db.flush()
     print(f"    员工 {len(mapping)} 人")
@@ -446,6 +505,10 @@ def import_warehouses(db: Session, rows: list[dict], report: Report, apply: bool
         if not old_id or not name or not is_leaf(row):
             continue
         code = truncate(first_nonempty(row.get("kusercode"), f"OLD_{old_id}"), 50)
+        conflicts = report.conflicts(db, Warehouse, "仓库", code=code, name=name)
+        if conflicts:
+            report.reuse(conflicts, mapping, old_id, code=code, name=name)
+            continue
 
         blob = name + s(row.get("kcomment"))
         if any(k in blob for k in ("原料", "材料", "辅料")):
@@ -472,6 +535,7 @@ def import_warehouses(db: Session, rows: list[dict], report: Report, apply: bool
         else:
             report.count("仓库", "已存在")
         mapping[old_id] = existing
+        report.remember(db, existing, apply)
     if apply:
         db.flush()
     print(f"    仓库 {len(mapping)} 个")
@@ -570,7 +634,8 @@ def import_products(
 
     for row in rows:
         old_id = s(row.get("ptypeid"))
-        name = truncate(first_nonempty(row.get("pname"), row.get("pfullname")), 200)
+        # pname 是旧系统简称；名称应优先保留包含浓度、型号等信息的全称。
+        name = truncate(first_nonempty(row.get("pfullname"), row.get("pname")), 200)
         if not old_id or not name or not is_leaf(row):
             continue
         kind = kind_map.get(old_id, "product")
@@ -589,6 +654,10 @@ def import_products(
             report.count("产品", "带备注")
 
         if kind == "material":
+            conflicts = report.conflicts(db, Material, "原料", material_code=code)
+            if conflicts:
+                report.reuse(conflicts, material_map, old_id, material_code=code, name=name, unit=unit, specification=spec)
+                continue
             existing = db.execute(select(Material).where(Material.material_code == code)).scalar_one_or_none()
             if existing is None:
                 existing = Material(
@@ -609,6 +678,10 @@ def import_products(
                 report.count("原料", "已存在")
             material_map[old_id] = existing
         else:
+            conflicts = report.conflicts(db, Product, "产品", product_code=code)
+            if conflicts:
+                report.reuse(conflicts, product_map, old_id, product_code=code, name=name, unit=unit, specification=spec)
+                continue
             existing = db.execute(select(Product).where(Product.product_code == code)).scalar_one_or_none()
             if existing is None:
                 existing = Product(
@@ -630,6 +703,7 @@ def import_products(
                 report.count("产品", "已存在")
             product_map[old_id] = existing
 
+        report.remember(db, existing, apply)
     if apply:
         db.flush()
     print(f"    产品 {len(product_map)} / 原料 {len(material_map)}")
@@ -833,6 +907,8 @@ def import_customers(
     print("\n[5/9] 客户")
     owner_of = {s(r.get("btypeid")): s(r.get("etypeid")) for r in owner_rows}
     name_overrides = build_name_disambiguation(rows, kind_map, "customer", "btypeid", "bname", "busercode")
+    if report.skip_conflicts:
+        name_overrides = {}  # 跳过模式按原名称查重，不通过改名绕开冲突
     if name_overrides:
         print(f"    {len(name_overrides)} 家重名客户的名称已挂旧编码后缀以区分")
     used_credit_codes = {
@@ -849,6 +925,14 @@ def import_customers(
         if not old_id or not name:
             continue
         code = truncate(first_nonempty(row.get("busercode"), f"OLD_{old_id}"), 50)
+
+        raw_credit = s(row.get("TaxNumber")).upper()
+        conflicts = report.conflicts(
+            db, Customer, "客户", code=code, name=name,
+            unified_social_credit_code=raw_credit if CREDIT_CODE_PATTERN.match(raw_credit) else None,
+        )
+        if conflicts:
+            continue  # 包括负责人、标签、备注在内均不更新
 
         notes: list[str] = []
         if s(row.get("bcomment")):
@@ -924,6 +1008,7 @@ def import_customers(
                         )
                     )
         mapping[old_id] = existing
+        report.remember(db, existing, apply)
 
     if apply:
         db.flush()
@@ -937,6 +1022,8 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
         code for code in db.execute(select(Supplier.unified_social_credit_code)).scalars().all() if code
     }
     name_overrides = build_name_disambiguation(rows, kind_map, "supplier", "btypeid", "bname", "busercode")
+    if report.skip_conflicts:
+        name_overrides = {}
     claim_name = make_name_claimer(db, Supplier, report, "供应商")
     count = 0
     for row in rows:
@@ -947,6 +1034,14 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
         if not name:
             continue
         code = truncate(first_nonempty(row.get("busercode"), f"OLD_{old_id}"), 50)
+
+        raw_credit = s(row.get("TaxNumber")).upper()
+        conflicts = report.conflicts(
+            db, Supplier, "供应商", code=code, name=name,
+            unified_social_credit_code=raw_credit if CREDIT_CODE_PATTERN.match(raw_credit) else None,
+        )
+        if conflicts:
+            continue
 
         notes = [s(row.get("bcomment"))] if s(row.get("bcomment")) else []
         notes.append(f"[旧系统] 编码 {s(row.get('busercode')) or '-'} / id {old_id}")
@@ -984,6 +1079,7 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
             for key, value in values.items():
                 setattr(existing, key, value)
             report.count("供应商", "更新")
+        report.remember(db, existing, apply)
         count += 1
     if apply:
         db.flush()
@@ -1017,6 +1113,13 @@ def import_boms(
             output_qty = Decimal("1")
 
         version_no = truncate(f"LEGACY-{vch}", 30)
+        if report.skip_conflicts:
+            # 新系统 BOM.product_id 唯一，不能以旧单号/版本号判断是否重复。
+            if (id(product) in report.seen["bom"] or
+                    (product.id and report.conflicts(db, BOM, "BOM", product_id=product.id))):
+                if id(product) in report.seen["bom"]:
+                    report.count("BOM", "冲突跳过")
+                continue
         existing = db.execute(
             select(BOM).where(BOM.product_id == product.id, BOM.version_no == version_no)
         ).scalar_one_or_none() if product.id else None
@@ -1026,11 +1129,13 @@ def import_boms(
         notes.append(f"[旧系统] BOM 单号 {vch}，原始产出数量 {output_qty}")
 
         items = []
+        missing_material = False
         for detail in details_by_vch.get(vch, []):
             material = material_map.get(s(detail.get("Ptypeid")))
             if material is None:
                 # 成品也可能作为半成品出现在用料里
                 report.warn(f"BOM {vch} 的用料 {s(detail.get('Ptypeid'))} 不在原料表里，该行跳过")
+                missing_material = True
                 continue
             qty = dec(detail.get("Qty"))
             attrition = dec(detail.get("AttritionRate"))
@@ -1042,6 +1147,10 @@ def import_boms(
             # 归一化到单位成品用量
             items.append((material, qty / output_qty))
 
+        if report.skip_conflicts and missing_material:
+            report.warn(f"BOM {vch} 有用料缺失或关联冲突，整份配方跳过，避免导入不完整配方")
+            report.count("BOM", "关联缺失跳过")
+            continue
         if not items:
             report.warn(f"BOM {vch} 没有可用的用料明细，跳过")
             continue
@@ -1069,6 +1178,8 @@ def import_boms(
             for material, qty in items:
                 db.add(BOMItem(bom_id=existing.id, material_id=material.id, standard_quantity=qty))
         report.count("BOM", "用料行", len(items))
+        report.seen["bom"].add(id(product))
+        report.remember(db, existing, apply)
         count += 1
 
     if apply:
@@ -1089,6 +1200,7 @@ def import_inventory(
 ) -> int:
     print("\n[8/9] 库存结存")
     count = 0
+    blocked_batches = set()
     for row in stock_rows:
         warehouse = warehouse_map.get(s(row.get("KtypeId")))
         if warehouse is None:
@@ -1112,6 +1224,14 @@ def import_inventory(
             )
         ).scalar_one_or_none() if warehouse.id else None
 
+        stock_key = (id(warehouse), id(product), id(material))
+        if report.skip_conflicts:
+            if existing is not None or stock_key in report.seen["stock"]:
+                report.count("库存", "冲突跳过")
+                blocked_batches.add(stock_key)
+                continue
+            report.seen["stock"].add(stock_key)
+
         if existing is None:
             existing = Inventory(
                 warehouse_id=warehouse.id,
@@ -1128,6 +1248,7 @@ def import_inventory(
             existing.quantity = quantity
             existing.avg_unit_cost = avg_cost
             report.count("库存", "更新")
+        report.remember(db, existing, apply)
         count += 1
 
     if apply:
@@ -1146,6 +1267,23 @@ def import_inventory(
         quantity = dec(row.get("Qty"))
         if quantity == 0:
             continue
+        stock_key = (id(warehouse), id(product), id(material))
+        batch_key = (*stock_key, batch_no)
+        if report.skip_conflicts:
+            # 即使源文件缺少汇总行，也不能向已存在的库存结存追加旧库批次。
+            prior_stock = None
+            if stock_key not in report.seen["stock"] and warehouse.id:
+                prior_stock = db.execute(select(Inventory.id).where(
+                    Inventory.warehouse_id == warehouse.id,
+                    Inventory.product_id == (product.id if product is not None else None),
+                    Inventory.material_id == (material.id if material is not None else None),
+                )).first()
+            if stock_key in blocked_batches or prior_stock is not None:
+                report.count("库存批次", "结存冲突跳过")
+                continue
+            if batch_key in report.seen["batch"]:
+                report.count("库存批次", "冲突跳过")
+                continue
         existing = db.execute(
             select(InventoryBatch).where(
                 InventoryBatch.warehouse_id == warehouse.id,
@@ -1169,6 +1307,11 @@ def import_inventory(
                 )
             report.count("库存批次", "新增")
             batch_count += 1
+            report.seen["batch"].add(batch_key)
+            if report.skip_conflicts and apply:
+                db.flush()
+        elif report.skip_conflicts:
+            report.count("库存批次", "冲突跳过")
     if apply:
         db.flush()
     print(f"    库存 {count} 条 / 批次 {batch_count} 条")
@@ -1182,6 +1325,7 @@ def main():
     parser = argparse.ArgumentParser(description="旧系统主数据导入")
     parser.add_argument("--source", default="old_data/export", help="导出的 json 所在目录")
     parser.add_argument("--apply", action="store_true", help="真正写库；不加此参数只试运行")
+    parser.add_argument("--skip-conflicts", action="store_true", help="只新增，编码/唯一名称/有效税号重复则跳过，保留已有档案、BOM、库存")
     parser.add_argument("--skip", default="", help="跳过的阶段，逗号分隔：dept,user,warehouse,product,customer,supplier,bom,stock")
     args = parser.parse_args()
 
@@ -1202,18 +1346,21 @@ def main():
     print("=" * 68)
 
     print("\n读取导出文件 ...")
-    btype_rows = load_json(source, "01_btype.json")
-    ptype_rows = load_json(source, "02_ptype.json")
-    price_rows = load_json(source, "03_ptype_price.json")
-    employee_rows = load_json(source, "04_employee.json")
-    department_rows = load_json(source, "05_department.json")
-    stock_rows = load_json(source, "06_stock.json")
-    owner_rows = load_json(source, "07_customer_owner.json")
-    doc_type_rows = load_json(source, "08_btype_doc_types.json")
-    bom_ndx_rows = load_json(source, "09_bom_ndx.json")
-    bom_detail_rows = load_json(source, "10_bom_detail.json")
-    goods_stock_rows = load_json(source, "11_goods_stocks.json")
-    goods_batch_rows = load_json(source, "12_goods_stocks_batch.json")
+    def read_export(filename):
+        return load_json(source, filename, strict=args.skip_conflicts)
+
+    btype_rows = read_export("01_btype.json")
+    ptype_rows = read_export("02_ptype.json")
+    price_rows = read_export("03_ptype_price.json")
+    employee_rows = read_export("04_employee.json")
+    department_rows = read_export("05_department.json")
+    stock_rows = read_export("06_stock.json")
+    owner_rows = read_export("07_customer_owner.json")
+    doc_type_rows = read_export("08_btype_doc_types.json")
+    bom_ndx_rows = read_export("09_bom_ndx.json")
+    bom_detail_rows = read_export("10_bom_detail.json")
+    goods_stock_rows = read_export("11_goods_stocks.json")
+    goods_batch_rows = read_export("12_goods_stocks_batch.json")
     print(
         f"    往来单位 {len(btype_rows)} / 商品 {len(ptype_rows)} / 员工 {len(employee_rows)} / "
         f"部门 {len(department_rows)} / 仓库 {len(stock_rows)}"
@@ -1223,7 +1370,11 @@ def main():
         f"负责人映射 {len(owner_rows)}"
     )
 
-    report = Report()
+    report = Report(skip_conflicts=args.skip_conflicts)
+    if args.skip_conflicts:
+        print("冲突策略：只新增、保留已有数据；身份不一致的档案不复用关联")
+        if not args.apply:
+            print("试运行统计供复核；正式导入以目标数据库的唯一键比较规则为准")
     db: Session = SessionLocal()
     try:
         dept_map = {} if "dept" in skip else import_departments(db, department_rows, report, args.apply)

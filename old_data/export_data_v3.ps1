@@ -1,11 +1,12 @@
 #Requires -Version 5.1
 <#
-    Legacy SQL Server master-data export  (niaosu2020)
+    Legacy SQL Server master-data export (same-schema databases)
 
     Usage:
         cd E:\System_dev\yecai-new\old_data
-        .\export_data.ps1            # Windows auth
-        .\export_data.ps1 -UseSa     # sa account, password typed at runtime
+        .\export_data_v3.ps1            # Windows auth
+        .\export_data_v3.ps1 -UseSa     # sa account, password typed at runtime
+        .\export_data_v3.ps1 -Database shiji2020 -OutputDir .\export_shiji2020
 
     NOTE: this file is deliberately pure ASCII.
     PowerShell 5.1 decodes .ps1 as the system ANSI codepage (GBK on Chinese
@@ -19,6 +20,7 @@
 param(
     [string]$Server   = "DESKTOP-4AI9ATV\MSSQLSERVER01",
     [string]$Database = "niaosu2020",
+    [string]$OutputDir = "",
     [switch]$UseSa
 )
 
@@ -28,7 +30,7 @@ $ErrorActionPreference = "Stop"
 # (Do NOT name any variable $pwd - that is PowerShell's builtin current-directory
 #  automatic variable; overwriting it makes $PWD.Path return $null.)
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$outDir    = Join-Path $scriptDir "export"
+$outDir = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $scriptDir "export" }
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 
 if ($UseSa) {
@@ -204,8 +206,8 @@ Write-Host ""
 $bad = @($results | Where-Object { $_.Status -notin @("OK","EMPTY") })
 if ($bad.Count -gt 0) {
     Write-Host "$($bad.Count) file(s) had problems - send the output above." -ForegroundColor Red
+    exit 1
 } else {
     Write-Host "Export finished. Next step:" -ForegroundColor Green
-    Write-Host "  cd .."
-    Write-Host "  python old_data\inspect_export.py --source old_data/export"
+    Write-Host "  python old_data\inspect_export.py --source `"$outDir`" --out `"$outDir\inspect_report.md`""
 }

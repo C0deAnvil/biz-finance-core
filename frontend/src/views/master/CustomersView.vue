@@ -199,12 +199,13 @@
           <el-col :span="12"><el-form-item label="客户类型"><el-select v-model="form.customer_type" clearable placeholder="进口商 / 经销商 / 工厂 / 贸易公司 / 代理商" style="width:100%"><el-option v-for="item in customerTypes" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="国内/海外"><el-select v-model="form.region_type" clearable placeholder="请选择" style="width:100%"><el-option v-for="item in regionTypes" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item></el-col>
           <el-col :span="12">
-            <el-form-item label="地区">
-              <el-select v-model="form.region_province" clearable filterable placeholder="按省份选择" style="width:100%">
+            <el-form-item label="客户区域">
+              <el-select v-model="form.region_province" clearable filterable placeholder="请选择区域，如华北 - 北京市" style="width:100%">
                 <el-option-group v-for="group in provinceGroups" :key="group.region" :label="group.region">
-                  <el-option v-for="province in group.provinces" :key="province" :label="province" :value="province" />
+                  <el-option v-for="province in group.provinces" :key="province" :label="`${group.region} - ${province}`" :value="province" />
                 </el-option-group>
               </el-select>
+              <div class="field-hint">选择客户所在省份，自动归属对应大区。</div>
             </el-form-item>
           </el-col>
           <el-col :span="12"><el-form-item label="信用代码"><el-input v-model="form.unified_social_credit_code" placeholder="统一社会信用代码" /></el-form-item></el-col>

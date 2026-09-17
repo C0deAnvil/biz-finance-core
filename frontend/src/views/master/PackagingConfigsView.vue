@@ -6,6 +6,16 @@
       <el-button v-if="canManage" type="primary" @click="openCreate">新增包装</el-button>
     </template>
 
+    <el-form inline @submit.prevent="search">
+      <el-form-item label="搜索包装">
+        <el-input v-model="keyword" clearable placeholder="包装名称，如25kg编织袋" style="width: 300px; max-width: 100%" @clear="search" />
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" native-type="submit">搜索</el-button>
+        <el-button @click="resetSearch">重置</el-button>
+      </el-form-item>
+    </el-form>
+
     <el-table :data="pagedRows" stripe>
       <el-table-column prop="packaging_name" label="包装名称" min-width="180" />
       <el-table-column prop="kg_per_bag" label="kg/袋" width="110">
@@ -123,6 +133,8 @@ const auth = useAuthStore()
 const canManage = computed(() => ['sales', 'purchase', 'production', 'inventory', 'manager', 'chairman', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
 
 const rows = ref([])
+const keyword = ref('')
+const appliedKeyword = ref('')
 const dialogVisible = ref(false)
 const editingId = ref(null)
 const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(rows)
@@ -146,8 +158,19 @@ function resetForm() {
   })
 }
 
+async function search() {
+  appliedKeyword.value = keyword.value.trim()
+  pagination.page = 1
+  await load()
+}
+
+async function resetSearch() {
+  keyword.value = ''
+  await search()
+}
+
 async function load() {
-  rows.value = await get('/api/master-data/packaging-configs?entity_type=global')
+  rows.value = await get(`/api/master-data/packaging-configs?entity_type=global&keyword=${encodeURIComponent(appliedKeyword.value)}`)
 }
 
 function openCreate() {
