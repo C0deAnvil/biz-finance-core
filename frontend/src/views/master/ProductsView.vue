@@ -26,10 +26,10 @@
       <el-table-column label="kg/袋" width="100">
         <template #default="scope">{{ scope.row.packaging?.kg_per_bag || '-' }}</template>
       </el-table-column>
-      <el-table-column label="可用库存" width="120">
+      <el-table-column label="成品仓可用库存" width="150">
         <template #default="scope">{{ formatNumber(scope.row.stock?.available_quantity) }}</template>
       </el-table-column>
-      <el-table-column prop="price" label="单价" width="120" />
+      <el-table-column prop="price" label="标准单价" width="120" />
       <el-table-column prop="fulfillment_mode_label" label="产品类型" width="120" />
       <el-table-column prop="safety_stock_qty" label="安全库存" width="120" />
       <el-table-column prop="purchase_threshold_qty" label="采购阈值" width="120" />
@@ -71,7 +71,7 @@
           <el-col :span="12"><el-form-item label="kg/袋"><el-input-number v-model="form.kg_per_bag" :min="0.01" :precision="2" style="width: 100%" disabled /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="单价"><el-input-number v-model="form.price" :min="0" :precision="2" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="标准单价"><el-input-number v-model="form.price" :min="0" :precision="2" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="启用"><el-switch v-model="form.is_active" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
@@ -154,7 +154,7 @@ const form = reactive({
   kg_per_bag: 25,
   packaging_unit_price: 0,
   price: 0,
-  fulfillment_mode: 'production',
+  fulfillment_mode: 'trade',
   safety_stock_qty: 0,
   purchase_threshold_qty: 0,
   is_active: true
@@ -169,7 +169,7 @@ function resetForm() {
     kg_per_bag: 25,
     packaging_unit_price: 0,
     price: 0,
-    fulfillment_mode: 'production',
+    fulfillment_mode: 'trade',
     safety_stock_qty: 0,
     purchase_threshold_qty: 0,
     is_active: true
@@ -191,7 +191,7 @@ function openEdit(row) {
     kg_per_bag: Number(row.packaging?.kg_per_bag || 25),
     packaging_unit_price: Number(row.packaging?.unit_price || 0),
     price: row.price,
-    fulfillment_mode: row.fulfillment_mode || 'production',
+    fulfillment_mode: row.fulfillment_mode || 'trade',
     safety_stock_qty: row.safety_stock_qty,
     purchase_threshold_qty: row.purchase_threshold_qty,
     is_active: row.is_active

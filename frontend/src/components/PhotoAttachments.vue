@@ -35,14 +35,24 @@
         accept=".jpg,.jpeg,.png"
         multiple
         class="photo-input"
+        :disabled="!businessId || uploading"
         @change="handleFileChange"
       />
+      <el-button
+        plain
+        size="small"
+        :disabled="!businessId || uploading"
+        @click="fileInput?.click()"
+      >选择照片</el-button>
+      <span v-if="pendingFiles.length" class="photo-hint">
+        已选择 {{ pendingFiles.length }} 张：{{ pendingFiles.map(file => file.name).join('、') }}
+      </span>
       <el-button
         type="primary"
         plain
         size="small"
         :loading="uploading"
-        :disabled="!pendingFiles.length"
+        :disabled="!businessId || !pendingFiles.length"
         @click="submit"
       >
         上传{{ pendingFiles.length ? ` ${pendingFiles.length} 张` : '' }}
@@ -196,11 +206,10 @@ watch(
 .photo-name { color: #606266; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .photo-sub { color: #a8abb2; }
 .photo-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.photo-input { max-width: 260px; font-size: 13px; }
+.photo-input { display: none; }
 .photo-hint { color: #a8abb2; font-size: 12px; }
 
 @media (max-width: 768px) {
   .photo-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
-  .photo-input { max-width: 100%; }
 }
 </style>

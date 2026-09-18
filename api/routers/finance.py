@@ -59,6 +59,7 @@ from services.sales_service import route_sales_order_to_inventory_shipment
 from schemas.purchases import PurchasePaymentApprovalRequest
 from services.display import format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.time_utils import now_local
+from services.financial_accounts import validate_settlement_accounts, settlement_account_fields, requested_account_id
 from services.request_trace import trace_stage
 from services.workflow import purchase_arrival_status
 from services.workflow_repair import repair_sales_receipt_workflows
@@ -367,7 +368,10 @@ def _finish_sales_receipt_finance_register(
     received_at: datetime | None,
     release_to_inventory: bool,
     current_user: User,
+    company_account_id: int | None = None,
+    counterparty_account_id: int | None = None,
 ) -> dict:
+    db.refresh(request, with_for_update=True)
     order = (
         db.execute(
             select(SalesOrder)
@@ -394,6 +398,12 @@ def _finish_sales_receipt_finance_register(
     if amount > remaining_amount:
         raise HTTPException(status_code=409, detail=f"客户订单 {order.order_no} 本次入账金额不能超过待收金额")
 
+    accounts = validate_settlement_accounts(
+        db, requested_account_id(company_account_id, request.company_account_id, "企业收款账户"),
+        requested_account_id(counterparty_account_id, request.counterparty_account_id, "客户付款账户"), customer_id=order.customer_id,
+    )
+    request.company_account_id = accounts["company_account_id"]
+    request.counterparty_account_id = accounts["counterparty_account_id"]
     now = received_at or now_local()
     receipt_at = received_at or now
     if payment_type:
@@ -409,6 +419,7 @@ def _finish_sales_receipt_finance_register(
     complete_todos(db, business_type="sales_receipt_request", business_id=request.id)
 
     record = ReceivableRecord(
+        **accounts,
         sales_order_id=order.id,
         sales_receipt_request_id=request.id,
         amount=amount,
@@ -709,6 +720,8 @@ def list_receivable_records(
                 {
                     "id": row.id,
                     "request_no": row.request_no,
+                    "customer_id": row.sales_order.customer_id,
+                    **settlement_account_fields(row),
                     "sales_order_id": row.sales_order_id,
                     "sales_order_no": order_map[row.sales_order_id].order_no if row.sales_order_id in order_map else None,
                     "customer_name": order_map[row.sales_order_id].customer.name if row.sales_order_id in order_map and order_map[row.sales_order_id].customer else None,
@@ -751,6 +764,7 @@ def list_receivable_records(
                     "amount": float(row.amount),
                     "received_at": row.received_at.isoformat() if row.received_at else None,
                     "receipt_method": row.receipt_method,
+                    **settlement_account_fields(row),
                     "bank_receipt_attachment_id": row.bank_receipt_attachment_id,
                     "received_by_name": user_map[row.received_by_id].full_name if row.received_by_id in user_map else None,
                     "remark": row.remark,
@@ -780,6 +794,8 @@ def register_sales_receipt_request(
         amount=Decimal(payload.actual_amount or 0),
         remark=payload.remark,
         payment_type=payload.payment_type,
+        company_account_id=payload.company_account_id,
+        counterparty_account_id=payload.counterparty_account_id,
         receipt_method=payload.receipt_method,
         bank_receipt_attachment_id=payload.bank_receipt_attachment_id,
         received_at=payload.received_at,
@@ -814,6 +830,8 @@ def register_merged_sales_receipt_requests(
             amount=amount_map[request_id],
             remark=payload.remark,
             payment_type=payload.payment_type,
+            company_account_id=payload.company_account_id,
+            counterparty_account_id=payload.counterparty_account_id,
             receipt_method=payload.receipt_method,
             bank_receipt_attachment_id=payload.bank_receipt_attachment_id,
             received_at=payload.received_at,
@@ -928,6 +946,8 @@ def list_payables(
                     "id": row.id,
                     "merge_no": row.merge_no,
                     "request_no": row.request_no,
+                    "supplier_id": row.purchase_order.supplier_id,
+                    **settlement_account_fields(row),
                     "purchase_order_id": row.purchase_order_id,
                     "purchase_order_no": order_map[row.purchase_order_id].order_no if row.purchase_order_id in order_map else None,
                     "supplier_name": order_map[row.purchase_order_id].supplier.name if row.purchase_order_id in order_map and order_map[row.purchase_order_id].supplier else None,
@@ -968,6 +988,7 @@ def list_payables(
                     "amount": float(row.amount),
                     "paid_at": row.paid_at.isoformat() if row.paid_at else None,
                     "payment_method": row.payment_method,
+                    **settlement_account_fields(row),
                     "bank_receipt_attachment_id": row.bank_receipt_attachment_id,
                     "status": row.status,
                     "status_label": status_label(row.status),
@@ -996,6 +1017,8 @@ def register_purchase_payment_request(
             decision="approved",
             actual_amount=payload.actual_amount,
             manager_remark=payload.remark,
+            company_account_id=payload.company_account_id,
+            counterparty_account_id=payload.counterparty_account_id,
             payment_method=payload.payment_method,
             bank_receipt_attachment_id=payload.bank_receipt_attachment_id,
             paid_at=payload.paid_at,
@@ -1122,6 +1145,7 @@ def direct_register_receivables(
         amount = amount_map[order_id]
         received_before = _sales_received_amount_map([order], db).get(order.id, Decimal("0"))
         record = ReceivableRecord(
+            **validate_settlement_accounts(db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id),
             sales_order_id=order.id,
             amount=amount,
             payment_stage=payload.payment_stage,

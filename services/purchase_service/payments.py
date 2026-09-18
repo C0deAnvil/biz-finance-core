@@ -1,4 +1,5 @@
 from __future__ import annotations
+from services.financial_accounts import validate_settlement_accounts, settlement_account_fields, validate_supplier_account, requested_account_id
 """采购域服务。"""
 
 
@@ -162,6 +163,7 @@ def submit_purchase_payment_request(payload: PurchasePaymentRequestCreate, curre
         preset_status="pending_chairman_approval" if needs_chairman_approval else "pending_finance_payment",
     )
 
+    request.counterparty_account_id = validate_supplier_account(db, payload.counterparty_account_id, order.supplier_id)
     chairman_user_ids = _chairman_user_ids(db)
     finance_user_ids = _finance_user_ids(db)
     if needs_chairman_approval:
@@ -291,6 +293,7 @@ def submit_merged_purchase_payment_request(payload: PurchaseMergedPaymentRequest
             assigned_finance_user_id=assigned_finance_user_id,
             preset_status=preset_status,
         )
+        request.counterparty_account_id = validate_supplier_account(db, payload.counterparty_account_id, order.supplier_id)
         created_rows.append(request)
         if first_request_id is None:
             first_request_id = request.id
@@ -417,7 +420,11 @@ def register_merged_purchase_payment(payload, current_user: User, db: Session):
         request_ids.append(request.id)
         paid_order_amount = _purchase_paid_order_amount(db, order.id) + order_amount
         payable_status = "settled" if paid_order_amount >= Decimal(order.total_amount or 0) else "partial_settled"
+        accounts = validate_settlement_accounts(db, payload.company_account_id, payload.counterparty_account_id, supplier_id=order.supplier_id)
+        request.company_account_id = accounts["company_account_id"]
+        request.counterparty_account_id = accounts["counterparty_account_id"]
         payable_record = PayableRecord(
+            **accounts,
             purchase_order_id=order.id,
             purchase_payment_request_id=request.id,
             merge_no=merge_no,
@@ -575,6 +582,7 @@ def register_purchase_payment_request(request_id: int, payload: PurchasePaymentA
     ).scalar_one_or_none()
     if request is None:
         raise HTTPException(status_code=404, detail="采购付款申请不存在")
+    db.refresh(request, with_for_update=True)
     order = _load_order(db, request.purchase_order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="采购订单不存在")
@@ -639,7 +647,11 @@ def register_purchase_payment_request(request_id: int, payload: PurchasePaymentA
 
     paid_order_amount = _purchase_paid_order_amount(db, order.id) + Decimal(request.order_amount or 0)
     payable_status = "settled" if paid_order_amount >= Decimal(order.total_amount or 0) else "partial_settled"
+    accounts = validate_settlement_accounts(db, payload.company_account_id, requested_account_id(payload.counterparty_account_id, request.counterparty_account_id, "供应商收款账户"), supplier_id=order.supplier_id)
+    request.company_account_id = accounts["company_account_id"]
+    request.counterparty_account_id = accounts["counterparty_account_id"]
     payable_record = PayableRecord(
+        **accounts,
         purchase_order_id=order.id,
         purchase_payment_request_id=request.id,
         merge_no=request.merge_no,
@@ -698,18 +710,8 @@ def register_purchase_payment_requests_batch(
     role_code = current_user.role.code if current_user.role else ""
     if role_code not in {"finance", "finance_super", "system_admin"}:
         raise HTTPException(status_code=403, detail="当前账号无权登记采购出账")
-    # 指定财务校验:普通财务只能处理分配给自己的;超级财务可接管任何未处理付款
-    if (
-        request.assigned_finance_user_id
-        and request.assigned_finance_user_id != current_user.id
-        and role_code not in {"finance_super", "system_admin"}
-    ):
-        assigned_user = db.execute(select(User).where(User.id == request.assigned_finance_user_id)).scalar_one_or_none()
-        assigned_name = assigned_user.full_name if assigned_user else f"#{request.assigned_finance_user_id}"
-        raise HTTPException(status_code=403, detail=f"该付款已指定由 {assigned_name} 处理,不能越权登记")
-
     requests = db.execute(
-        select(PurchasePaymentRequest).where(PurchasePaymentRequest.id.in_(request_ids))
+        select(PurchasePaymentRequest).where(PurchasePaymentRequest.id.in_(request_ids)).order_by(PurchasePaymentRequest.id).with_for_update()
     ).scalars().all()
     request_map = {row.id: row for row in requests}
     if len(request_map) != len(request_ids):
@@ -718,6 +720,15 @@ def register_purchase_payment_requests_batch(
     if any(order is None for order in orders):
         raise HTTPException(status_code=404, detail="存在不存在的采购订单")
     for request in requests:
+        # 指定财务校验:普通财务只能处理分配给自己的;超级财务可接管任何未处理付款
+        if (
+            request.assigned_finance_user_id
+            and request.assigned_finance_user_id != current_user.id
+            and role_code not in {"finance_super", "system_admin"}
+        ):
+            assigned_user = db.execute(select(User).where(User.id == request.assigned_finance_user_id)).scalar_one_or_none()
+            assigned_name = assigned_user.full_name if assigned_user else f"#{request.assigned_finance_user_id}"
+            raise HTTPException(status_code=403, detail=f"该付款已指定由 {assigned_name} 处理,不能越权登记")
         if request.status != "pending_finance_payment":
             raise HTTPException(status_code=409, detail=f"付款申请 {request.request_no} 状态不允许登记出账")
 
@@ -765,7 +776,11 @@ def register_purchase_payment_requests_batch(
         request.status = "pending_completion"
         paid_order_amount = _purchase_paid_order_amount(db, order.id) + Decimal(request.order_amount or 0)
         payable_status = "settled" if paid_order_amount >= Decimal(order.total_amount or 0) else "partial_settled"
+        accounts = validate_settlement_accounts(db, payload.company_account_id, requested_account_id(payload.counterparty_account_id, request.counterparty_account_id, "供应商收款账户"), supplier_id=order.supplier_id)
+        request.company_account_id = accounts["company_account_id"]
+        request.counterparty_account_id = accounts["counterparty_account_id"]
         payable_record = PayableRecord(
+            **accounts,
             purchase_order_id=order.id,
             purchase_payment_request_id=request.id,
             merge_no=request.merge_no,
@@ -1048,6 +1063,7 @@ def build_purchase_settlement_snapshot(current_user: User, db: Session, *, scope
         {
             "id": row.id,
             "request_no": row.request_no,
+            **settlement_account_fields(row),
             "merge_no": row.merge_no,
             "purchase_order_id": row.purchase_order_id,
             "purchase_order_no": row.purchase_order.order_no if row.purchase_order else None,

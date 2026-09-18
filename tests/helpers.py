@@ -164,6 +164,30 @@ def stock_of(client, login, *, warehouse_id: int, product_id: int | None = None,
 
 # ---------- 采购 ----------
 
+def supplier_account_for_order(client, login, order_id: int) -> int:
+    login("purchase01")
+    order = client.get(f"/api/purchases/orders/{order_id}").json()["data"]
+    supplier_id = order["supplier_id"]
+    response = client.get(f"/api/finance/accounts?owner_type=supplier&supplier_id={supplier_id}")
+    assert response.status_code == 200, response.text
+    if response.json()["data"]:
+        return response.json()["data"][0]["id"]
+    response = client.post("/api/finance/accounts", json={
+        "owner_type": "supplier", "supplier_id": supplier_id, "account_name": "测试供应商",
+        "bank_name": "测试银行", "account_number": uniq("BANK"),
+    })
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["id"]
+
+
+def create_company_account(client, login) -> int:
+    login("finance01")
+    response = client.post("/api/finance/accounts", json={
+        "owner_type": "company", "account_name": "测试企业", "bank_name": "测试银行", "account_number": uniq("BANK"),
+    })
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["id"]
+
 def create_purchase_order(client, login, *, supplier_id: int, product_id: int, quantity: float, unit_price: float) -> dict:
     login("purchase01")
     resp = client.post(

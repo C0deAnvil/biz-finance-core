@@ -6,7 +6,7 @@
 可把付款申请指派给销售等任意角色(销售/报销路径则已有校验)。
 """
 
-from helpers import create_purchase_order, create_supplier, create_trade_product, set_supplier_catalog, uniq
+from helpers import create_purchase_order, create_supplier, create_trade_product, set_supplier_catalog, uniq, supplier_account_for_order
 
 
 def _user_id(username: str) -> int:
@@ -56,6 +56,7 @@ def _submit_payment_request(client, login, *, order_id: int, total: float, assig
     login("purchase01")
     payload = {
         "purchase_order_id": order_id,
+        "counterparty_account_id": supplier_account_for_order(client, login, order_id),
         "requested_amount": total,
         "order_amount": total,
         "other_fee_amount": 0,

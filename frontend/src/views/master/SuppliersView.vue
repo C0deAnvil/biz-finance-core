@@ -62,9 +62,10 @@
         <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip>
           <template #default="scope">{{ scope.row.remark || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" :width="canManage ? 300 : 100" fixed="right">
+        <el-table-column label="操作" :width="canManage ? 360 : (canManageAccounts ? 160 : 100)" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openCatalog(scope.row)">详情</el-button>
+            <el-button v-if="canManageAccounts" size="small" text type="primary" @click="openSupplierAccounts(scope.row)">账户</el-button>
             <template v-if="canManage">
               <el-button size="small" text type="primary" @click="openEdit(scope.row)">编辑</el-button>
               <el-button size="small" text @click="toggleStatus(scope.row)">{{ scope.row.status === 'enabled' ? '停用' : '启用' }}</el-button>
@@ -99,11 +100,8 @@
         <el-form-item label="供应商地址"><el-input v-model="form.address" /></el-form-item>
         <el-form-item label="官网"><el-input v-model="form.website" placeholder="如：https://www.example.com" /></el-form-item>
 
-        <el-divider content-position="left">开票与收款</el-divider>
-        <el-row :gutter="16">
-          <el-col :span="12"><el-form-item label="开户行名称"><el-input v-model="form.bank_name" placeholder="如：中国银行XX支行" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="银行账号"><el-input v-model="form.bank_account" /></el-form-item></el-col>
-        </el-row>
+        <el-divider content-position="left">收款账户</el-divider>
+        <p>保存供应商后，点击列表中的“账户”维护收款账号，采购付款申请将从这里选择。</p>
 
         <el-divider content-position="left">标签与备注</el-divider>
         <el-form-item label="标签">
@@ -220,6 +218,7 @@
         <el-button @click="priceHistoryVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+    <SupplierAccountsDialog v-model="supplierAccountsVisible" :supplier="accountSupplier" @changed="load" />
   </div>
 </template>
 
@@ -264,6 +263,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { get, post, put, remove } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import SupplierAccountsDialog from '../../components/SupplierAccountsDialog.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useAuthStore } from '../../stores/auth'
@@ -307,6 +307,10 @@ const priceHistoryRows = ref([])
 const priceHistoryTitle = ref('历史供价详情')
 const priceHistorySummary = ref(null)
 
+const supplierAccountsVisible = ref(false)
+const accountSupplier = ref(null)
+const canManageAccounts = computed(() => ['purchase', 'master_data_admin', 'finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
+function openSupplierAccounts(row) { accountSupplier.value = row; supplierAccountsVisible.value = true }
 const canManage = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const canManageCatalog = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code))
 
@@ -362,8 +366,7 @@ function buildPayload(source) {
     unified_social_credit_code: (source.unified_social_credit_code || '').trim() || null,
     supplier_type: source.supplier_type || null,
     website: (source.website || '').trim() || null,
-    bank_name: (source.bank_name || '').trim() || null,
-    bank_account: (source.bank_account || '').trim() || null,
+
     remark: (source.remark || '').trim() || null,
     tags: source.tags || []
   }

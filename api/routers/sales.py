@@ -10,6 +10,7 @@ from database import get_db
 from dependencies import get_current_user, require_roles
 from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, PurchaseReceipt, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderApproval, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
 from responses import api_response
+from services.financial_accounts import settlement_account_fields
 from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderSubmitRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
 from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.organization import get_scoped_user_ids, user_in_scope
@@ -1160,6 +1161,7 @@ def list_sales_settlements(
                 {
                     "id": row.id,
                     "request_no": row.request_no,
+                    **settlement_account_fields(row),
                     "sales_order_id": row.sales_order_id,
                     "sales_order_no": next((order.order_no for order in orders if order.id == row.sales_order_id), None),
                     "requested_amount": float(row.requested_amount or 0),

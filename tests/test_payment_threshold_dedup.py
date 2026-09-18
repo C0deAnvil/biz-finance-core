@@ -13,7 +13,7 @@
    FK20260907002(待完成),两张各 1 元,存在重复付款风险。
 """
 
-from helpers import create_purchase_order, create_supplier, create_trade_product, set_supplier_catalog
+from helpers import create_purchase_order, create_supplier, create_trade_product, set_supplier_catalog, supplier_account_for_order
 
 
 def _set_threshold(client, login, amount: float) -> None:
@@ -48,6 +48,7 @@ def _submit_request(client, login, *, order_id: int, amount: float):
         "/api/purchases/settlements/payment-requests",
         json={
             "purchase_order_id": order_id,
+            "counterparty_account_id": supplier_account_for_order(client, login, order_id),
             "requested_amount": amount,
             "order_amount": amount,
             "other_fee_amount": 0,

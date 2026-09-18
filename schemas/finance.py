@@ -2,6 +2,7 @@ from datetime import datetime, date
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
+from schemas.accounts import SettlementAccountInput
 
 
 class ReceivablePlanCreate(BaseModel):
@@ -57,7 +58,7 @@ class FinanceReceiptNoticeRequest(BaseModel):
     remark: str | None = None
 
 
-class FinancePurchasePaymentRegisterRequest(BaseModel):
+class FinancePurchasePaymentRegisterRequest(SettlementAccountInput):
     purchase_payment_request_id: int
     actual_amount: Decimal = Field(..., gt=0)
     remark: str | None = None
@@ -72,7 +73,7 @@ class FinanceMergedPurchasePaymentRegisterItem(BaseModel):
     other_fee_amount: Decimal = Field(default=0, ge=0)
 
 
-class FinanceMergedPurchasePaymentRegisterRequest(BaseModel):
+class FinanceMergedPurchasePaymentRegisterRequest(SettlementAccountInput):
     supplier_id: int | None = None
     items: list[FinanceMergedPurchasePaymentRegisterItem]
     actual_amount: Decimal = Field(..., gt=0)
@@ -82,7 +83,7 @@ class FinanceMergedPurchasePaymentRegisterRequest(BaseModel):
     paid_at: datetime | None = None
 
 
-class FinanceSalesReceiptRegisterRequest(BaseModel):
+class FinanceSalesReceiptRegisterRequest(SettlementAccountInput):
     sales_receipt_request_id: int
     actual_amount: Decimal = Field(..., gt=0)
     remark: str | None = None
@@ -98,7 +99,7 @@ class FinanceMergedPurchasePaymentRequestRegisterItem(BaseModel):
     actual_amount: Decimal = Field(..., gt=0)
 
 
-class FinanceMergedPurchasePaymentRequestRegisterRequest(BaseModel):
+class FinanceMergedPurchasePaymentRequestRegisterRequest(SettlementAccountInput):
     items: list[FinanceMergedPurchasePaymentRequestRegisterItem]
     remark: str | None = None
     payment_method: str | None = Field(default=None, max_length=80)
@@ -111,7 +112,7 @@ class FinanceDirectSalesReceiptRegisterItem(BaseModel):
     amount: Decimal = Field(..., gt=0)
 
 
-class FinanceDirectSalesReceiptRegisterRequest(BaseModel):
+class FinanceDirectSalesReceiptRegisterRequest(SettlementAccountInput):
     customer_id: int | None = None
     payment_stage: str = Field(default="direct", max_length=30)
     items: list[FinanceDirectSalesReceiptRegisterItem]
@@ -127,7 +128,7 @@ class FinanceMergedSalesReceiptRequestRegisterItem(BaseModel):
     actual_amount: Decimal = Field(..., gt=0)
 
 
-class FinanceMergedSalesReceiptRequestRegisterRequest(BaseModel):
+class FinanceMergedSalesReceiptRequestRegisterRequest(SettlementAccountInput):
     items: list[FinanceMergedSalesReceiptRequestRegisterItem]
     remark: str | None = None
     payment_type: str | None = None

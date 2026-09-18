@@ -1,6 +1,7 @@
 """销售域服务。"""
 
 from __future__ import annotations
+from services.financial_accounts import validate_settlement_accounts
 
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -114,6 +115,7 @@ def submit_sales_receipt_request(payload: SalesReceiptRequestCreate, current_use
         raise HTTPException(status_code=409, detail="当前订单不适用到货后全款确认")
 
     request = SalesReceiptRequest(
+        **validate_settlement_accounts(db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id),
         request_no=next_business_no(db, "SK"),
         sales_order_id=order.id,
         requested_by_id=current_user.id,
@@ -255,6 +257,7 @@ def submit_merged_sales_receipt_request(payload: SalesMergedReceiptRequestCreate
         if payload.remark and payload.remark.strip():
             remark_parts.append(payload.remark.strip())
         request = SalesReceiptRequest(
+            **validate_settlement_accounts(db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id),
             request_no=next_business_no(db, "SK"),
             sales_order_id=order.id,
             requested_by_id=current_user.id,

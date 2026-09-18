@@ -112,12 +112,34 @@ def _notify_sales_order_shortage(db: Session, *, order: SalesOrder, current_user
         category="warning",
     )
 
+def _sync_customer_address(db, customer, payload, current_user):
+    if not payload.update_customer_address:
+        return
+    db.refresh(customer, with_for_update=True)
+    if current_user.role.code == "sales" and customer.owner_user_id not in {None, current_user.id}:
+        raise HTTPException(status_code=403, detail="仅可同步本人客户的地址")
+    old_address = (customer.address or "").strip()
+    new_address = (payload.delivery_address or "").strip()
+    if not new_address:
+        raise HTTPException(status_code=409, detail="客户地址不能为空")
+    if old_address == new_address:
+        return
+    if payload.customer_address_before is not None and payload.customer_address_before.strip() != old_address:
+        raise HTTPException(status_code=409, detail="客户档案地址已变化，请刷新客户信息后重新确认")
+    customer.address = new_address
+    write_operation_log(db, user_id=current_user.id, module="sales", action="sync_customer_address_from_order",
+                        content=f"保存销售单时同步客户 {customer.name} 地址",
+                        before_data={"customer_id": customer.id, "address": old_address},
+                        after_data={"customer_id": customer.id, "address": new_address})
+
+
 def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
     if customer is None:
         raise HTTPException(status_code=404, detail="客户不存在")
     if not payload.items:
         raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
+    _sync_customer_address(db, customer, payload, current_user)
 
     # 不再拆单：整单保留全部明细，库存缺口统一在生产/采购补货需求环节处理
     effective_items = [
@@ -273,6 +295,7 @@ def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, d
         raise HTTPException(status_code=404, detail="客户不存在")
     if not payload.items:
         raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
+    _sync_customer_address(db, customer, payload, current_user)
 
     before_data = {
         "customer_id": order.customer_id,
@@ -815,5 +838,3 @@ def complete_order(order_id: int, current_user: User, db: Session):
     )
     db.commit()
     return api_response(data={"id": order.id, "status": order.status})
-
-

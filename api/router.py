@@ -9,6 +9,7 @@ from api.routers.dashboard import router as dashboard_router
 from api.routers.export import router as export_router
 from api.routers.files import router as files_router
 from api.routers.finance import router as finance_router
+from api.routers.accounts import router as accounts_router
 from api.routers.inventory import router as inventory_router_list
 from api.routers.logistics import router as logistics_router
 from api.routers.master_data import router as master_data_router
@@ -39,6 +40,7 @@ api_router.include_router(quality_router)
 api_router.include_router(realtime_router)
 api_router.include_router(reimbursements_router)
 api_router.include_router(finance_router)
+api_router.include_router(accounts_router)
 api_router.include_router(admin_router)
 api_router.include_router(export_router)
 api_router.include_router(files_router)

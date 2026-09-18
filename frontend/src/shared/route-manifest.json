@@ -1269,5 +1269,18 @@
     ],
     "preload_roles": [],
     "warmers": []
+  },
+  {
+    "path": "/finance/accounts",
+    "name": "finance-accounts",
+    "title": "收付款账户",
+    "group": "财务管理",
+    "menu_roles": [
+      "finance",
+      "finance_super",
+      "system_admin"
+    ],
+    "preload_roles": [],
+    "warmers": []
   }
 ]

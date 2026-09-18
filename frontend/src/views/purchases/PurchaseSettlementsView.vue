@@ -51,6 +51,7 @@
         <el-table-column prop="merge_no" label="合并批次" width="140">
           <template #default="scope">{{ scope.row.merge_no || '-' }}</template>
         </el-table-column>
+        <el-table-column prop="counterparty_account_label" label="供应商收款账户" min-width="220" show-overflow-tooltip />
         <el-table-column prop="request_no" label="申请单号" width="160" />
         <el-table-column prop="purchase_order_no" label="采购单号" width="160" />
         <el-table-column prop="requested_amount" label="申请总金额" width="130"><template #default="scope">{{ formatNumber(scope.row.requested_amount) }}</template></el-table-column>
@@ -107,6 +108,7 @@
 
     <el-dialog v-model="requestVisible" title="提交采购付款申请" width="920px">
       <el-form :model="requestForm" label-width="110px">
+        <SettlementAccounts v-model:counterparty-account-id="requestForm.counterparty_account_id" :party-id="selectedOrder?.supplier_id" direction="payment" :show-company="false" counterparty-required />
         <el-form-item label="采购订单">
           <el-select v-model="requestForm.purchase_order_id" filterable style="width: 100%">
             <el-option v-for="item in orders" :key="item.id" :label="`${item.order_no} / ${item.supplier_name || '-'}`" :value="item.id" />
@@ -216,6 +218,7 @@
         </el-table-column>
       </el-table>
       <el-form class="mt-16" :model="mergedRequestForm" label-width="100px">
+        <SettlementAccounts v-model:counterparty-account-id="mergedRequestForm.counterparty_account_id" :party-id="mergedRequestForm.supplier_id" direction="payment" :show-company="false" counterparty-required />
         <el-form-item label="付款说明">
           <el-input v-model="mergedRequestForm.payment_detail_remark" type="textarea" :rows="3" />
         </el-form-item>
@@ -295,6 +298,7 @@ import { get, post, put } from '../../api/client'
 import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import SettlementAccounts from '../../components/SettlementAccounts.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatNumber, statusLabel, statusType } from '../../utils/format'
@@ -311,6 +315,7 @@ const mergedRequestVisible = ref(false)
 const selectedOrderRows = ref([])
 
 const requestForm = reactive({
+  counterparty_account_id: null,
   purchase_order_id: null,
   order_amount: 0,
   other_fee_amount: 0,
@@ -320,6 +325,7 @@ const requestForm = reactive({
 })
 const financeUsers = ref([])
 const mergedRequestForm = reactive({
+  counterparty_account_id: null,
   supplier_id: null,
   payment_detail_remark: '',
   assigned_finance_user_id: null,
@@ -356,11 +362,13 @@ function resetRequestForm() {
   requestForm.requested_amount = 0
   requestForm.assigned_finance_user_id = null
   requestForm.payment_detail_remark = ''
+  requestForm.counterparty_account_id = null
 }
 
 function resetMergedRequestForm() {
   mergedRequestForm.supplier_id = null
   mergedRequestForm.payment_detail_remark = ''
+  mergedRequestForm.counterparty_account_id = null
   mergedRequestForm.assigned_finance_user_id = null
   mergedRequestForm.items = []
 }
@@ -442,6 +450,7 @@ function openMergedRequestDialog() {
   }
   mergedRequestForm.supplier_id = selectedOrderRows.value[0].supplier_id
   mergedRequestForm.payment_detail_remark = ''
+  mergedRequestForm.counterparty_account_id = null
   mergedRequestForm.assigned_finance_user_id = null
   mergedRequestForm.items = selectedOrderRows.value.map((item) => ({
     purchase_order_id: item.id,
@@ -457,6 +466,7 @@ function openMergedRequestDialog() {
 }
 
 async function submitRequest() {
+  if (!requestForm.counterparty_account_id) { ElMessage.warning('请选择供应商收款账户'); return }
   if (!requestForm.purchase_order_id || Number(requestForm.requested_amount || 0) <= 0) {
     ElMessage.warning('请填写完整的付款申请信息')
     return
@@ -467,6 +477,7 @@ async function submitRequest() {
       order_amount: Number(requestForm.order_amount || 0),
       other_fee_amount: Number(requestForm.other_fee_amount || 0),
       requested_amount: Number(requestForm.requested_amount || 0),
+      counterparty_account_id: requestForm.counterparty_account_id,
       payment_detail_remark: requestForm.payment_detail_remark,
       assigned_finance_user_id: requestForm.assigned_finance_user_id || null
     })
@@ -480,13 +491,15 @@ async function submitRequest() {
 }
 
 async function submitMergedRequest() {
+  if (!mergedRequestForm.counterparty_account_id) { ElMessage.warning('请选择供应商收款账户'); return }
   if (mergedRequestForm.items.length < 2 || !mergedRequestForm.supplier_id) {
     ElMessage.warning('请先选择同一供应商的多张采购订单')
     return
   }
   const payload = {
     supplier_id: mergedRequestForm.supplier_id,
-    payment_detail_remark: mergedRequestForm.payment_detail_remark,
+    counterparty_account_id: mergedRequestForm.counterparty_account_id,
+      payment_detail_remark: mergedRequestForm.payment_detail_remark,
     assigned_finance_user_id: mergedRequestForm.assigned_finance_user_id || null,
     items: mergedRequestForm.items.map((item) => ({
       purchase_order_id: item.purchase_order_id,

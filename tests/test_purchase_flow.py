@@ -10,6 +10,8 @@
 """
 
 from helpers import (
+    supplier_account_for_order,
+    create_company_account,
     allow_quality_inbound,
     approve_purchase_order,
     complete_operation_request,
@@ -104,6 +106,9 @@ def test_purchase_receipt_quality_inbound_full_chain(client, login):
     created = create_purchase_order(client, login, supplier_id=supplier_id, product_id=product_id, quantity=10, unit_price=10)
     order_id = created["id"]
     order_item_id = created["items"][0]["id"]
+    if created["status"] == "pending_approval":
+        approve_purchase_order(client, login, order_id=order_id)
+        confirm_purchase_order(client, login, order_id=order_id)
 
     # 到货(需质检)
     receipt = create_purchase_receipt(
@@ -152,11 +157,15 @@ def test_purchase_payment_request_flow(client, login):
     total_amount = float(sum(float((item or {}).get("quantity") or 0) * float((item or {}).get("unit_price") or 0) for item in created.get("items") or []))
     assert total_amount > 0
 
+    login("finance01")
+    finance_id = client.get("/api/auth/me").json()["data"]["id"]
     login("purchase01")
     resp = client.post(
         "/api/purchases/settlements/payment-requests",
         json={
             "purchase_order_id": order_id,
+            "counterparty_account_id": supplier_account_for_order(client, login, order_id),
+            "assigned_finance_user_id": finance_id,
             "requested_amount": total_amount,
             "order_amount": total_amount,
             "other_fee_amount": 0,
@@ -189,6 +198,7 @@ def test_purchase_payment_request_flow(client, login):
         f"/api/finance/payables/payment-requests/{request_id}/register",
         json={
             "purchase_payment_request_id": request_id,
+            "company_account_id": create_company_account(client, login),
             "actual_amount": total_amount,
             "remark": "pytest 出账",
             "payment_method": "银行转账",

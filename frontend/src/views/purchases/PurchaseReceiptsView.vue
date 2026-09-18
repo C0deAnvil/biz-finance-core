@@ -80,7 +80,6 @@
         </el-form-item>
         <el-form-item label="到货照片">
           <PhotoAttachments
-            v-if="selectedOrderId"
             :key="`receipt-${selectedOrderId}`"
             business-type="purchase_order"
             :business-id="selectedOrderId"
@@ -88,7 +87,7 @@
             title="到货照片"
             class="receipt-photos"
           />
-          <span v-else class="photo-placeholder">请先选择采购单</span>
+          <span v-if="!selectedOrderId" class="photo-placeholder">请先选择上方采购单，再选择并上传到货照片</span>
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.remark" /></el-form-item>
 

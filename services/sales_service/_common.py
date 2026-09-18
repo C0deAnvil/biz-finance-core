@@ -638,7 +638,7 @@ def _create_fulfillment_demands(
             select(FulfillmentDemand)
             .where(
                 FulfillmentDemand.sales_order_item_id == item.id,
-                FulfillmentDemand.status.in_(["pending", "converted"]),
+                FulfillmentDemand.status.in_(["pending", "pending_material", "converted"]),
             )
             .order_by(FulfillmentDemand.id.desc())
         ).scalars().first()

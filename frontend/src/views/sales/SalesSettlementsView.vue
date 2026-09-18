@@ -80,7 +80,8 @@
         <el-table-column prop="merge_no" label="合并批次" width="140">
           <template #default="scope">{{ scope.row.merge_no || '-' }}</template>
         </el-table-column>
-        <el-table-column prop="request_no" label="申请单号" width="160" />
+        <el-table-column prop="company_account_label" label="企业账户" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="request_no" label="申请单号" width="160" />
         <el-table-column prop="sales_order_no" label="客户订单号" width="160" />
         <el-table-column prop="payment_stage_label" label="收款阶段" width="120" />
         <el-table-column prop="requested_amount" label="申请金额" width="120">
@@ -147,6 +148,7 @@
 
     <el-dialog v-model="receiptVisible" title="提交销售收款确认" width="860px">
       <el-form :model="receiptForm" label-width="110px">
+        <SettlementAccounts v-model:company-account-id="receiptForm.company_account_id" v-model:counterparty-account-id="receiptForm.counterparty_account_id" :party-id="selectedOrder?.customer_id" direction="receipt" />
         <el-form-item label="客户订单">
           <el-select v-model="receiptForm.sales_order_id" filterable style="width: 100%">
             <el-option v-for="item in orders" :key="item.id" :label="`${item.order_no} / ${item.customer_name || '-'}`" :value="item.id" />
@@ -224,6 +226,7 @@
         <el-descriptions-item label="说明">仅支持同一客户的未结清客户订单合并提交收款确认</el-descriptions-item>
       </el-descriptions>
       <el-form :model="mergedReceiptForm" label-width="110px" class="mb-16">
+        <SettlementAccounts v-model:company-account-id="mergedReceiptForm.company_account_id" v-model:counterparty-account-id="mergedReceiptForm.counterparty_account_id" :party-id="mergedReceiptForm.customer_id" direction="receipt" />
         <el-form-item label="收款阶段">
           <el-select v-model="mergedReceiptForm.payment_stage" style="width: 100%">
             <el-option label="合并收款" value="mixed" />
@@ -320,6 +323,7 @@ import { useRouter } from 'vue-router'
 import { get, post } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import SettlementAccounts from '../../components/SettlementAccounts.vue'
 import { useFinanceAssignees } from '../../composables/useFinanceAssignees'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
@@ -339,6 +343,8 @@ const selectedOrderRows = ref([])
 const { financeAssignees, loadFinanceAssignees } = useFinanceAssignees()
 
 const receiptForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   sales_order_id: null,
   requested_amount: 0,
   payment_stage: 'deposit',
@@ -349,6 +355,8 @@ const receiptForm = reactive({
 })
 
 const mergedReceiptForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   customer_id: null,
   payment_stage: 'deposit',
   installment_total: null,
@@ -396,6 +404,8 @@ function resetReceiptForm() {
   receiptForm.installment_total = null
   receiptForm.installment_index = null
   receiptForm.remark = ''
+  receiptForm.company_account_id = null
+  receiptForm.counterparty_account_id = null
   receiptForm.assigned_finance_user_id = null
 }
 
@@ -405,6 +415,8 @@ function resetMergedReceiptForm() {
   mergedReceiptForm.installment_total = null
   mergedReceiptForm.installment_index = null
   mergedReceiptForm.remark = ''
+  mergedReceiptForm.company_account_id = null
+  mergedReceiptForm.counterparty_account_id = null
   mergedReceiptForm.items = []
   mergedReceiptForm.assigned_finance_user_id = null
 }
@@ -474,6 +486,7 @@ function canSubmitForOrder(row) {
 }
 
 async function submitReceiptRequest() {
+  if (!receiptForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (!receiptForm.sales_order_id || Number(receiptForm.requested_amount || 0) <= 0) {
     ElMessage.warning('请填写完整的收款确认信息')
     return
@@ -490,6 +503,7 @@ async function submitReceiptRequest() {
 }
 
 async function submitMergedReceiptRequest() {
+  if (!mergedReceiptForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (!mergedReceiptForm.items.length) {
     ElMessage.warning('请先选择客户订单')
     return
@@ -497,9 +511,12 @@ async function submitMergedReceiptRequest() {
   try {
     await post('/api/sales/settlements/receipt-requests/merged', {
       customer_id: mergedReceiptForm.customer_id,
+      assigned_finance_user_id: mergedReceiptForm.assigned_finance_user_id,
       payment_stage: mergedReceiptForm.payment_stage,
       installment_total: mergedReceiptForm.installment_total,
       installment_index: mergedReceiptForm.installment_index,
+      company_account_id: mergedReceiptForm.company_account_id,
+      counterparty_account_id: mergedReceiptForm.counterparty_account_id,
       remark: mergedReceiptForm.remark,
       items: mergedReceiptForm.items.map((item) => ({
         sales_order_id: item.sales_order_id,

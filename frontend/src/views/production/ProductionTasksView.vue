@@ -1104,6 +1104,7 @@ async function cancelDemand(row) {
   }
   await post(`/api/production/fulfillment-demands/${row.id}/cancel`, { reason: reason.trim() })
   ElMessage.success('补货需求已取消')
+  demandPagination.page = 1
   await load()
 }
 

@@ -204,6 +204,13 @@ export function put(url, data) {
   })
 }
 
+export function patch(url, data) {
+  return request(url, {
+    method: 'PATCH',
+    body: JSON.stringify(data)
+  })
+}
+
 export function remove(url) {
   return request(url, {
     method: 'DELETE',

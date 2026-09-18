@@ -10,7 +10,9 @@
 否则库管重复点击会看到同样的成功提示,分不清到底提没提、有没有提重。
 """
 
-from helpers import create_trade_product, uniq
+import pytest
+
+from helpers import create_production_product, create_trade_product, uniq
 
 
 def _customer(client, login) -> int:
@@ -49,10 +51,11 @@ def test_product_options_available_for_manual_demand(client, login):
     assert "fulfillment_mode" in rows[0], "缺少 fulfillment_mode,下拉 label 无法区分采购/生产"
 
 
-def _shortage_queue_row(client, login) -> tuple[dict, list[dict]]:
+def _shortage_queue_row(client, login, mode="trade") -> tuple[dict, list[dict]]:
     """造一张必然缺货的已审批订单,返回 (待置货行, 缺口明细)。"""
     customer_id = _customer(client, login)
-    product_id = create_trade_product(client, login)  # 不铺库存 -> 必然缺货
+    create_product = create_production_product if mode == "production" else create_trade_product
+    product_id = create_product(client, login)  # 不铺库存 -> 必然缺货
 
     login("sales01")
     resp = client.post(
@@ -65,7 +68,7 @@ def _shortage_queue_row(client, login) -> tuple[dict, list[dict]]:
             "payment_type": "货到付款",
             "order_type": "normal",
             "operator_user_id": None,
-            "items": [{"product_id": product_id, "quantity": 40, "unit_price": 100}],
+            "items": [{"product_id": product_id, "quantity": 40, "unit_price": 200 if mode == "production" else 100}],
         },
     )
     assert resp.status_code == 200, resp.text
@@ -174,3 +177,87 @@ def test_no_duplicate_demand_rows_in_db(client, login):
     assert len(rows) == len(shortages), (
         f"3 次提交后应仍只有 {len(shortages)} 条需求, 实际 {len(rows)} 条"
     )
+
+
+@pytest.mark.parametrize("mode,module,username", [
+    ("trade", "purchases", "purchase01"),
+    ("production", "production", "production01"),
+])
+def test_cancel_hides_pending_demand_and_allows_new_request(client, login, mode, module, username):
+    """取消退出待处理列表、保留历史，同一客户订单可重新生成不同单号。"""
+    from database import SessionLocal
+    from models import FulfillmentDemand, TodoItem
+    from sqlalchemy import select
+
+    row, shortages = _shortage_queue_row(client, login, mode)
+    endpoint = f"/api/inventory/queues/{row['queue_id']}/replenishment-demands"
+    payload = {"items": [
+        {"product_id": i["product_id"], "shortage_quantity": i["shortage_quantity"]}
+        for i in shortages
+    ]}
+    first = client.post(endpoint, json=payload)
+    assert first.status_code == 200, first.text
+    old = first.json()["data"]["demands"][0]
+    login(username)
+
+    def pending_list():
+        response = client.get(f"/api/{module}/fulfillment-demands", params={"page_size": 100})
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        return data["items"] if isinstance(data, dict) else data
+
+    assert any(d.get("demand_no") == old["demand_no"] for d in pending_list())
+    cancelled = client.post(f"/api/{module}/fulfillment-demands/{old['id']}/cancel", json={"reason": "客户调整需求"})
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["data"]["status"] == "cancelled"
+    assert all(d.get("demand_no") != old["demand_no"] for d in pending_list())
+
+    with SessionLocal() as db:
+        original = db.get(FulfillmentDemand, old["id"])
+        assert original.status == "cancelled"
+        assert original.cancel_reason == "客户调整需求"
+        todos = db.scalars(select(TodoItem).where(
+            TodoItem.business_type == "fulfillment_demand", TodoItem.business_id == old["id"],
+        )).all()
+        assert todos and all(t.status == "completed" for t in todos)
+
+    login("inventory01")
+    history = client.get("/api/inventory/fulfillment-demands")
+    assert history.status_code == 200, history.text
+    assert next(d for d in history.json()["data"] if d["id"] == old["id"])["status"] == "cancelled"
+    second = client.post(endpoint, json=payload)
+    assert second.status_code == 200, second.text
+    data = second.json()["data"]
+    assert data["new_count"] == 1 and data["reused_count"] == 0
+    new = data["demands"][0]
+    assert new["id"] != old["id"] and new["demand_no"] != old["demand_no"]
+    repeat = client.post(endpoint, json=payload)
+    assert repeat.status_code == 200, repeat.text
+    assert repeat.json()["data"]["new_count"] == 0
+    assert repeat.json()["data"]["demands"][0]["id"] == new["id"]
+    with SessionLocal() as db:
+        assert db.get(FulfillmentDemand, old["id"]).status == "cancelled"
+
+
+def test_pending_material_demand_is_still_reused(client, login):
+    """等待原料的生产需求仍有效，重复申请不能绕过去重。"""
+    from database import SessionLocal
+    from models import FulfillmentDemand
+
+    row, shortages = _shortage_queue_row(client, login, "production")
+    endpoint = f"/api/inventory/queues/{row['queue_id']}/replenishment-demands"
+    payload = {"items": [
+        {"product_id": i["product_id"], "shortage_quantity": i["shortage_quantity"]}
+        for i in shortages
+    ]}
+    first = client.post(endpoint, json=payload)
+    assert first.status_code == 200, first.text
+    demand_id = first.json()["data"]["demands"][0]["id"]
+    with SessionLocal() as db:
+        db.get(FulfillmentDemand, demand_id).status = "pending_material"
+        db.commit()
+    second = client.post(endpoint, json=payload)
+    assert second.status_code == 200, second.text
+    data = second.json()["data"]
+    assert data["new_count"] == 0 and data["reused_count"] == 1
+    assert data["demands"][0]["id"] == demand_id

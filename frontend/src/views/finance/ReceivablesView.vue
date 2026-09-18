@@ -118,7 +118,8 @@
             </el-table>
           </template>
         </el-table-column>
-        <el-table-column prop="request_no" label="申请单号" width="160" />
+        <el-table-column prop="company_account_label" label="企业账户" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="request_no" label="申请单号" width="160" />
         <el-table-column prop="merge_no" label="合并批次" width="140">
           <template #default="scope">{{ scope.row.merge_no || '-' }}</template>
         </el-table-column>
@@ -182,6 +183,7 @@
         <el-descriptions-item label="申请说明" :span="2">{{ activeReceiptRequest.remark_display || activeReceiptRequest.remark || '-' }}</el-descriptions-item>
       </el-descriptions>
       <el-form :model="receiptRegisterForm" label-width="110px">
+        <SettlementAccounts v-model:company-account-id="receiptRegisterForm.company_account_id" v-model:counterparty-account-id="receiptRegisterForm.counterparty_account_id" :party-id="activeReceiptRequest?.customer_id" :company-readonly="Boolean(activeReceiptRequest?.company_account_id)" :counterparty-readonly="Boolean(activeReceiptRequest?.counterparty_account_id)" direction="receipt" />
         <el-form-item label="付款方式">
           <el-select v-model="receiptRegisterForm.payment_type" style="width: 100%">
             <el-option v-for="item in PAYMENT_TYPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
@@ -256,6 +258,7 @@
         <el-descriptions-item label="实际总额">{{ formatNumber(mergedReceiptActualTotal) }}</el-descriptions-item>
       </el-descriptions>
       <el-form :model="mergedReceiptRegisterForm" label-width="100px" class="mb-16">
+        <SettlementAccounts v-model:company-account-id="mergedReceiptRegisterForm.company_account_id" v-model:counterparty-account-id="mergedReceiptRegisterForm.counterparty_account_id" :party-id="mergedReceiptRegisterForm.items[0]?.customer_id" :company-readonly="Boolean(mergedReceiptRegisterForm.items[0]?.company_account_id)" :counterparty-readonly="Boolean(mergedReceiptRegisterForm.items[0]?.counterparty_account_id)" direction="receipt" />
         <el-form-item label="付款方式">
           <el-select v-model="mergedReceiptRegisterForm.payment_type" style="width: 100%">
             <el-option v-for="item in PAYMENT_TYPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
@@ -337,6 +340,7 @@
         <el-descriptions-item label="说明">允许董事长或财务在应收管理中直接登记单笔或同客户多笔回款</el-descriptions-item>
       </el-descriptions>
       <el-form :model="directRegisterForm" label-width="100px" class="mb-16">
+        <SettlementAccounts v-model:company-account-id="directRegisterForm.company_account_id" v-model:counterparty-account-id="directRegisterForm.counterparty_account_id" :party-id="directRegisterForm.customer_id" direction="receipt" />
         <el-form-item label="回款阶段">
           <el-select v-model="directRegisterForm.payment_stage" style="width: 100%">
             <el-option label="直接登记" value="direct" />
@@ -415,6 +419,8 @@
 
     <PageSection title="回款记录" description="董事长确认通过后自动写入回款台账和资金流水，财务在此统一查看。">
       <el-table :data="pagedRecordRows" stripe>
+        <el-table-column prop="company_account_label" label="企业收款账户" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="counterparty_account_label" label="客户付款账户" min-width="240" show-overflow-tooltip />
         <el-table-column prop="sales_order_no" label="客户订单号" width="160" />
         <el-table-column prop="amount" label="回款金额" width="120">
           <template #default="scope">{{ formatNumber(scope.row.amount) }}</template>
@@ -562,6 +568,7 @@ import { get, post, put, remove, upload } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import DelayedActionButton from '../../components/DelayedActionButton.vue'
 import PageSection from '../../components/PageSection.vue'
+import SettlementAccounts from '../../components/SettlementAccounts.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { parseFocusId } from '../../composables/useRouteFocus'
 import { useAuthStore } from '../../stores/auth'
@@ -610,6 +617,8 @@ const focusedReceiptRequestId = ref(null)
 const selectedPendingOrders = ref([])
 const refundForm = reactive({ purchase_return_id: null, amount: 0, refunded_at: currentDateTime(), remark: '' })
 const receiptRegisterForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   actual_amount: 0,
   remark: '',
   payment_type: '先付定金后付尾款',
@@ -619,6 +628,8 @@ const receiptRegisterForm = reactive({
   release_to_inventory: false
 })
 const mergedReceiptRegisterForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   items: [],
   remark: '',
   payment_type: '先付定金后付尾款',
@@ -628,6 +639,8 @@ const mergedReceiptRegisterForm = reactive({
   release_to_inventory: false
 })
 const directRegisterForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   customer_id: null,
   items: [],
   payment_stage: 'direct',
@@ -845,6 +858,9 @@ function openReceiptRegister(row) {
         request_no: item.request_no,
         sales_order_id: item.sales_order_id,
         sales_order_no: item.sales_order_no,
+        customer_id: item.customer_id,
+        company_account_id: item.company_account_id,
+        counterparty_account_id: item.counterparty_account_id,
         customer_name: item.customer_name,
         payment_stage: item.payment_stage,
         payment_stage_label: item.payment_stage_label,
@@ -855,6 +871,8 @@ function openReceiptRegister(row) {
       mergedReceiptRegisterForm.remark = row.remark_display || row.remark || ''
       mergedReceiptRegisterForm.payment_type = row.payment_type || '先付定金后付尾款'
       mergedReceiptRegisterForm.receipt_method = row.receipt_method || ''
+      mergedReceiptRegisterForm.company_account_id = row.company_account_id || null
+      mergedReceiptRegisterForm.counterparty_account_id = row.counterparty_account_id || null
       mergedReceiptRegisterForm.bank_receipt_attachment_id = row.bank_receipt_attachment_id || null
       mergedReceiptRegisterForm.received_at = row.receipt_at || ''
       mergedReceiptRegisterForm.release_to_inventory = false
@@ -867,6 +885,8 @@ function openReceiptRegister(row) {
   receiptRegisterForm.remark = row.remark_display || row.remark || ''
   receiptRegisterForm.payment_type = row.payment_type || '先付定金后付尾款'
   receiptRegisterForm.receipt_method = row.receipt_method || ''
+  receiptRegisterForm.company_account_id = row.company_account_id || null
+  receiptRegisterForm.counterparty_account_id = row.counterparty_account_id || null
   receiptRegisterForm.bank_receipt_attachment_id = row.bank_receipt_attachment_id || null
   receiptRegisterForm.received_at = row.receipt_at || ''
   receiptRegisterForm.release_to_inventory = false
@@ -891,7 +911,10 @@ function openDirectRegisterDialog() {
   directRegisterForm.items = selectedPendingOrders.value.map((item) => ({
     sales_order_id: item.id,
     order_no: item.order_no,
-    customer_name: item.customer_name,
+    customer_id: item.customer_id,
+        company_account_id: item.company_account_id,
+        counterparty_account_id: item.counterparty_account_id,
+        customer_name: item.customer_name,
     remaining_amount: Number(item.remaining_amount || 0),
     amount: Number(item.remaining_amount || 0),
     items: item.items || []
@@ -899,6 +922,8 @@ function openDirectRegisterDialog() {
   directRegisterForm.payment_stage = 'direct'
   directRegisterForm.remark = ''
   directRegisterForm.receipt_method = ''
+  directRegisterForm.company_account_id = null
+  directRegisterForm.counterparty_account_id = null
   directRegisterForm.bank_receipt_attachment_id = null
   directRegisterForm.received_at = currentDateTime()
   directRegisterForm.release_to_inventory = false
@@ -907,6 +932,7 @@ function openDirectRegisterDialog() {
 }
 
 async function submitReceiptRegister() {
+  if (!receiptRegisterForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (!activeReceiptRequest.value || Number(receiptRegisterForm.actual_amount || 0) <= 0) {
     ElMessage.warning('请填写实际入账金额')
     return
@@ -916,6 +942,8 @@ async function submitReceiptRegister() {
     await post(`/api/finance/receivables/receipt-requests/${activeReceiptRequest.value.id}/register`, {
       sales_receipt_request_id: activeReceiptRequest.value.id,
       actual_amount: receiptRegisterForm.actual_amount,
+      company_account_id: receiptRegisterForm.company_account_id,
+      counterparty_account_id: receiptRegisterForm.counterparty_account_id,
       remark: receiptRegisterForm.remark,
       payment_type: receiptRegisterForm.payment_type,
       receipt_method: receiptRegisterForm.receipt_method || null,
@@ -932,6 +960,7 @@ async function submitReceiptRegister() {
 }
 
 async function submitMergedReceiptRegister() {
+  if (!mergedReceiptRegisterForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (!mergedReceiptRegisterForm.items.length) {
     ElMessage.warning('当前没有可确认的收款申请')
     return
@@ -940,6 +969,8 @@ async function submitMergedReceiptRegister() {
     const uploadedId = await uploadReceiptFileIfNeeded('merged', 'sales_receipt_request', mergedReceiptRegisterForm.items[0]?.id)
     await post('/api/finance/receivables/receipt-requests/merged-register', {
       payment_type: mergedReceiptRegisterForm.payment_type,
+      company_account_id: mergedReceiptRegisterForm.company_account_id,
+      counterparty_account_id: mergedReceiptRegisterForm.counterparty_account_id,
       remark: mergedReceiptRegisterForm.remark,
       receipt_method: mergedReceiptRegisterForm.receipt_method || null,
       bank_receipt_attachment_id: uploadedId || mergedReceiptRegisterForm.bank_receipt_attachment_id || null,
@@ -960,6 +991,7 @@ async function submitMergedReceiptRegister() {
 }
 
 async function submitDirectRegister() {
+  if (!directRegisterForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (!directRegisterForm.items.length) {
     ElMessage.warning('请先选择客户订单')
     return
@@ -969,6 +1001,8 @@ async function submitDirectRegister() {
     await post('/api/finance/receivables/direct-register', {
       customer_id: directRegisterForm.customer_id,
       payment_stage: directRegisterForm.payment_stage,
+      company_account_id: directRegisterForm.company_account_id,
+      counterparty_account_id: directRegisterForm.counterparty_account_id,
       remark: directRegisterForm.remark,
       receipt_method: directRegisterForm.receipt_method || null,
       bank_receipt_attachment_id: uploadedId || directRegisterForm.bank_receipt_attachment_id || null,
@@ -984,6 +1018,8 @@ async function submitDirectRegister() {
     directRegisterForm.customer_id = null
     directRegisterForm.items = []
     directRegisterForm.receipt_method = ''
+    directRegisterForm.company_account_id = null
+    directRegisterForm.counterparty_account_id = null
     directRegisterForm.bank_receipt_attachment_id = null
     directRegisterForm.received_at = ''
     directRegisterForm.release_to_inventory = false

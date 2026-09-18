@@ -2,6 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
+from schemas.accounts import SettlementAccountInput
 
 
 class PurchaseOrderItemInput(BaseModel):
@@ -88,6 +89,7 @@ class PurchaseFundApprovalRequest(BaseModel):
 
 
 class PurchasePaymentRequestCreate(BaseModel):
+    counterparty_account_id: int | None = Field(default=None, gt=0)
     purchase_order_id: int
     requested_amount: Decimal = Field(..., gt=0)
     order_amount: Decimal = Field(..., ge=0)
@@ -103,13 +105,14 @@ class PurchaseMergedPaymentItem(BaseModel):
 
 
 class PurchaseMergedPaymentRequestCreate(BaseModel):
+    counterparty_account_id: int | None = Field(default=None, gt=0)
     supplier_id: int | None = None
     items: list[PurchaseMergedPaymentItem]
     payment_detail_remark: str | None = None
     assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
 
 
-class PurchasePaymentApprovalRequest(BaseModel):
+class PurchasePaymentApprovalRequest(SettlementAccountInput):
     decision: str = Field(..., pattern="^(approved|rejected)$")
     actual_amount: Decimal = Field(..., gt=0)
     manager_remark: str | None = None

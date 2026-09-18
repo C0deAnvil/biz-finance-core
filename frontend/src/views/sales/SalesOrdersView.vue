@@ -219,10 +219,10 @@
           <el-button v-if="canEditOrderForm" size="small" @click="addItem">新增明细</el-button>
         </div>
         <el-table :data="form.items" border>
-          <el-table-column label="产品" min-width="200">
+          <el-table-column label="产品编号 - 名称 - 规格" min-width="340">
             <template #default="scope">
               <el-select v-model="scope.row.product_id" filterable style="width: 100%" :disabled="!canEditOrderForm" @change="() => handleProductSelect(scope.row)">
-                <el-option v-for="item in products" :key="item.id" :label="item.name" :value="item.id" />
+                <el-option v-for="item in products" :key="item.id" :label="[item.product_code, item.name, item.specification || '无规格'].join(' - ')" :value="item.id" />
               </el-select>
             </template>
           </el-table-column>
@@ -1136,6 +1136,22 @@ async function submit() {
 
   dialogSubmitting.value = true
   try {
+    const customer = customers.value.find(item => item.id === payload.customer_id)
+    const originalAddress = String(customer?.address || '').trim()
+    if (customer && payload.delivery_address !== originalAddress) {
+      try {
+        await ElMessageBox.confirm(
+          `本单收货地址与客户档案不同。是否同步更新客户地址？\n原地址：${originalAddress || '未填写'}\n新地址：${payload.delivery_address}`,
+          '同步客户地址',
+          { confirmButtonText: '是，更新客户地址', cancelButtonText: '否，仅保存本单', distinguishCancelAndClose: true, type: 'warning' }
+        )
+        payload.update_customer_address = true
+        payload.customer_address_before = originalAddress
+      } catch (action) {
+        if (action === 'close') return
+        if (action !== 'cancel') throw action
+      }
+    }
     if (editingId.value) {
       await put(`/api/sales/orders/${editingId.value}`, payload)
       ElMessage.success('订单已更新')
@@ -1148,6 +1164,7 @@ async function submit() {
       )
       ElMessage.success(`订单已创建：${result.order_no}`)
     }
+    if (payload.update_customer_address && customer) customer.address = payload.delivery_address
     dialogVisible.value = false
     resetForm()
     // 新建/编辑后落的是草稿,跳草稿页才能看到刚保存的单(原先跳"审核中"会显示不出来)

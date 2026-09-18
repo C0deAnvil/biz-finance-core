@@ -478,6 +478,8 @@ class Supplier(TimestampMixin, Base):
 
     created_by = relationship("User", foreign_keys=[created_by_id])
 
+    financial_accounts = relationship("FinancialAccount", foreign_keys="FinancialAccount.supplier_id", viewonly=True)
+
 
 class SupplierTag(TimestampMixin, Base):
     __tablename__ = "supplier_tags"
@@ -578,6 +580,41 @@ class Warehouse(TimestampMixin, Base):
     manager_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
+class FinancialAccount(TimestampMixin, Base):
+    __tablename__ = "financial_accounts"
+
+    id = Column(Integer, primary_key=True)
+    owner_type = Column(String(20), nullable=False, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True, index=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True, index=True)
+    account_name = Column(String(150), nullable=False)
+    bank_name = Column(String(150), nullable=False)
+    account_number = Column(String(80), nullable=False)
+    currency = Column(String(3), nullable=False, default="CNY")
+    is_active = Column(Boolean, nullable=False, default=True)
+    remark = Column(String(500), nullable=True)
+    customer = relationship("Customer")
+    supplier = relationship("Supplier")
+    transactions = relationship("FinancialAccountTransaction", foreign_keys="FinancialAccountTransaction.account_id", viewonly=True)
+
+
+class FinancialAccountTransaction(TimestampMixin, Base):
+    """账户参考余额流水；amount 为该账户的增减额，可为负数。"""
+    __tablename__ = "financial_account_transactions"
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=False, index=True)
+    related_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True, index=True)
+    transaction_type = Column(String(30), nullable=False)  # adjustment / transfer_in / transfer_out
+    amount = Column(Numeric(18, 2), nullable=False)
+    reference_no = Column(String(60), nullable=False, index=True)
+    remark = Column(String(500), nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    account = relationship("FinancialAccount", foreign_keys=[account_id])
+    related_account = relationship("FinancialAccount", foreign_keys=[related_account_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
 class Product(TimestampMixin, Base):
     __tablename__ = "products"
 
@@ -589,7 +626,7 @@ class Product(TimestampMixin, Base):
     unit = Column(String(20), nullable=False, default="kg")
     safety_stock_qty = Column(Numeric(18, 4), nullable=False, default=0)
     purchase_threshold_qty = Column(Numeric(18, 4), nullable=False, default=0)
-    fulfillment_mode = Column(String(30), nullable=False, default="production")
+    fulfillment_mode = Column(String(30), nullable=False, default="trade", server_default="trade")
     is_active = Column(Boolean, nullable=False, default=True)
 
     def __repr__(self):
@@ -1049,6 +1086,11 @@ class PurchaseReturn(TimestampMixin, Base):
 class PurchasePaymentRequest(TimestampMixin, Base):
     __tablename__ = "purchase_payment_requests"
 
+    company_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    counterparty_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    company_account = relationship("FinancialAccount", foreign_keys=[company_account_id])
+    counterparty_account = relationship("FinancialAccount", foreign_keys=[counterparty_account_id])
+
     id = Column(Integer, primary_key=True)
     request_no = Column(String(60), nullable=False, unique=True)
     purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)
@@ -1307,6 +1349,11 @@ class QualityCostRecord(TimestampMixin, Base):
 class SalesReceiptRequest(TimestampMixin, Base):
     __tablename__ = "sales_receipt_requests"
 
+    company_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    counterparty_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    company_account = relationship("FinancialAccount", foreign_keys=[company_account_id])
+    counterparty_account = relationship("FinancialAccount", foreign_keys=[counterparty_account_id])
+
     id = Column(Integer, primary_key=True)
     request_no = Column(String(60), nullable=False, unique=True)
     sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
@@ -1353,6 +1400,11 @@ class ReceivablePlan(TimestampMixin, Base):
 class ReceivableRecord(TimestampMixin, Base):
     __tablename__ = "receivable_records"
 
+    company_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    counterparty_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    company_account = relationship("FinancialAccount", foreign_keys=[company_account_id])
+    counterparty_account = relationship("FinancialAccount", foreign_keys=[counterparty_account_id])
+
     id = Column(Integer, primary_key=True)
     sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False)
     receivable_plan_id = Column(Integer, ForeignKey("receivable_plans.id"), nullable=True)
@@ -1370,6 +1422,11 @@ class ReceivableRecord(TimestampMixin, Base):
 
 class PayableRecord(TimestampMixin, Base):
     __tablename__ = "payable_records"
+
+    company_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    counterparty_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True)
+    company_account = relationship("FinancialAccount", foreign_keys=[company_account_id])
+    counterparty_account = relationship("FinancialAccount", foreign_keys=[counterparty_account_id])
 
     id = Column(Integer, primary_key=True)
     purchase_order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False)

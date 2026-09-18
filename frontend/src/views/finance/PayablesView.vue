@@ -119,7 +119,8 @@
           <el-table-column prop="merge_no" label="合并批次" width="140">
             <template #default="scope">{{ scope.row.merge_no || '-' }}</template>
           </el-table-column>
-          <el-table-column prop="request_no" label="申请单号" width="160" />
+          <el-table-column prop="company_account_label" label="企业账户" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="request_no" label="申请单号" width="160" />
           <el-table-column prop="purchase_order_no" label="采购单号" width="160" />
           <el-table-column prop="supplier_name" label="供应商" min-width="180" />
           <el-table-column prop="arrival_status_label" label="到货状态" width="120">
@@ -181,6 +182,8 @@
         </template>
 
         <el-table :data="pagedRecords" stripe :row-class-name="recordRowClassName">
+          <el-table-column prop="company_account_label" label="企业付款账户" min-width="240" show-overflow-tooltip />
+          <el-table-column prop="counterparty_account_label" label="供应商收款账户" min-width="240" show-overflow-tooltip />
           <el-table-column prop="merge_no" label="合并批次" width="140">
             <template #default="scope">{{ scope.row.merge_no || '-' }}</template>
           </el-table-column>
@@ -255,6 +258,7 @@
         </el-table-column>
       </el-table>
       <el-form :model="paymentRegisterForm" label-width="110px">
+        <SettlementAccounts v-model:company-account-id="paymentRegisterForm.company_account_id" v-model:counterparty-account-id="paymentRegisterForm.counterparty_account_id" :party-id="activePaymentRequest?.supplier_id" :counterparty-readonly="Boolean(activePaymentRequest?.counterparty_account_id)" direction="payment" />
         <el-form-item label="实际出账金额">
           <el-input-number v-model="paymentRegisterForm.actual_amount" :min="0.01" :precision="2" style="width: 100%" />
         </el-form-item>
@@ -330,6 +334,7 @@
         </el-table-column>
       </el-table>
       <el-form class="mt-16" :model="mergedPaymentRequestForm" label-width="100px">
+        <SettlementAccounts v-model:company-account-id="mergedPaymentRequestForm.company_account_id" v-model:counterparty-account-id="mergedPaymentRequestForm.counterparty_account_id" :party-id="mergedPaymentRequestForm.items[0]?.supplier_id" :counterparty-readonly="Boolean(mergedPaymentRequestForm.items[0]?.counterparty_account_id)" direction="payment" />
         <el-form-item label="付款方式">
           <div class="method-select-line">
             <el-select v-model="mergedPaymentRequestForm.payment_method" filterable allow-create default-first-option style="width: 100%" placeholder="请选择或新增付款方式">
@@ -402,6 +407,7 @@
         </el-table-column>
       </el-table>
       <el-form class="mt-16" :model="mergedRegisterForm" label-width="100px">
+        <SettlementAccounts v-model:company-account-id="mergedRegisterForm.company_account_id" v-model:counterparty-account-id="mergedRegisterForm.counterparty_account_id" :party-id="mergedRegisterForm.supplier_id" direction="payment" />
         <el-form-item label="付款方式">
           <div class="method-select-line">
             <el-select v-model="mergedRegisterForm.payment_method" filterable allow-create default-first-option style="width: 100%" placeholder="请选择或新增付款方式">
@@ -493,6 +499,7 @@ import { get, post, put, remove, upload } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import DelayedActionButton from '../../components/DelayedActionButton.vue'
 import PageSection from '../../components/PageSection.vue'
+import SettlementAccounts from '../../components/SettlementAccounts.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { parseFocusId } from '../../composables/useRouteFocus'
 import { useAuthStore } from '../../stores/auth'
@@ -522,6 +529,8 @@ const mergedRegisterVisible = ref(false)
 const activePaymentRequest = ref(null)
 const selectedPendingOrders = ref([])
 const paymentRegisterForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   actual_amount: 0,
   remark: '',
   payment_method: '',
@@ -529,6 +538,8 @@ const paymentRegisterForm = reactive({
   paid_at: ''
 })
 const mergedRegisterForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   supplier_id: null,
   items: [],
   remark: '',
@@ -537,6 +548,8 @@ const mergedRegisterForm = reactive({
   paid_at: ''
 })
 const mergedPaymentRequestForm = reactive({
+  company_account_id: null,
+  counterparty_account_id: null,
   items: [],
   remark: '',
   payment_method: '',
@@ -741,6 +754,8 @@ function openPaymentRegister(row) {
         request_no: item.request_no,
         purchase_order_id: item.purchase_order_id,
         purchase_order_no: item.purchase_order_no,
+        supplier_id: item.supplier_id,
+        counterparty_account_id: item.counterparty_account_id,
         supplier_name: item.supplier_name,
         requested_amount: Number(item.requested_amount || 0),
         order_amount: Number(item.order_amount || 0),
@@ -749,6 +764,8 @@ function openPaymentRegister(row) {
         items: item.items || []
       }))
       mergedPaymentRequestForm.remark = row.payment_detail_remark_display || row.payment_detail_remark || ''
+      mergedPaymentRequestForm.company_account_id = row.company_account_id || null
+      mergedPaymentRequestForm.counterparty_account_id = row.counterparty_account_id || null
       mergedPaymentRequestVisible.value = true
       return
     }
@@ -757,6 +774,8 @@ function openPaymentRegister(row) {
   paymentRegisterForm.actual_amount = Number(row.requested_amount || row.actual_amount || 0)
   paymentRegisterForm.remark = row.payment_detail_remark_display || row.payment_detail_remark || ''
   paymentRegisterForm.payment_method = row.payment_method || ''
+  paymentRegisterForm.company_account_id = row.company_account_id || null
+  paymentRegisterForm.counterparty_account_id = row.counterparty_account_id || null
   paymentRegisterForm.bank_receipt_attachment_id = row.bank_receipt_attachment_id || null
   paymentRegisterForm.paid_at = row.paid_at || currentDateTime()
   selectedPaymentFiles.single = null
@@ -777,7 +796,9 @@ function openMergedRegisterDialog() {
   mergedRegisterForm.items = selectedPendingOrders.value.map((item) => ({
     purchase_order_id: item.id,
     order_no: item.order_no,
-    supplier_name: item.supplier_name,
+    supplier_id: item.supplier_id,
+        counterparty_account_id: item.counterparty_account_id,
+        supplier_name: item.supplier_name,
     item_summary: item.item_summary,
     items: item.items || [],
     remaining_amount: Number(item.remaining_amount || 0),
@@ -786,6 +807,8 @@ function openMergedRegisterDialog() {
   }))
   mergedRegisterForm.remark = ''
   mergedRegisterForm.payment_method = ''
+  mergedRegisterForm.company_account_id = null
+  mergedRegisterForm.counterparty_account_id = null
   mergedRegisterForm.bank_receipt_attachment_id = null
   mergedRegisterForm.paid_at = currentDateTime()
   selectedPaymentFiles.direct = null
@@ -799,6 +822,7 @@ function currentDateTime() {
 }
 
 async function submitPaymentRegister() {
+  if (!paymentRegisterForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (paymentRegisterSubmitting.value) return
   if (!activePaymentRequest.value || Number(paymentRegisterForm.actual_amount || 0) <= 0) {
     ElMessage.warning('请填写实际出账金额')
@@ -810,6 +834,8 @@ async function submitPaymentRegister() {
     await post(`/api/finance/payables/payment-requests/${activePaymentRequest.value.id}/register`, {
       purchase_payment_request_id: activePaymentRequest.value.id,
       actual_amount: paymentRegisterForm.actual_amount,
+      company_account_id: paymentRegisterForm.company_account_id,
+      counterparty_account_id: paymentRegisterForm.counterparty_account_id,
       remark: paymentRegisterForm.remark,
       payment_method: paymentRegisterForm.payment_method || null,
       bank_receipt_attachment_id: uploadedId || paymentRegisterForm.bank_receipt_attachment_id || null,
@@ -826,6 +852,7 @@ async function submitPaymentRegister() {
 }
 
 async function submitMergedRegister() {
+  if (!mergedRegisterForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (paymentRegisterSubmitting.value) return
   if (mergedRegisterForm.items.length < 1 || !mergedRegisterForm.supplier_id) {
     ElMessage.warning('请先选择同一供应商的采购订单')
@@ -837,6 +864,8 @@ async function submitMergedRegister() {
     await post('/api/finance/payables/merged-register', {
       supplier_id: mergedRegisterForm.supplier_id,
       actual_amount: mergedActualAmount.value,
+      company_account_id: mergedRegisterForm.company_account_id,
+      counterparty_account_id: mergedRegisterForm.counterparty_account_id,
       remark: mergedRegisterForm.remark,
       payment_method: mergedRegisterForm.payment_method || null,
       bank_receipt_attachment_id: uploadedId || mergedRegisterForm.bank_receipt_attachment_id || null,
@@ -853,6 +882,8 @@ async function submitMergedRegister() {
     mergedRegisterForm.items = []
     mergedRegisterForm.remark = ''
     mergedRegisterForm.payment_method = ''
+    mergedRegisterForm.company_account_id = null
+    mergedRegisterForm.counterparty_account_id = null
     mergedRegisterForm.bank_receipt_attachment_id = null
     mergedRegisterForm.paid_at = ''
     await load()
@@ -864,6 +895,7 @@ async function submitMergedRegister() {
 }
 
 async function submitMergedPaymentRequestRegister() {
+  if (!mergedPaymentRequestForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
   if (paymentRegisterSubmitting.value) return
   if (!mergedPaymentRequestForm.items.length) {
     ElMessage.warning('当前没有可登记的付款申请')
@@ -873,6 +905,8 @@ async function submitMergedPaymentRequestRegister() {
   try {
     const uploadedId = await uploadPaymentFileIfNeeded('mergedRequest', 'purchase_payment_request', mergedPaymentRequestForm.items[0]?.id)
     await post('/api/finance/payables/payment-requests/merged-register', {
+      company_account_id: mergedPaymentRequestForm.company_account_id,
+      counterparty_account_id: mergedPaymentRequestForm.counterparty_account_id,
       remark: mergedPaymentRequestForm.remark,
       payment_method: mergedPaymentRequestForm.payment_method || null,
       bank_receipt_attachment_id: uploadedId || mergedPaymentRequestForm.bank_receipt_attachment_id || null,

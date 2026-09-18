@@ -663,7 +663,10 @@ def list_purchase_fulfillment_demands(
     query = (
         select(FulfillmentDemand)
         .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
-        .where(FulfillmentDemand.fulfillment_mode == "trade")
+        .where(
+            FulfillmentDemand.fulfillment_mode == "trade",
+            FulfillmentDemand.status != "cancelled",
+        )
         .order_by(FulfillmentDemand.created_at.desc(), FulfillmentDemand.id.desc())
     )
     if current_user.role.code == "purchase":

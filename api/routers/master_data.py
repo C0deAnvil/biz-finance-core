@@ -3,9 +3,10 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
+from models import FinancialAccount
 from dependencies import get_current_user, require_roles
 from models import (
     BOM,
@@ -39,7 +40,7 @@ from models import (
 from responses import api_response
 from schemas.master_data import CustomerComplaintCreate, CustomerComplaintUpdate, CustomerCreate, CustomerTransferCreate, MaterialCreate, PackagingConfigCreate, ProductCreate, StandardPriceUpdate, SupplierCatalogItemInput, SupplierCreate
 from services.core import _role_user_ids, create_notification, create_todo, next_business_no, write_operation_log
-from services.replenishment_service import product_expected_available_quantity
+from services.inventory_availability import placeable_of, replenishment_available_of, purchase_in_transit_map, stock_key
 from services.display import get_global_packaging_name, packaging_name_needs_repair, packaging_spec_text, upsert_default_packaging_config
 from services.customer_activity import register_customer_transfer
 from services.organization import get_department_path_names
@@ -248,6 +249,8 @@ def _serialize_customer_complaint(row: CustomerComplaint) -> dict:
 
 
 def _serialize_supplier(row: Supplier, order_count: int = 0, tags: list[str] | None = None) -> dict:
+    accounts = sorted((a for a in row.financial_accounts if a.is_active), key=lambda a: a.id, reverse=True)
+    account = accounts[0] if accounts else None
     return {
         "id": row.id,
         "code": row.code,
@@ -261,8 +264,8 @@ def _serialize_supplier(row: Supplier, order_count: int = 0, tags: list[str] | N
         "supplier_type": row.supplier_type,
         "supplier_type_label": supplier_type_label(row.supplier_type),
         "website": row.website,
-        "bank_name": row.bank_name,
-        "bank_account": row.bank_account,
+        "bank_name": account.bank_name if account else None,
+        "bank_account": account.account_number if account else None,
         "remark": row.remark,
         "tags": tags if tags is not None else [],
         "purchase_order_count": order_count,
@@ -355,37 +358,22 @@ def _load_stock_map(db: Session, *, item_type: str, item_ids: list[int] | None =
     filters = [group_field.is_not(None), Warehouse.warehouse_type == warehouse_type]
     if item_ids is not None:
         filters.append(group_field.in_(item_ids or [-1]))
-    rows = db.execute(
-        select(
-            group_field,
-            func.coalesce(func.sum(Inventory.quantity), 0),
-            func.coalesce(func.sum(Inventory.reserved_quantity), 0),
-        )
-        .join(Warehouse, Warehouse.id == Inventory.warehouse_id)
-        .where(*filters)
-        .group_by(group_field)
-    ).all()
-    stock_map = {
-        item_id: {
-            "quantity": float(quantity or 0),
-            "reserved_quantity": float(reserved_quantity or 0),
-            "available_quantity": float(Decimal(quantity or 0) - Decimal(reserved_quantity or 0)),
-        }
-        for item_id, quantity, reserved_quantity in rows
-    }
-    if item_type == "product":
-        inventory_map = {
-            row.product_id: row
-            for row in db.execute(
-                select(Inventory)
-                .join(Warehouse, Warehouse.id == Inventory.warehouse_id)
-                .where(Inventory.product_id.is_not(None), Warehouse.warehouse_type == "finished")
-            ).scalars().all()
-        }
-        for item_id, stock in stock_map.items():
-            stock["expected_available_quantity"] = float(
-                product_expected_available_quantity(db, product_id=item_id, inventory=inventory_map.get(item_id))
-            )
+    rows = db.scalars(select(Inventory).join(Warehouse, Warehouse.id == Inventory.warehouse_id).where(*filters)).all()
+    stock_map = {}
+    transit_map = purchase_in_transit_map(db) if item_type == "product" else {}
+    for row in rows:
+        item_id = row.product_id if item_type == "product" else row.material_id
+        stock = stock_map.setdefault(item_id, {"quantity": 0, "reserved_quantity": 0,
+                                               "available_quantity": 0, "expected_available_quantity": 0})
+        stock["quantity"] += Decimal(row.quantity or 0)
+        stock["reserved_quantity"] += Decimal(row.reserved_quantity or 0)
+        stock["available_quantity"] += placeable_of(row)
+        stock["expected_available_quantity"] += replenishment_available_of(row)
+    for item_id, stock in stock_map.items():
+        if item_type == "product":
+            stock["expected_available_quantity"] += transit_map.get(stock_key(product_id=item_id), Decimal("0"))
+        for field, value in stock.items():
+            stock[field] = float(value)
     return stock_map
 
 
@@ -672,7 +660,10 @@ def transfer_customer(
 
 
 def _customer_has_relations(db: Session, customer_id: int) -> bool:
-    return db.execute(select(SalesOrder.id).where(SalesOrder.customer_id == customer_id)).first() is not None
+    return (
+        db.execute(select(SalesOrder.id).where(SalesOrder.customer_id == customer_id)).first() is not None
+        or db.execute(select(FinancialAccount.id).where(FinancialAccount.customer_id == customer_id)).first() is not None
+    )
 
 
 @router.delete("/customers/{customer_id}")
@@ -685,7 +676,7 @@ def delete_customer(
     if customer is None:
         raise HTTPException(status_code=404, detail="客户不存在")
     if _customer_has_relations(db, customer_id):
-        raise HTTPException(status_code=409, detail="客户已关联销售订单，不可删除")
+        raise HTTPException(status_code=409, detail="客户已关联销售订单或收付款账户，不可删除")
     db.execute(delete(CustomerTag).where(CustomerTag.customer_id == customer_id))
     db.delete(customer)
     db.commit()
@@ -787,7 +778,7 @@ def update_customer_complaint(
 
 @router.get("/suppliers")
 def list_suppliers(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rows = db.execute(select(Supplier).order_by(Supplier.created_at.desc())).scalars().all()
+    rows = db.execute(select(Supplier).options(selectinload(Supplier.financial_accounts)).order_by(Supplier.created_at.desc())).scalars().all()
     order_counts = {
         supplier_id: count
         for supplier_id, count in db.execute(
@@ -838,13 +829,21 @@ def create_supplier(
         unified_social_credit_code=credit_code,
         supplier_type=payload.supplier_type,
         website=(payload.website or "").strip() or None,
-        bank_name=(payload.bank_name or "").strip() or None,
-        bank_account=(payload.bank_account or "").strip() or None,
+
         remark=(payload.remark or "").strip() or None,
         created_by_id=current_user.id,
     )
     db.add(supplier)
     db.flush()
+    if (payload.bank_name or "").strip() and (payload.bank_account or "").strip():
+        existing_account = db.scalar(select(FinancialAccount.id).where(
+            FinancialAccount.supplier_id == supplier.id,
+            FinancialAccount.bank_name == payload.bank_name.strip(),
+            FinancialAccount.account_number == payload.bank_account.strip()))
+        if not existing_account:
+            db.add(FinancialAccount(owner_type="supplier", supplier_id=supplier.id,
+                                    account_name=supplier.name, bank_name=payload.bank_name.strip(),
+                                    account_number=payload.bank_account.strip(), currency="CNY"))
     _sync_supplier_tags(db, supplier, payload.tags, current_user)
     db.commit()
     db.refresh(supplier)
@@ -872,13 +871,22 @@ def update_supplier(
         if duplicate_code:
             raise HTTPException(status_code=409, detail="该统一社会信用代码对应供应商已存在，不能重复建档")
     for field, value in payload.model_dump(exclude_unset=True).items():
-        if field == "tags":
+        if field in {"tags", "bank_name", "bank_account"}:
             continue
         if field == "unified_social_credit_code":
             value = credit_code
         elif field in {"website", "bank_name", "bank_account", "remark"}:
             value = (value or "").strip() or None
         setattr(supplier, field, value)
+    if (payload.bank_name or "").strip() and (payload.bank_account or "").strip():
+        existing_account = db.scalar(select(FinancialAccount.id).where(
+            FinancialAccount.supplier_id == supplier.id,
+            FinancialAccount.bank_name == payload.bank_name.strip(),
+            FinancialAccount.account_number == payload.bank_account.strip()))
+        if not existing_account:
+            db.add(FinancialAccount(owner_type="supplier", supplier_id=supplier.id,
+                                    account_name=supplier.name, bank_name=payload.bank_name.strip(),
+                                    account_number=payload.bank_account.strip(), currency="CNY"))
     _sync_supplier_tags(db, supplier, payload.tags, current_user)
     db.commit()
     db.refresh(supplier)
@@ -1002,7 +1010,10 @@ def replace_supplier_catalog(
 
 
 def _supplier_has_relations(db: Session, supplier_id: int) -> bool:
-    return db.execute(select(PurchaseOrder.id).where(PurchaseOrder.supplier_id == supplier_id)).first() is not None
+    return (
+        db.execute(select(PurchaseOrder.id).where(PurchaseOrder.supplier_id == supplier_id)).first() is not None
+        or db.execute(select(FinancialAccount.id).where(FinancialAccount.supplier_id == supplier_id)).first() is not None
+    )
 
 
 @router.delete("/suppliers/{supplier_id}")

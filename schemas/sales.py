@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
+from schemas.accounts import SettlementAccountInput
 
 
 class SalesOrderItemInput(BaseModel):
@@ -14,6 +15,8 @@ class SalesOrderItemInput(BaseModel):
 
 
 class SalesOrderCreate(BaseModel):
+    update_customer_address: bool = False
+    customer_address_before: str | None = Field(default=None, max_length=255)
     customer_id: int
     operator_user_id: int | None = None
     consignee: str = Field(..., max_length=100)
@@ -29,6 +32,8 @@ class SalesOrderCreate(BaseModel):
 
 
 class SalesOrderUpdate(BaseModel):
+    update_customer_address: bool = False
+    customer_address_before: str | None = Field(default=None, max_length=255)
     customer_id: int
     operator_user_id: int | None = None
     consignee: str = Field(..., max_length=100)
@@ -111,7 +116,7 @@ class SalesOrderSubmitRequest(BaseModel):
     assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
 
 
-class SalesReceiptRequestCreate(BaseModel):
+class SalesReceiptRequestCreate(SettlementAccountInput):
     sales_order_id: int
     requested_amount: Decimal = Field(..., gt=0)
     payment_stage: str = Field(..., pattern="^(deposit|balance|cod_full|pre_shipment_full|installment)$")
@@ -126,7 +131,7 @@ class SalesMergedReceiptRequestItem(BaseModel):
     requested_amount: Decimal = Field(..., gt=0)
 
 
-class SalesMergedReceiptRequestCreate(BaseModel):
+class SalesMergedReceiptRequestCreate(SettlementAccountInput):
     customer_id: int | None = None
     payment_stage: str = Field(..., pattern="^(deposit|balance|cod_full|pre_shipment_full|installment|mixed)$")
     installment_total: int | None = Field(default=None, ge=1, le=24)

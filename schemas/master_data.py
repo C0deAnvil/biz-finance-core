@@ -75,7 +75,7 @@ class ProductCreate(BaseModel):
     unit: str = Field(default="kg", max_length=20)
     safety_stock_qty: Decimal = 0
     purchase_threshold_qty: Decimal = 0
-    fulfillment_mode: str = Field(default="production", pattern="^(production|trade)$")
+    fulfillment_mode: str = Field(default="trade", pattern="^(production|trade)$")
     is_active: bool = True
 
 
