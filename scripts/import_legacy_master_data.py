@@ -965,7 +965,8 @@ def import_customers(
             name=name,
             contact_name=truncate(first_nonempty(row.get("Person"), row.get("linker")), 100),
             phone=truncate(first_nonempty(row.get("moPhone"), row.get("linkerTel"), row.get("TelAndAddress")), 30),
-            address=truncate(first_nonempty(row.get("TelAndAddress"), row.get("Area")), 255),
+            # 旧库 Area 为详细地址，TelAndAddress 实际为电话（旧视图命名为 BPhoneNumber）。
+            address=truncate(row.get("Area"), 255),
             region_province=detect_province(row.get("Area"), row.get("TelAndAddress")),
             unified_social_credit_code=credit_code or None,
             source_type="company_transfer",
@@ -1063,7 +1064,7 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
             name=name,
             contact_name=truncate(first_nonempty(row.get("Person"), row.get("linker")), 100),
             phone=truncate(first_nonempty(row.get("moPhone"), row.get("linkerTel"), row.get("TelAndAddress")), 30),
-            address=truncate(first_nonempty(row.get("TelAndAddress"), row.get("Area")), 255),
+            address=truncate(row.get("Area"), 255),
             unified_social_credit_code=credit_code or None,
             bank_name=truncate(row.get("BankAndAcount"), 150) or None,
             bank_account=truncate(row.get("BankAccounts"), 60) or None,

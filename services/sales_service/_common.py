@@ -273,8 +273,10 @@ def _build_order_items(
         if product is None:
             raise HTTPException(status_code=404, detail=f"产品不存在或已停用：{product_id}")
         standard_price = Decimal(product.price or 0)
-        if enforce_price_remark and unit_price != standard_price and len(price_change_remark) < 2:
-            raise HTTPException(status_code=409, detail=f"产品 {product.name} 单价与标准价格不一致，请填写改价备注")
+        if unit_price < 0:
+            raise HTTPException(status_code=409, detail="商品单价不能小于 0")
+        if enforce_price_remark and unit_price < standard_price and len(price_change_remark) < 2:
+            raise HTTPException(status_code=409, detail=f"产品 {product.name} 单价低于标准价格，请填写改价备注")
 
         packaging = _resolve_line_packaging(db, product_id=product_id, packaging_config_id=packaging_config_id)
         bag_count, packaging_unit_price, packaging_fee = _calculate_packaging_fee(quantity, packaging)

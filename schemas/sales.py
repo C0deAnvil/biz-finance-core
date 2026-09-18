@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 class SalesOrderItemInput(BaseModel):
     product_id: int
     quantity: Decimal = Field(..., gt=0)
-    unit_price: Decimal = Field(..., gt=0)
+    unit_price: Decimal = Field(..., ge=0)
     packaging_config_id: int | None = None
     remark: str | None = Field(default=None, max_length=255)
     price_change_remark: str | None = Field(default=None, max_length=255)

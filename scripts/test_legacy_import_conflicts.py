@@ -10,6 +10,7 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 import import_legacy_master_data as legacy
 import repair_legacy_item_names as name_repair
+import repair_legacy_customer_addresses as address_repair
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
 from models import Base, Customer, Supplier, Department, Warehouse, Product, Material, Inventory, InventoryBatch, BOM, BOMItem, Role, User
@@ -85,6 +86,55 @@ class ImportConflictTests(unittest.TestCase):
         self.db.commit()
         self.assertEqual(existing.name, "新名称")
         self.assertEqual(self.count(Customer), 1)
+
+    def test_customer_and_supplier_import_use_area_as_address(self):
+        rows = [dict(btypeid="c", busercode="C", bname="客户", TelAndAddress="010-12345678", Area="北京市测试路1号"),
+                dict(btypeid="s", busercode="S", bname="供应商", TelAndAddress="020-12345678", Area="广州市测试路2号"),
+                dict(btypeid="empty", busercode="EMPTY", bname="无地址客户", TelAndAddress="13000000000", Area="")]
+        kinds = {"c": "customer", "s": "supplier", "empty": "customer"}
+        legacy.import_customers(self.db, rows, kinds, set(), [], {}, self.report, True)
+        legacy.import_suppliers(self.db, rows, kinds, self.report, True)
+        self.db.commit()
+        customer = self.db.scalar(select(Customer).where(Customer.code == "C"))
+        supplier = self.db.scalar(select(Supplier).where(Supplier.code == "S"))
+        self.assertEqual((customer.address, customer.phone), ("北京市测试路1号", "010-12345678"))
+        self.assertEqual((supplier.address, supplier.phone), ("广州市测试路2号", "020-12345678"))
+        self.assertEqual(self.db.scalar(select(Customer.address).where(Customer.code == "EMPTY")), "")
+
+    def test_customer_address_repair_is_narrow_and_idempotent(self):
+        customer = Customer(code="C", name="客户", phone="13000000000", contact_name="联系人", address="010-12345678")
+        self.db.add(customer)
+        self.db.commit()
+        row = dict(btypeid="1", busercode="C", bname="客户", TelAndAddress="010-12345678", Area="北京市测试路1号")
+        changes, skipped = address_repair.plan_address_repairs(self.db, [row])
+        self.assertEqual(len(changes), 1)
+        self.assertFalse(skipped)
+        self.assertFalse(self.db.dirty)
+        self.assertEqual(customer.address, "010-12345678")
+        address_repair.apply_address_repairs(self.db, changes)
+        self.db.commit()
+        self.db.refresh(customer)
+        self.assertEqual(customer.address, "北京市测试路1号")
+        self.assertEqual(customer.phone, "13000000000")
+        self.assertEqual(address_repair.plan_address_repairs(self.db, [row]), ([], []))
+
+    def test_customer_address_repair_skips_ambiguous_missing_and_changed_data(self):
+        customer = Customer(code="C", name="客户", phone="13000000000", contact_name="联系人", address="010-12345678")
+        self.db.add(customer)
+        self.db.commit()
+        row = dict(btypeid="1", busercode="C", bname="客户", TelAndAddress="010-12345678", Area="北京市测试路1号")
+        for variants in ([row, {**row, "Area": "另一地址"}], [{**row, "Area": ""}],
+                         [{**row, "Area": "13000000000"}], [{**row, "bname": "其他客户"}]):
+            changes, skipped = address_repair.plan_address_repairs(self.db, variants)
+            self.assertEqual(changes, [])
+            self.assertEqual(len(skipped), 1)
+        changes, _ = address_repair.plan_address_repairs(self.db, [row])
+        customer.address = "人工修正地址"
+        self.db.commit()
+        with self.assertRaises(RuntimeError):
+            address_repair.apply_address_repairs(self.db, changes)
+        self.db.rollback()
+        self.assertEqual(customer.address, "人工修正地址")
 
     def test_supplier_conflicts_preserve_existing(self):
         existing = Supplier(code="S1", name="供应商", contact_name="", phone="原电话", address="", unified_social_credit_code="91310000MA12345678")

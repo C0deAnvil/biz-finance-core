@@ -257,7 +257,7 @@
             <template #default="scope">{{ formatNumber(packagingFee(scope.row)) }}</template>
           </el-table-column>
           <el-table-column label="单价" width="140">
-            <template #default="scope"><el-input-number v-model="scope.row.unit_price" :min="0.01" :precision="2" style="width: 100%" :disabled="!canEditOrderForm" @change="() => handleSalesPriceChange(scope.row)" /></template>
+            <template #default="scope"><el-input-number v-model="scope.row.unit_price" :min="0" :precision="2" style="width: 100%" :disabled="!canEditOrderForm" @change="() => handleSalesPriceChange(scope.row)" /></template>
           </el-table-column>
           <el-table-column label="标准价" width="120">
             <template #default="scope">{{ formatNumber(productStandardPrice(scope.row.product_id)) }}</template>
@@ -270,7 +270,7 @@
               <el-input
                 v-model="scope.row.price_change_remark"
                 :disabled="!canManageOrders || !isSalesPriceChanged(scope.row)"
-                placeholder="改价时必填"
+                :placeholder="isBelowStandardPrice(scope.row) ? '低于标准价时必填，如样品赠送' : '选填'"
               />
             </template>
           </el-table-column>
@@ -923,6 +923,10 @@ function isSalesPriceChanged(row) {
   return Number(row.unit_price || 0).toFixed(2) !== Number(productStandardPrice(row.product_id) || 0).toFixed(2)
 }
 
+function isBelowStandardPrice(row) {
+  return Number(Number(row.unit_price || 0).toFixed(2)) < Number(productStandardPrice(row.product_id).toFixed(2))
+}
+
 function handleSalesPriceChange(row) {
   if (!isSalesPriceChanged(row)) {
     row.price_change_remark = ''
@@ -1098,13 +1102,12 @@ function validateOrderPayload() {
       ElMessage.warning('商品数量必须大于 0')
       return null
     }
-    if (item.unit_price <= 0) {
-      ElMessage.warning('商品单价必须大于 0')
+    if (item.unit_price < 0) {
+      ElMessage.warning('商品单价不能小于 0')
       return null
     }
-    const standardPrice = productStandardPrice(item.product_id)
-    if (Number(item.unit_price || 0).toFixed(2) !== Number(standardPrice || 0).toFixed(2) && item.price_change_remark.length < 2) {
-      ElMessage.warning('商品单价与标准价格不一致时，必须填写改价备注')
+    if (isBelowStandardPrice(item) && item.price_change_remark.length < 2) {
+      ElMessage.warning('商品单价低于标准价格时，必须填写改价备注（如样品赠送）')
       return null
     }
   }
