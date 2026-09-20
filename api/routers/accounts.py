@@ -15,7 +15,21 @@ from services.core import write_operation_log, next_business_no
 router = APIRouter(prefix="/finance/accounts", tags=["finance"])
 MANAGE_ROLES = ("finance", "finance_super", "system_admin")
 SUPPLIER_MANAGE_ROLES = (*MANAGE_ROLES, "purchase", "master_data_admin")
-READ_ROLES = (*SUPPLIER_MANAGE_ROLES, "sales", "manager", "chairman")
+CUSTOMER_MANAGE_ROLES = (*MANAGE_ROLES, "sales", "manager", "chairman", "master_data_admin")
+READ_ROLES = (*SUPPLIER_MANAGE_ROLES, *CUSTOMER_MANAGE_ROLES)
+
+
+def can_manage_counterparty_account(current_user: User, owner_type: str, *, customer: Customer | None = None) -> bool:
+    role = current_user.role.code
+    if role in MANAGE_ROLES:
+        return True
+    if owner_type == "supplier":
+        return role in {"purchase", "master_data_admin"}
+    if owner_type == "customer":
+        if role in {"manager", "chairman", "master_data_admin"}:
+            return True
+        return role == "sales" and customer is not None and customer.owner_user_id == current_user.id
+    return False
 
 
 def account_is_referenced(db: Session, account_id: int) -> bool:
@@ -67,8 +81,6 @@ def list_accounts(owner_type: str | None = Query(default=None, pattern="^(compan
             ((FinancialAccount.owner_type == "customer") & (Customer.owner_user_id == current_user.id)))
     elif role == "purchase":
         query = query.where(FinancialAccount.owner_type.in_(["company", "supplier"]))
-    elif role == "master_data_admin":
-        query = query.where(FinancialAccount.owner_type == "supplier")
     rows = db.scalars(query.order_by(FinancialAccount.id.desc())).all()
     balances = account_balance_map(db, [row.id for row in rows if row.owner_type == "company"]) if role in {*MANAGE_ROLES, "manager", "chairman"} else {}
     return api_response(data=[{**serialize(row), **balances.get(row.id, {})} for row in rows])
@@ -89,13 +101,14 @@ def list_transactions(account_id: int, current_user: User = Depends(require_role
 
 
 @router.post("")
-def create_account(payload: FinancialAccountCreate, current_user: User = Depends(require_roles(*SUPPLIER_MANAGE_ROLES)), db: Session = Depends(get_db)):
-    if current_user.role.code not in MANAGE_ROLES and payload.owner_type != "supplier":
-        raise HTTPException(status_code=403, detail="采购和主数据人员只能维护供应商账户")
-    if payload.customer_id and db.get(Customer, payload.customer_id) is None:
+def create_account(payload: FinancialAccountCreate, current_user: User = Depends(require_roles(*READ_ROLES)), db: Session = Depends(get_db)):
+    customer = db.get(Customer, payload.customer_id) if payload.customer_id else None
+    if payload.customer_id and customer is None:
         raise HTTPException(status_code=404, detail="客户不存在")
     if payload.supplier_id and db.get(Supplier, payload.supplier_id) is None:
         raise HTTPException(status_code=404, detail="供应商不存在")
+    if not can_manage_counterparty_account(current_user, payload.owner_type, customer=customer):
+        raise HTTPException(status_code=403, detail="无权维护该客户或供应商的账户")
     duplicate = db.scalar(select(FinancialAccount.id).where(
         FinancialAccount.owner_type == payload.owner_type,
         FinancialAccount.customer_id == payload.customer_id,
@@ -116,12 +129,13 @@ def create_account(payload: FinancialAccountCreate, current_user: User = Depends
 
 @router.put("/{account_id}")
 def update_account_status(account_id: int, payload: FinancialAccountStatusUpdate,
-                          current_user: User = Depends(require_roles(*SUPPLIER_MANAGE_ROLES)), db: Session = Depends(get_db)):
+                          current_user: User = Depends(require_roles(*READ_ROLES)), db: Session = Depends(get_db)):
     row = db.get(FinancialAccount, account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="账户不存在")
-    if current_user.role.code not in MANAGE_ROLES and row.owner_type != "supplier":
-        raise HTTPException(status_code=403, detail="采购和主数据人员只能维护供应商账户")
+    customer = db.get(Customer, row.customer_id) if row.customer_id else None
+    if not can_manage_counterparty_account(current_user, row.owner_type, customer=customer):
+        raise HTTPException(status_code=403, detail="无权维护该客户或供应商的账户")
     row.is_active = payload.is_active
     write_operation_log(db, user_id=current_user.id, module="finance", action="update_financial_account",
                         content=f"{'启用' if row.is_active else '停用'}账户 #{row.id}")

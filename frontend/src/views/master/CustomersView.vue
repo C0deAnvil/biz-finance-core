@@ -74,9 +74,9 @@
         <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip>
           <template #default="scope">{{ scope.row.remark || '-' }}</template>
         </el-table-column>
-        <el-table-column v-if="canManage || canManageAccounts" label="操作" :width="canManage ? 320 : 110" fixed="right">
+        <el-table-column label="操作" :width="canManage ? 320 : 100" fixed="right">
           <template #default="scope">
-            <el-button v-if="canManageAccounts" size="small" text type="primary" @click="openCustomerAccounts(scope.row)">账户</el-button>
+            <el-button size="small" text type="primary" @click="openCustomerDetail(scope.row)">详情</el-button>
             <template v-if="canManage">
               <el-button size="small" text type="primary" @click="openEdit(scope.row)">编辑</el-button>
               <el-button v-if="canTransfer" size="small" text type="warning" @click="openTransfer(scope.row)">转移</el-button>
@@ -278,6 +278,17 @@
         </el-row>
         <div class="field-hint">流失复购：客户下新单时，若距上一笔订单超过 365 天且本单金额大于 100 元，系统自动记录并打上 T 标签。</div>
 
+        <el-divider content-position="left">账户信息</el-divider>
+        <CounterpartyAccountsPanel
+          v-if="editingId"
+          owner-type="customer"
+          :owner-id="editingId"
+          :owner-name="form.name"
+          :editable="canManageAccounts"
+          @changed="load"
+        />
+        <div v-else class="field-hint">客户账户不是必填项。请先保存客户，再从“编辑”中添加账户。</div>
+
         <el-divider content-position="left">备注</el-divider>
         <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="3" placeholder="客户背景、合作历史、注意事项等" /></el-form-item>
       </el-form>
@@ -285,6 +296,30 @@
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" @click="submit">保存</el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog v-model="detailDialogVisible" :title="detailCustomer ? `${detailCustomer.name} · 客户详情` : '客户详情'" width="900px">
+      <el-descriptions v-if="detailCustomer" :column="2" border>
+        <el-descriptions-item label="客户编码">{{ detailCustomer.code }}</el-descriptions-item>
+        <el-descriptions-item label="客户名称">{{ detailCustomer.name }}</el-descriptions-item>
+        <el-descriptions-item label="联系人">{{ detailCustomer.contact_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="联系电话">{{ detailCustomer.phone || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="客户类型">{{ detailCustomer.customer_type_label || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="销售负责人">{{ detailCustomer.owner_user_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="地区">{{ [detailCustomer.region_group, detailCustomer.region_province].filter(Boolean).join(' - ') || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="国内/海外">{{ detailCustomer.region_type_label || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="信用代码" :span="2">{{ detailCustomer.unified_social_credit_code || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="客户地址" :span="2">{{ detailCustomer.address || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="备注" :span="2">{{ detailCustomer.remark || '-' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-divider content-position="left">账户信息</el-divider>
+      <CounterpartyAccountsPanel
+        v-if="detailCustomer"
+        owner-type="customer"
+        :owner-id="detailCustomer.id"
+        :owner-name="detailCustomer.name"
+      />
+      <template #footer><el-button @click="detailDialogVisible = false">关闭</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="transferDialogVisible" title="客户转移" width="560px">
@@ -339,7 +374,6 @@
       </template>
     </el-dialog>
 
-    <CustomerAccountsDialog v-model="customerAccountsVisible" :customer="activeCustomer" @changed="load" />
   </div>
 </template>
 
@@ -351,6 +385,7 @@ import 'element-plus/es/components/card/style/css'
 import 'element-plus/es/components/checkbox/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/date-picker/style/css'
+import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/dialog/style/css'
 import 'element-plus/es/components/divider/style/css'
 import 'element-plus/es/components/form/style/css'
@@ -368,6 +403,7 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCheckbox from 'element-plus/es/components/checkbox/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
+import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDivider from 'element-plus/es/components/divider/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
@@ -381,8 +417,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { get, post, put, remove } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
+import CounterpartyAccountsPanel from '../../components/CounterpartyAccountsPanel.vue'
 import PageSection from '../../components/PageSection.vue'
-import CustomerAccountsDialog from '../../components/CustomerAccountsDialog.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useAuthStore } from '../../stores/auth'
@@ -397,11 +433,12 @@ const dialogVisible = ref(false)
 const complaintDialogVisible = ref(false)
 const transferDialogVisible = ref(false)
 const filterDialogVisible = ref(false)
+const detailDialogVisible = ref(false)
 const complaintMode = ref('create')
 const editingId = ref(null)
 const activeComplaint = ref(null)
 const activeCustomer = ref(null)
-const customerAccountsVisible = ref(false)
+const detailCustomer = ref(null)
 const filters = reactive({ keyword: '', source_type: '', owner_user_id: null, star_level: '', customer_type: '', region_type: '', region_province: '', churn_repurchase_only: false, tags: [], created_range: [] })
 const tagDimensions = ref([])
 const customTags = ref([])
@@ -442,17 +479,14 @@ const complaintForm = reactive({
   complaint_detail: ''
 })
 const canManage = computed(() => ['sales', 'manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
-const canManageAccounts = computed(() => ['finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
+const canManageAccounts = computed(() => ['sales', 'manager', 'chairman', 'master_data_admin', 'finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
 const canTransfer = computed(() => ['manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
 // 销售自建客户默认归属本人，归属与建档来源由经理及以上维护
 const canAssignOwner = computed(() => auth.user?.role_code !== 'sales')
 // 五星/四星由公司统一打标，销售端只读
 const canManageCompanyTags = computed(() => auth.user?.role_code !== 'sales')
 
-function openCustomerAccounts(row) {
-  activeCustomer.value = row
-  customerAccountsVisible.value = true
-}
+function openCustomerDetail(row) { detailCustomer.value = row; detailDialogVisible.value = true }
 
 const TAG_DIMENSION_COLORS = {
   value: 'danger',

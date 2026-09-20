@@ -62,10 +62,9 @@
         <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip>
           <template #default="scope">{{ scope.row.remark || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" :width="canManage ? 360 : (canManageAccounts ? 160 : 100)" fixed="right">
+        <el-table-column label="操作" :width="canManage ? 300 : 100" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openCatalog(scope.row)">详情</el-button>
-            <el-button v-if="canManageAccounts" size="small" text type="primary" @click="openSupplierAccounts(scope.row)">账户</el-button>
             <template v-if="canManage">
               <el-button size="small" text type="primary" @click="openEdit(scope.row)">编辑</el-button>
               <el-button size="small" text @click="toggleStatus(scope.row)">{{ scope.row.status === 'enabled' ? '停用' : '启用' }}</el-button>
@@ -101,7 +100,15 @@
         <el-form-item label="官网"><el-input v-model="form.website" placeholder="如：https://www.example.com" /></el-form-item>
 
         <el-divider content-position="left">收款账户</el-divider>
-        <p>保存供应商后，点击列表中的“账户”维护收款账号，采购付款申请将从这里选择。</p>
+        <CounterpartyAccountsPanel
+          v-if="editingId"
+          owner-type="supplier"
+          :owner-id="editingId"
+          :owner-name="form.name"
+          :editable="canManageAccounts"
+          @changed="load"
+        />
+        <p v-else class="account-hint">请先保存供应商，再从“编辑”中添加收款账户。</p>
 
         <el-divider content-position="left">标签与备注</el-divider>
         <el-form-item label="标签">
@@ -147,6 +154,13 @@
         </div>
         <div class="drawer-meta-full"><strong>备注：</strong>{{ catalogSupplier.remark || '-' }}</div>
       </div>
+
+      <CounterpartyAccountsPanel
+        v-if="catalogSupplier"
+        owner-type="supplier"
+        :owner-id="catalogSupplier.id"
+        :owner-name="catalogSupplier.name"
+      />
 
       <div class="detail-toolbar">
         <span>商品名录</span>
@@ -218,7 +232,6 @@
         <el-button @click="priceHistoryVisible = false">关闭</el-button>
       </template>
     </el-dialog>
-    <SupplierAccountsDialog v-model="supplierAccountsVisible" :supplier="accountSupplier" @changed="load" />
   </div>
 </template>
 
@@ -262,8 +275,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { get, post, put, remove } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
+import CounterpartyAccountsPanel from '../../components/CounterpartyAccountsPanel.vue'
 import PageSection from '../../components/PageSection.vue'
-import SupplierAccountsDialog from '../../components/SupplierAccountsDialog.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useAuthStore } from '../../stores/auth'
@@ -307,10 +320,7 @@ const priceHistoryRows = ref([])
 const priceHistoryTitle = ref('历史供价详情')
 const priceHistorySummary = ref(null)
 
-const supplierAccountsVisible = ref(false)
-const accountSupplier = ref(null)
 const canManageAccounts = computed(() => ['purchase', 'master_data_admin', 'finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
-function openSupplierAccounts(row) { accountSupplier.value = row; supplierAccountsVisible.value = true }
 const canManage = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const canManageCatalog = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code))
 
@@ -589,6 +599,7 @@ onMounted(async () => {
 .price-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 12px; color: #303133; font-weight: 600; }
 .drawer-meta-full { grid-column: 1 / -1; }
 .tag-chip { margin-right: 6px; margin-bottom: 4px; }
+.account-hint { color: #909399; font-size: 13px; }
 .w-260 { width: 260px; }
 .w-200 { width: 200px; }
 .w-160 { width: 160px; }

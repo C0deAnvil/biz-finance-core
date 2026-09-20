@@ -77,6 +77,30 @@ def test_account_delete_only_when_unused(client, login):
     assert response.status_code == 409, response.text
 
 
+def test_sales_can_manage_only_owned_customer_accounts(client, login):
+    customer_id, _, _, _, _ = documents()
+    with SessionLocal() as db:
+        other = Customer(code=uniq("AC"), name=uniq("其他客户"), contact_name="测试", phone="1", address="测试")
+        db.add(other)
+        db.commit()
+        other_customer_id = other.id
+
+    login("sales01")
+    payload = {
+        "owner_type": "customer", "customer_id": customer_id,
+        "account_name": "客户付款户名", "bank_name": "测试银行", "account_number": uniq("CUSTOMER"),
+    }
+    response = client.post("/api/finance/accounts", json=payload)
+    assert response.status_code == 200, response.text
+    account_id = response.json()["data"]["id"]
+    listed = client.get(f"/api/finance/accounts?owner_type=customer&customer_id={customer_id}&active_only=false")
+    assert listed.status_code == 200, listed.text
+    assert account_id in {row["id"] for row in listed.json()["data"]}
+    assert client.put(f"/api/finance/accounts/{account_id}", json={"is_active": False}).status_code == 200
+    assert client.post("/api/finance/accounts", json={**payload, "customer_id": other_customer_id,
+                                                       "account_number": uniq("OTHER")}).status_code == 403
+
+
 @pytest.mark.parametrize("merged", [False, True])
 def test_sales_request_and_finance_posting_preserve_accounts(client, login, merged):
     customer_id, _, order_id, _, attachment_id = documents()
