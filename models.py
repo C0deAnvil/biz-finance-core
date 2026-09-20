@@ -776,6 +776,7 @@ class SalesOrder(TimestampMixin, Base):
     split_group_no = Column(String(60), nullable=True)
     split_phase = Column(Integer, nullable=False, default=1)
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    receipt_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True, index=True)
     sales_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     consignee = Column(String(100), nullable=False)
@@ -808,6 +809,7 @@ class SalesOrder(TimestampMixin, Base):
     ext_json = Column(JSON, nullable=True)
 
     customer = relationship("Customer")
+    receipt_account = relationship("FinancialAccount", foreign_keys=[receipt_account_id])
     sales_user = relationship("User", foreign_keys=[sales_user_id])
     operator_user = relationship("User", foreign_keys=[operator_user_id])
     price_approved_by = relationship("User", foreign_keys=[price_approved_by_id])

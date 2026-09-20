@@ -6,8 +6,8 @@ from database import get_db
 from dependencies import get_current_user
 from models import User, UserModulePermission, UserSession
 from responses import api_response
-from schemas.auth import LoginRequest, LoginResponse, RefreshRequest, UserProfile
-from security import decode_token, verify_password
+from schemas.auth import LoginRequest, LoginResponse, PasswordChangeRequest, RefreshRequest, SelfProfileUpdate, UserProfile
+from security import decode_token, hash_password, verify_password
 from services.auth_service import (
     clear_auth_cookies,
     create_user_session,
@@ -60,6 +60,8 @@ def build_user_profile(user: User, db: Session) -> UserProfile:
         department_name=user.department.name if user.department else None,
         department_path=" / ".join(get_department_path_names(db, user.department_id)) if user.department_id else None,
         job_title=user.job_title,
+        phone=user.phone,
+        email=user.email,
         data_scope=user.data_scope,
         is_admin=user.role.is_admin,
         navigation=navigation,
@@ -142,6 +144,27 @@ def refresh_token(
 @router.get("/me")
 def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return api_response(data=build_user_profile(current_user, db).model_dump())
+
+
+@router.patch("/me")
+def update_me(payload: SelfProfileUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    current_user.full_name = payload.full_name.strip()
+    current_user.phone = payload.phone.strip() if payload.phone else None
+    current_user.email = payload.email.strip() if payload.email else None
+    current_user.job_title = payload.job_title.strip() if payload.job_title else None
+    db.commit()
+    return api_response(msg="个人资料已更新", data=build_user_profile(current_user, db).model_dump())
+
+
+@router.post("/change-password")
+def change_password(payload: PasswordChangeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=409, detail="当前密码不正确")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=422, detail="新密码不能与当前密码相同")
+    current_user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    return api_response(msg="密码已修改")
 
 
 @router.post("/logout")

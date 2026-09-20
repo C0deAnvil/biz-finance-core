@@ -114,8 +114,12 @@ def submit_sales_receipt_request(payload: SalesReceiptRequestCreate, current_use
     if payload.payment_stage == "cod_full" and payment_type != "货到付款/分期付款":
         raise HTTPException(status_code=409, detail="当前订单不适用到货后全款确认")
 
+    accounts = validate_settlement_accounts(
+        db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id
+    )
+    order.receipt_account_id = accounts["company_account_id"]
     request = SalesReceiptRequest(
-        **validate_settlement_accounts(db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id),
+        **accounts,
         request_no=next_business_no(db, "SK"),
         sales_order_id=order.id,
         requested_by_id=current_user.id,
@@ -256,8 +260,12 @@ def submit_merged_sales_receipt_request(payload: SalesMergedReceiptRequestCreate
         remark_parts = [f"合并收款批次：{merge_no}"]
         if payload.remark and payload.remark.strip():
             remark_parts.append(payload.remark.strip())
+        accounts = validate_settlement_accounts(
+            db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id
+        )
+        order.receipt_account_id = accounts["company_account_id"]
         request = SalesReceiptRequest(
-            **validate_settlement_accounts(db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id),
+            **accounts,
             request_no=next_business_no(db, "SK"),
             sales_order_id=order.id,
             requested_by_id=current_user.id,

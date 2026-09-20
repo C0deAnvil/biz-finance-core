@@ -26,6 +26,13 @@ def test_receipt_uses_sales_account_and_payment_can_make_balance_negative(client
     })
     assert response.status_code == 200, response.text
     request_id = response.json()['data']['id']
+    with SessionLocal() as db:
+        assert db.get(SalesOrder, sales_id).receipt_account_id == company_id
+    settlements = client.get('/api/sales/settlements')
+    assert settlements.status_code == 200, settlements.text
+    order = next(row for row in settlements.json()['data']['orders'] if row['id'] == sales_id)
+    assert order['receipt_account_id'] == company_id
+    assert order['receipt_account_label']
     assert balance(client, login, company_id) == 0
     receipt_url = f'/api/finance/receivables/receipt-requests/{request_id}/register'
     receipt_payload = {'sales_receipt_request_id': request_id, 'actual_amount': 10, 'bank_receipt_attachment_id': attachment_id}

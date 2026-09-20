@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import require_roles
-from models import Customer, Supplier, FinancialAccount, FinancialAccountTransaction, ReceivableRecord, PayableRecord, SalesReceiptRequest, PurchasePaymentRequest, User
+from models import Customer, Supplier, FinancialAccount, FinancialAccountTransaction, ReceivableRecord, PayableRecord, SalesOrder, SalesReceiptRequest, PurchasePaymentRequest, User
 from responses import api_response
 from schemas.accounts import FinancialAccountCreate, FinancialAccountStatusUpdate, FinancialAccountUpdate, FinancialAccountAdjustment, FinancialAccountTransfer
 from services.financial_accounts import account_label, account_balance_map
@@ -16,6 +16,24 @@ router = APIRouter(prefix="/finance/accounts", tags=["finance"])
 MANAGE_ROLES = ("finance", "finance_super", "system_admin")
 SUPPLIER_MANAGE_ROLES = (*MANAGE_ROLES, "purchase", "master_data_admin")
 READ_ROLES = (*SUPPLIER_MANAGE_ROLES, "sales", "manager", "chairman")
+
+
+def account_is_referenced(db: Session, account_id: int) -> bool:
+    references = (
+        (SalesOrder, SalesOrder.receipt_account_id),
+        (ReceivableRecord, ReceivableRecord.company_account_id),
+        (ReceivableRecord, ReceivableRecord.counterparty_account_id),
+        (PayableRecord, PayableRecord.company_account_id),
+        (PayableRecord, PayableRecord.counterparty_account_id),
+        (SalesReceiptRequest, SalesReceiptRequest.company_account_id),
+        (SalesReceiptRequest, SalesReceiptRequest.counterparty_account_id),
+        (PurchasePaymentRequest, PurchasePaymentRequest.company_account_id),
+        (PurchasePaymentRequest, PurchasePaymentRequest.counterparty_account_id),
+        (FinancialAccountTransaction, FinancialAccountTransaction.account_id),
+        (FinancialAccountTransaction, FinancialAccountTransaction.related_account_id),
+    )
+    return any(db.scalar(select(model.id).where(column == account_id).limit(1)) is not None
+               for model, column in references)
 
 
 def serialize(row):
@@ -29,6 +47,7 @@ def serialize(row):
 
 @router.get("")
 def list_accounts(owner_type: str | None = Query(default=None, pattern="^(company|customer|supplier)$"),
+                  customer_id: int | None = None,
                   supplier_id: int | None = None,
                   active_only: bool = True,
                   current_user: User = Depends(require_roles(*READ_ROLES)), db: Session = Depends(get_db)):
@@ -37,6 +56,8 @@ def list_accounts(owner_type: str | None = Query(default=None, pattern="^(compan
         query = query.where(FinancialAccount.owner_type == owner_type)
     if supplier_id:
         query = query.where(FinancialAccount.supplier_id == supplier_id)
+    if customer_id:
+        query = query.where(FinancialAccount.customer_id == customer_id)
     if active_only:
         query = query.where(FinancialAccount.is_active.is_(True))
     role = current_user.role.code
@@ -117,24 +138,28 @@ def update_account(account_id: int, payload: FinancialAccountUpdate,
     identity_changed = (row.account_name, row.bank_name, row.account_number, row.currency) != (
         payload.account_name.strip(), payload.bank_name.strip(), payload.account_number.strip(), payload.currency
     )
-    if identity_changed:
-        referenced = any(db.scalar(select(model.id).where(column == account_id).limit(1)) is not None
-                         for model, column in ((ReceivableRecord, ReceivableRecord.company_account_id),
-                                               (ReceivableRecord, ReceivableRecord.counterparty_account_id),
-                                               (PayableRecord, PayableRecord.company_account_id),
-                                               (PayableRecord, PayableRecord.counterparty_account_id),
-                                               (SalesReceiptRequest, SalesReceiptRequest.company_account_id),
-                                               (SalesReceiptRequest, SalesReceiptRequest.counterparty_account_id),
-                                               (PurchasePaymentRequest, PurchasePaymentRequest.company_account_id),
-                                               (PurchasePaymentRequest, PurchasePaymentRequest.counterparty_account_id)))
-        if referenced:
-            raise HTTPException(status_code=409, detail="该账户已有历史单据引用，不能修改开户身份信息；请停用旧账户并新增账户")
+    if identity_changed and account_is_referenced(db, account_id):
+        raise HTTPException(status_code=409, detail="该账户已有历史单据引用，不能修改开户身份信息；请停用旧账户并新增账户")
     for key, value in payload.model_dump().items():
         setattr(row, key, value.strip() if isinstance(value, str) else value)
     write_operation_log(db, user_id=current_user.id, module="finance", action="update_financial_account",
                         content=f"修改账户 #{row.id}")
     db.commit()
     return api_response(data=serialize(row))
+
+
+@router.delete("/{account_id}")
+def delete_account(account_id: int, current_user: User = Depends(require_roles(*MANAGE_ROLES)), db: Session = Depends(get_db)):
+    row = db.get(FinancialAccount, account_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    if account_is_referenced(db, account_id):
+        raise HTTPException(status_code=409, detail="该账户已有历史单据或余额流水，不能删除；请将账户停用")
+    write_operation_log(db, user_id=current_user.id, module="finance", action="delete_financial_account",
+                        content=f"删除{row.owner_type}账户 #{row.id} {row.account_name} {row.account_number}")
+    db.delete(row)
+    db.commit()
+    return api_response(msg="账户已删除")
 
 
 @router.post("/{account_id}/adjustments")

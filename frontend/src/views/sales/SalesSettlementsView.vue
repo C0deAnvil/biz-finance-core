@@ -52,6 +52,9 @@
           <template #default="scope"><el-tag :type="statusType(scope.row.settlement_status)">{{ scope.row.settlement_status_label }}</el-tag></template>
         </el-table-column>
         <el-table-column prop="payment_type_label" label="付款方式" min-width="180" />
+        <el-table-column prop="receipt_account_label" label="收款账户" min-width="240" show-overflow-tooltip>
+          <template #default="scope">{{ scope.row.receipt_account_label || '尚未选择' }}</template>
+        </el-table-column>
         <el-table-column prop="total_amount" label="订单金额" width="120">
           <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
         </el-table-column>
@@ -448,6 +451,7 @@ function openReceiptDialog(row = null) {
   if (row) {
     receiptForm.sales_order_id = row.id
     receiptForm.requested_amount = defaultReceiptAmount(row, receiptForm.payment_stage)
+    receiptForm.company_account_id = row.receipt_account_id || null
   }
   receiptVisible.value = true
 }
@@ -469,6 +473,8 @@ function openMergedReceiptDialog() {
   }
   resetMergedReceiptForm()
   mergedReceiptForm.customer_id = selectedRows[0].customer_id
+  const selectedAccountIds = [...new Set(selectedRows.map(item => item.receipt_account_id).filter(Boolean))]
+  if (selectedAccountIds.length === 1) mergedReceiptForm.company_account_id = selectedAccountIds[0]
   mergedReceiptForm.items = selectedRows.map((item) => ({
     sales_order_id: item.id,
     order_no: item.order_no,
@@ -540,6 +546,7 @@ async function completeOrder(row) {
 
 watch(selectedOrder, (row) => {
   if (!row) return
+  receiptForm.company_account_id = row.receipt_account_id || null
   if (['deposit', 'balance', 'cod_full', 'pre_shipment_full'].includes(receiptForm.payment_stage)) {
     receiptForm.requested_amount = defaultReceiptAmount(row, receiptForm.payment_stage)
   } else if (!receiptForm.requested_amount) {

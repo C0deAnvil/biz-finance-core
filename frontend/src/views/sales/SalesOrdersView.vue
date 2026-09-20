@@ -43,6 +43,9 @@
       <el-table-column prop="sales_user" label="销售员" width="120" />
       <el-table-column prop="operator_name" label="经办人" width="120" />
       <el-table-column prop="payment_type_label" label="付款方式" min-width="180" />
+      <el-table-column prop="receipt_account_label" label="收款账户" min-width="240" show-overflow-tooltip>
+        <template #default="scope">{{ scope.row.receipt_account_label || '尚未选择' }}</template>
+      </el-table-column>
       <el-table-column prop="total_amount" label="总金额" width="120">
         <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
       </el-table-column>

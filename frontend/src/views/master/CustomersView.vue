@@ -74,11 +74,14 @@
         <el-table-column prop="remark" label="备注" min-width="200" show-overflow-tooltip>
           <template #default="scope">{{ scope.row.remark || '-' }}</template>
         </el-table-column>
-        <el-table-column v-if="canManage" label="操作" width="240" fixed="right">
+        <el-table-column v-if="canManage || canManageAccounts" label="操作" :width="canManage ? 320 : 110" fixed="right">
           <template #default="scope">
-            <el-button size="small" text type="primary" @click="openEdit(scope.row)">编辑</el-button>
-            <el-button v-if="canTransfer" size="small" text type="warning" @click="openTransfer(scope.row)">转移</el-button>
-            <el-button size="small" text type="danger" @click="removeCustomer(scope.row)">删除</el-button>
+            <el-button v-if="canManageAccounts" size="small" text type="primary" @click="openCustomerAccounts(scope.row)">账户</el-button>
+            <template v-if="canManage">
+              <el-button size="small" text type="primary" @click="openEdit(scope.row)">编辑</el-button>
+              <el-button v-if="canTransfer" size="small" text type="warning" @click="openTransfer(scope.row)">转移</el-button>
+              <el-button size="small" text type="danger" @click="removeCustomer(scope.row)">删除</el-button>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -335,6 +338,8 @@
         <el-button v-if="complaintMode === 'create'" type="primary" @click="submitComplaint">保存投诉</el-button>
       </template>
     </el-dialog>
+
+    <CustomerAccountsDialog v-model="customerAccountsVisible" :customer="activeCustomer" @changed="load" />
   </div>
 </template>
 
@@ -377,6 +382,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { get, post, put, remove } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import CustomerAccountsDialog from '../../components/CustomerAccountsDialog.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useAuthStore } from '../../stores/auth'
@@ -395,6 +401,7 @@ const complaintMode = ref('create')
 const editingId = ref(null)
 const activeComplaint = ref(null)
 const activeCustomer = ref(null)
+const customerAccountsVisible = ref(false)
 const filters = reactive({ keyword: '', source_type: '', owner_user_id: null, star_level: '', customer_type: '', region_type: '', region_province: '', churn_repurchase_only: false, tags: [], created_range: [] })
 const tagDimensions = ref([])
 const customTags = ref([])
@@ -435,11 +442,17 @@ const complaintForm = reactive({
   complaint_detail: ''
 })
 const canManage = computed(() => ['sales', 'manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
+const canManageAccounts = computed(() => ['finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
 const canTransfer = computed(() => ['manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
 // 销售自建客户默认归属本人，归属与建档来源由经理及以上维护
 const canAssignOwner = computed(() => auth.user?.role_code !== 'sales')
 // 五星/四星由公司统一打标，销售端只读
 const canManageCompanyTags = computed(() => auth.user?.role_code !== 'sales')
+
+function openCustomerAccounts(row) {
+  activeCustomer.value = row
+  customerAccountsVisible.value = true
+}
 
 const TAG_DIMENSION_COLORS = {
   value: 'danger',

@@ -1,5 +1,14 @@
 [
   {
+    "path": "/profile",
+    "name": "profile",
+    "title": "个人中心",
+    "group": "个人设置",
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
+  },
+  {
     "path": "/dashboard",
     "name": "dashboard",
     "title": "首页",
@@ -14,7 +23,8 @@
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin"
+      "master_data_admin",
+      "finance"
     ],
     "warmers": [
       {
@@ -71,7 +81,8 @@
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin"
+      "master_data_admin",
+      "finance"
     ],
     "preload_roles": [
       "manager",
@@ -96,14 +107,16 @@
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin"
+      "master_data_admin",
+      "finance"
     ],
     "preload_roles": [
       "sales",
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin"
+      "master_data_admin",
+      "finance"
     ],
     "warmers": [
       {
@@ -122,14 +135,16 @@
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin"
+      "master_data_admin",
+      "finance"
     ],
     "preload_roles": [
       "purchase",
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin"
+      "master_data_admin",
+      "finance"
     ],
     "warmers": [
       {

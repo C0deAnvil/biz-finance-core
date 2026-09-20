@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from database import SessionLocal
 from helpers import uniq
-from models import (Attachment, Customer, Supplier, User, SalesOrder, SalesReceiptRequest,
+from models import (Attachment, Customer, Supplier, User, FinancialAccount, SalesOrder, SalesReceiptRequest,
                     PurchaseOrder, PurchasePaymentRequest, ReceivableRecord, PayableRecord,
                     Product, Inventory, Warehouse)
 
@@ -55,6 +55,26 @@ def test_account_permissions_owner_validation_and_disabled_accounts(client, logi
     assert client.post(endpoint, json={**payload, "company_account_id": company}).status_code == 409
     with SessionLocal() as db:
         assert db.scalar(select(SalesReceiptRequest.id).where(SalesReceiptRequest.sales_order_id == order_id)) is None
+
+
+def test_account_delete_only_when_unused(client, login):
+    _, _, order_id, _, _ = documents()
+    unused = account(client, login)
+    response = client.delete(f"/api/finance/accounts/{unused}")
+    assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        assert db.get(FinancialAccount, unused) is None
+
+    used = account(client, login)
+    login("sales01")
+    response = client.post("/api/sales/settlements/receipt-requests", json={
+        "sales_order_id": order_id, "requested_amount": 10,
+        "payment_stage": "cod_full", "company_account_id": used,
+    })
+    assert response.status_code == 200, response.text
+    login("finance01")
+    response = client.delete(f"/api/finance/accounts/{used}")
+    assert response.status_code == 409, response.text
 
 
 @pytest.mark.parametrize("merged", [False, True])

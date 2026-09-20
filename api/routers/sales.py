@@ -10,7 +10,7 @@ from database import get_db
 from dependencies import get_current_user, require_roles
 from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, PurchaseReceipt, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderApproval, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
 from responses import api_response
-from services.financial_accounts import settlement_account_fields
+from services.financial_accounts import account_label, settlement_account_fields
 from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderSubmitRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
 from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.organization import get_scoped_user_ids, user_in_scope
@@ -445,7 +445,7 @@ def list_orders(
 ):
     query = (
         select(SalesOrder)
-        .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user), joinedload(SalesOrder.parent_order))
+        .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user), joinedload(SalesOrder.parent_order), joinedload(SalesOrder.receipt_account))
         .order_by(SalesOrder.created_at.desc())
     )
     scoped_user_ids = get_scoped_user_ids(db, current_user, "sales")
@@ -544,6 +544,8 @@ def list_orders(
                 "finance_edit_confirm_state": _finance_edit_confirm_state(db, row.id, current_user),
                 "payment_type": row.payment_type,
                 "payment_type_label": payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales"),
+                "receipt_account_id": row.receipt_account_id,
+                "receipt_account_label": account_label(row.receipt_account),
                 "order_type": row.order_type,
                 "order_type_label": order_type_style(row.order_type)["label"],
                 "order_type_color": order_type_style(row.order_type)["color"],
@@ -577,6 +579,7 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             joinedload(SalesOrder.customer),
             joinedload(SalesOrder.operator_user),
             joinedload(SalesOrder.parent_order),
+            joinedload(SalesOrder.receipt_account),
         )
         .where(SalesOrder.id == order_id)
     ).unique().scalar_one_or_none()
@@ -622,6 +625,8 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
             "payment_type": order.payment_type,
             "payment_type_label": payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales"),
+            "receipt_account_id": order.receipt_account_id,
+            "receipt_account_label": account_label(order.receipt_account),
             "total_amount": float(order.total_amount),
             "deposit_amount": float(order.deposit_amount),
             "received_amount": float(received_amount),
@@ -1015,6 +1020,7 @@ def list_sales_settlements(
             joinedload(SalesOrder.parent_order),
             joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
             joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
+            joinedload(SalesOrder.receipt_account),
         )
         .where(SalesOrder.status != "cancelled")
         .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
@@ -1084,6 +1090,8 @@ def list_sales_settlements(
             "status": row.status,
             "status_label": status_label(row.status),
             "payment_type_label": payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales"),
+            "receipt_account_id": row.receipt_account_id,
+            "receipt_account_label": account_label(row.receipt_account),
             "total_amount": float(total_amount),
             "deposit_amount": float(row.deposit_amount or 0),
             "received_amount": float(received_amount),
