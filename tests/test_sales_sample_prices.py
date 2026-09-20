@@ -54,3 +54,23 @@ def test_negative_prices_rejected_and_discount_remark_required(client, login):
         payload["items"][0].update(unit_price=price, price_change_remark="")
         response = client.post("/api/sales/orders", json=payload)
         assert response.status_code == expected, response.text
+
+
+def test_sales_product_options_exclude_disabled_products(client, login):
+    with SessionLocal() as db:
+        enabled = Product(product_code=uniq("ACTIVE-P"), name="启用产品", price=10, is_active=True)
+        disabled = Product(product_code=uniq("DISABLED-P"), name="停用产品", price=10, is_active=False)
+        db.add_all([enabled, disabled])
+        db.commit()
+        enabled_id, disabled_id = enabled.id, disabled.id
+
+    login("sales01")
+    response = client.get("/api/master-data/products?active_only=true")
+    assert response.status_code == 200, response.text
+    ids = {row["id"] for row in response.json()["data"]}
+    assert enabled_id in ids
+    assert disabled_id not in ids
+
+    all_response = client.get("/api/master-data/products")
+    assert all_response.status_code == 200, all_response.text
+    assert disabled_id in {row["id"] for row in all_response.json()["data"]}

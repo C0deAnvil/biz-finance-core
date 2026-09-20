@@ -751,7 +751,7 @@ function resetCustomerForm() {
 async function loadBaseOptions() {
   userOptions.value = await get('/api/admin/users/options')
   customers.value = await get('/api/master-data/customers')
-  products.value = await get('/api/master-data/products')
+  products.value = await get('/api/master-data/products?active_only=true')
   packagingOptions.value = (await get('/api/master-data/packaging-configs?active_only=true')) || []
 }
 

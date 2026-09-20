@@ -1040,10 +1040,13 @@ def list_products(
     page: int | None = Query(default=None, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
     keyword: str | None = None,
+    active_only: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = select(Product).order_by(Product.created_at.desc(), Product.id.desc())
+    if active_only:
+        query = query.where(Product.is_active.is_(True))
     if keyword and keyword.strip():
         term = keyword.strip()
         query = query.where(or_(Product.product_code.contains(term, autoescape=True),
