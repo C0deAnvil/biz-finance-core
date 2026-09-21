@@ -67,6 +67,16 @@ from services.time_utils import now_local
 router = APIRouter(prefix="/master-data", tags=["master-data"])
 
 
+def _next_available_master_data_code(db: Session, *, model, column, prefix: str, sequence_key: str) -> str:
+    """生成档案编号，并跳过历史人工录入造成的同名编号。"""
+    for _ in range(100):
+        code = next_business_no(db, prefix, sequence_key=sequence_key)
+        existing = db.execute(select(model.id).where(column == code)).scalar_one_or_none()
+        if existing is None:
+            return code
+    raise HTTPException(status_code=500, detail="自动生成编号失败，请联系管理员")
+
+
 @router.get("/settings")
 def list_settings(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.execute(select(AppSetting).where(AppSetting.setting_key == "purchase_approval_amount_threshold")).scalar_one_or_none()
@@ -1204,15 +1214,18 @@ def create_product(
     current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
-    existing = db.execute(select(Product).where(Product.product_code == payload.product_code)).scalar_one_or_none()
+    product_code = (payload.product_code or "").strip() or _next_available_master_data_code(
+        db, model=Product, column=Product.product_code, prefix="CP", sequence_key="product_code"
+    )
+    existing = db.execute(select(Product).where(Product.product_code == product_code)).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="产品编码已存在")
-    product = Product(**payload.model_dump())
+    product = Product(**(payload.model_dump() | {"product_code": product_code}))
     product.unit = "kg"
     db.add(product)
     db.commit()
     db.refresh(product)
-    return api_response(data={"id": product.id})
+    return api_response(data={"id": product.id, "product_code": product.product_code})
 
 
 @router.put("/products/{product_id}")
@@ -1225,10 +1238,13 @@ def update_product(
     product = db.execute(select(Product).where(Product.id == product_id)).scalar_one_or_none()
     if product is None:
         raise HTTPException(status_code=404, detail="产品不存在")
-    duplicate = db.execute(select(Product).where(Product.product_code == payload.product_code, Product.id != product_id)).scalar_one_or_none()
+    product_code = (payload.product_code or "").strip()
+    if not product_code:
+        raise HTTPException(status_code=422, detail="产品编码不能为空")
+    duplicate = db.execute(select(Product).where(Product.product_code == product_code, Product.id != product_id)).scalar_one_or_none()
     if duplicate:
         raise HTTPException(status_code=409, detail="产品编码已存在")
-    for field, value in payload.model_dump().items():
+    for field, value in (payload.model_dump() | {"product_code": product_code}).items():
         setattr(product, field, value)
     product.unit = "kg"
     db.commit()
@@ -1321,15 +1337,18 @@ def create_material(
     current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
-    existing = db.execute(select(Material).where(Material.material_code == payload.material_code)).scalar_one_or_none()
+    material_code = (payload.material_code or "").strip() or _next_available_master_data_code(
+        db, model=Material, column=Material.material_code, prefix="YL", sequence_key="material_code"
+    )
+    existing = db.execute(select(Material).where(Material.material_code == material_code)).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="原料编码已存在")
-    material = Material(**payload.model_dump())
+    material = Material(**(payload.model_dump() | {"material_code": material_code}))
     material.unit = "kg"
     db.add(material)
     db.commit()
     db.refresh(material)
-    return api_response(data={"id": material.id})
+    return api_response(data={"id": material.id, "material_code": material.material_code})
 
 
 @router.put("/materials/{material_id}")
@@ -1342,10 +1361,13 @@ def update_material(
     material = db.execute(select(Material).where(Material.id == material_id)).scalar_one_or_none()
     if material is None:
         raise HTTPException(status_code=404, detail="原料不存在")
-    duplicate = db.execute(select(Material).where(Material.material_code == payload.material_code, Material.id != material_id)).scalar_one_or_none()
+    material_code = (payload.material_code or "").strip()
+    if not material_code:
+        raise HTTPException(status_code=422, detail="原料编码不能为空")
+    duplicate = db.execute(select(Material).where(Material.material_code == material_code, Material.id != material_id)).scalar_one_or_none()
     if duplicate:
         raise HTTPException(status_code=409, detail="原料编码已存在")
-    for field, value in payload.model_dump().items():
+    for field, value in (payload.model_dump() | {"material_code": material_code}).items():
         setattr(material, field, value)
     material.unit = "kg"
     db.commit()

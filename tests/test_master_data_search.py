@@ -5,6 +5,22 @@ from helpers import uniq
 from models import Material, PackagingConfig, Product
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "payload", "code_field", "prefix"),
+    [
+        ("products", {"name": "自动编号产品", "price": 1}, "product_code", "CP"),
+        ("materials", {"name": "自动编号原料", "price": 1}, "material_code", "YL"),
+    ],
+)
+def test_creating_master_data_generates_a_prefixed_code(client, login, endpoint, payload, code_field, prefix):
+    login("inventory01")
+    response = client.post(f"/api/master-data/{endpoint}", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data[code_field].startswith(prefix)
+    assert data[code_field][len(prefix):].isdigit()
+
+
 @pytest.mark.parametrize("endpoint,model,code_field", [
     ("products", Product, "product_code"),
     ("materials", Material, "material_code"),

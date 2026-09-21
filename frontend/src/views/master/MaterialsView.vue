@@ -56,7 +56,7 @@
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑原料' : '新增原料'" width="720px">
       <el-form :model="form" label-width="100px">
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="原料编码"><el-input v-model="form.material_code" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="原料编码"><el-input v-model="form.material_code" :disabled="!editingId" :placeholder="editingId ? '' : '保存时自动生成（YL 开头）'" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="原料名称"><el-input v-model="form.name" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
@@ -255,7 +255,6 @@ async function savePackaging(entityId) {
 
 async function submit() {
   const payload = {
-    material_code: form.material_code,
     name: form.name,
     specification: `${form.kg_per_bag} kg/袋`,
     unit: 'kg',
@@ -265,6 +264,7 @@ async function submit() {
     is_active: form.is_active
   }
   if (editingId.value) {
+    payload.material_code = form.material_code
     await put(`/api/master-data/materials/${editingId.value}`, payload)
     await savePackaging(editingId.value)
     ElMessage.success('原料已更新')

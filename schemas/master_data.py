@@ -68,7 +68,8 @@ class StandardPriceUpdate(BaseModel):
 
 
 class ProductCreate(BaseModel):
-    product_code: str = Field(..., max_length=50)
+    # 新建时由服务端生成；保留该字段以兼容编辑和既有接口调用。
+    product_code: str | None = Field(default=None, max_length=50)
     name: str = Field(..., max_length=200)
     price: Decimal
     specification: str | None = Field(default=None, max_length=255)
@@ -90,7 +91,8 @@ class PackagingConfigCreate(BaseModel):
 
 
 class MaterialCreate(BaseModel):
-    material_code: str = Field(..., max_length=50)
+    # 新建时由服务端生成；保留该字段以兼容编辑和既有接口调用。
+    material_code: str | None = Field(default=None, max_length=50)
     name: str = Field(..., max_length=200)
     price: Decimal
     specification: str | None = Field(default=None, max_length=255)

@@ -147,6 +147,47 @@ class ImportConflictTests(unittest.TestCase):
         self.assertEqual(existing.phone, "原电话")
         self.assertEqual(existing.name, "供应商")
 
+    def test_supplier_import_prefers_full_name_and_falls_back_to_short_name(self):
+        rows = [
+            dict(btypeid="1", busercode="S1", bname="北京京盐", bfullname="北京京盐金龙策商贸有限公司"),
+            dict(btypeid="2", busercode="S2", bname="仅有简称", bfullname="  "),
+        ]
+        legacy.import_suppliers(self.db, rows, {"1": "supplier", "2": "supplier"}, self.report, True)
+        self.db.commit()
+        self.assertEqual(self.db.scalar(select(Supplier.name).where(Supplier.code == "S1")),
+                         "北京京盐金龙策商贸有限公司")
+        self.assertEqual(self.db.scalar(select(Supplier.name).where(Supplier.code == "S2")), "仅有简称")
+
+    def test_supplier_name_repair_preview_apply_and_repeat(self):
+        supplier = Supplier(code="S1", name="北京京盐", contact_name="", phone="", address="")
+        self.db.add(supplier)
+        self.db.commit()
+        rows = [dict(btypeid="1", busercode="S1", bname="北京京盐",
+                     bfullname="北京京盐金龙策商贸有限公司", soncount=0)]
+        changes, skipped = name_repair.plan_supplier_name_repairs(self.db, rows)
+        self.assertEqual((len(changes), skipped), (1, []))
+        self.assertEqual(supplier.name, "北京京盐")
+        name_repair.apply_name_repairs(self.db, changes)
+        self.db.commit()
+        self.db.refresh(supplier)
+        self.assertEqual(supplier.name, "北京京盐金龙策商贸有限公司")
+        self.assertEqual(name_repair.plan_supplier_name_repairs(self.db, rows), ([], []))
+
+    def test_supplier_name_repair_disambiguates_duplicate_full_names(self):
+        first = Supplier(code="S1", name="天津振泰（S1）", contact_name="", phone="", address="")
+        second = Supplier(code="S2", name="天津振泰（S2）", contact_name="", phone="", address="")
+        self.db.add_all([first, second])
+        self.db.commit()
+        rows = [
+            dict(btypeid="1", busercode="S1", bname="天津振泰", bfullname="天津振泰化工有限公司", soncount=0),
+            dict(btypeid="2", busercode="S2", bname="天津振泰", bfullname="天津振泰化工有限公司", soncount=0),
+        ]
+        changes, skipped = name_repair.plan_supplier_name_repairs(self.db, rows)
+        self.assertEqual(skipped, [])
+        self.assertEqual({change["after"] for change in changes}, {
+            "天津振泰化工有限公司（S1）", "天津振泰化工有限公司（S2）",
+        })
+
     def masters(self):
         warehouse = Warehouse(code="W", name="成品仓", warehouse_type="finished")
         product = Product(product_code="P", name="产品", price=10, unit="kg")

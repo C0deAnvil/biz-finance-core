@@ -827,19 +827,24 @@ def classify_btype(rows: list[dict], doc_types: list[dict], report: Report) -> t
 
 
 def build_name_disambiguation(rows: list[dict], kind_map: dict[str, str], kind: str,
-                             id_key: str, name_key: str, code_key: str) -> dict[str, str]:
+                             id_key: str, name_key: str | tuple[str, ...], code_key: str) -> dict[str, str]:
     """同名的往来单位，名称后面挂上旧编码以满足新系统的唯一约束。
 
     实测 196 组重名、493 家，其中 182 组组内电话或地址不同 —— 是真实的不同实体，
     不能合并。加后缀既保住全部记录，搜原名也还能搜到。
     """
     from collections import Counter as _Counter
+    name_keys = (name_key,) if isinstance(name_key, str) else name_key
+
+    def source_name(row: dict) -> str:
+        return first_nonempty(*(row.get(key) for key in name_keys))
+
     names = _Counter()
     for row in rows:
         old_id = s(row.get(id_key))
         if kind_map.get(old_id) != kind or not is_leaf(row):
             continue
-        name = s(row.get(name_key))
+        name = source_name(row)
         if name:
             names[name] += 1
 
@@ -848,7 +853,7 @@ def build_name_disambiguation(rows: list[dict], kind_map: dict[str, str], kind: 
         old_id = s(row.get(id_key))
         if kind_map.get(old_id) != kind or not is_leaf(row):
             continue
-        name = s(row.get(name_key))
+        name = source_name(row)
         if name and names[name] > 1:
             code = s(row.get(code_key)) or f"OLD_{old_id}"
             result[old_id] = truncate(f"{name}（{code}）", 150)
@@ -1022,7 +1027,10 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
     used_credit_codes = {
         code for code in db.execute(select(Supplier.unified_social_credit_code)).scalars().all() if code
     }
-    name_overrides = build_name_disambiguation(rows, kind_map, "supplier", "btypeid", "bname", "busercode")
+    # bname 是旧系统为了列表显示保留的四字左右简称，bfullname 才是供应商全称。
+    name_overrides = build_name_disambiguation(
+        rows, kind_map, "supplier", "btypeid", ("bfullname", "bname"), "busercode"
+    )
     if report.skip_conflicts:
         name_overrides = {}
     claim_name = make_name_claimer(db, Supplier, report, "供应商")
@@ -1031,7 +1039,7 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
         old_id = s(row.get("btypeid"))
         if kind_map.get(old_id) != "supplier":
             continue
-        name = name_overrides.get(old_id) or truncate(first_nonempty(row.get("bname"), row.get("bfullname")), 150)
+        name = name_overrides.get(old_id) or truncate(first_nonempty(row.get("bfullname"), row.get("bname")), 150)
         if not name:
             continue
         code = truncate(first_nonempty(row.get("busercode"), f"OLD_{old_id}"), 50)

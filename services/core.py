@@ -51,17 +51,24 @@ def jsonable(data):
     return json.loads(json.dumps(data, default=str))
 
 
-def next_business_no(db: Session, prefix: str, business_date: date | None = None) -> str:
+def next_business_no(
+    db: Session,
+    prefix: str,
+    business_date: date | None = None,
+    *,
+    sequence_key: str | None = None,
+) -> str:
     current_date = business_date or date.today()
     date_key = current_date.strftime('%Y%m%d')
+    counter_key = sequence_key or prefix
     counter = db.execute(
         select(SequenceCounter).where(
-            SequenceCounter.sequence_key == prefix,
+            SequenceCounter.sequence_key == counter_key,
             SequenceCounter.business_date == date_key,
         )
     ).scalar_one_or_none()
     if counter is None:
-        counter = SequenceCounter(sequence_key=prefix, business_date=date_key, current_value=0)
+        counter = SequenceCounter(sequence_key=counter_key, business_date=date_key, current_value=0)
         db.add(counter)
         db.flush()
     counter.current_value += 1

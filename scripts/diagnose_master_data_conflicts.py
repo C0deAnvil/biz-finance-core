@@ -125,13 +125,15 @@ def main():
         blockers = report_entity("客户", db_customers, incoming_customers)
 
         # —— 供应商 ——
-        s_overrides = build_name_disambiguation(btype, kind_map, "supplier", "btypeid", "bname", "busercode")
+        s_overrides = build_name_disambiguation(
+            btype, kind_map, "supplier", "btypeid", ("bfullname", "bname"), "busercode"
+        )
         incoming_suppliers = []
         for row in btype:
             old_id = s(row.get("btypeid"))
             if kind_map.get(old_id) != "supplier" or not is_leaf(row):
                 continue
-            name = s_overrides.get(old_id) or truncate(first_nonempty(row.get("bname"), row.get("bfullname")), 150)
+            name = s_overrides.get(old_id) or truncate(first_nonempty(row.get("bfullname"), row.get("bname")), 150)
             code = truncate(first_nonempty(row.get("busercode"), f"OLD_{old_id}"), 50)
             if old_id and name:
                 incoming_suppliers.append((code, name))
