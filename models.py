@@ -674,6 +674,7 @@ class Inventory(TimestampMixin, Base):
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     quantity = Column(Numeric(18, 4), nullable=False, default=0)      # 实有
     reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0)  # 占用
     in_transit = Column(Numeric(18, 4), nullable=False, default=0)     # 在途(退货在途;采购在途由采购单实时推导)
@@ -685,6 +686,7 @@ class Inventory(TimestampMixin, Base):
     warehouse = relationship("Warehouse")
     product = relationship("Product")
     material = relationship("Material")
+    packaging_config = relationship("PackagingConfig")
 
 
 class InventoryBatch(TimestampMixin, Base):
@@ -697,6 +699,7 @@ class InventoryBatch(TimestampMixin, Base):
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     batch_no = Column(String(80), nullable=False)
     quantity = Column(Numeric(18, 4), nullable=False, default=0)
     unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
@@ -714,6 +717,7 @@ class InventoryTransaction(TimestampMixin, Base):
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     batch_no = Column(String(80), nullable=True)
     quantity = Column(Numeric(18, 4), nullable=False)
     unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
@@ -838,6 +842,8 @@ class SalesOrderItem(TimestampMixin, Base):
     # 本明细当前占用了多少成品库存。有了这个"账",占用才能做到幂等(重复审批不叠加)
     # 且可释放(驳回/取消时知道该退还多少),否则只看仓库端的 reserved 无法区分是谁占的。
     reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+    packaging_reserved_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
+    packaging_shipped_quantity = Column(Numeric(18, 4), nullable=False, default=0, server_default=text("0"))
 
     sales_order = relationship("SalesOrder", back_populates="items")
     product = relationship("Product")
@@ -952,6 +958,7 @@ class StockTransfer(TimestampMixin, Base):
     target_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     quantity = Column(Numeric(18, 4), nullable=False)
     status = Column(String(30), nullable=False, default="pending_outbound")
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -969,6 +976,7 @@ class StockTransfer(TimestampMixin, Base):
     target_warehouse = relationship("Warehouse", foreign_keys=[target_warehouse_id])
     product = relationship("Product")
     material = relationship("Material")
+    packaging_config = relationship("PackagingConfig")
     created_by = relationship("User", foreign_keys=[created_by_id])
 
 

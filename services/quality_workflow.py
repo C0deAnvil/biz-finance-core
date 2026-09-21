@@ -155,9 +155,9 @@ def create_purchase_quality_tasks(
         if order_item is None:
             continue
 
-        item_type = "product" if order_item.product_id else "material"
-        item_id = order_item.product_id or order_item.material_id
-        item_name = order_item.product.name if order_item.product else (order_item.material.name if order_item.material else f"采购明细{index + 1}")
+        item_type = "product" if order_item.product_id else ("material" if order_item.material_id else "packaging")
+        item_id = order_item.product_id or order_item.material_id or order_item.packaging_config_id
+        item_name = order_item.product.name if order_item.product else (order_item.material.name if order_item.material else (order_item.packaging_config.packaging_name if order_item.packaging_config else f"采购明细{index + 1}"))
         item_code = order_item.product.product_code if order_item.product else (order_item.material.material_code if order_item.material else None)
         quantity = Decimal(receipt_item.received_quantity or 0)
         if quantity <= 0:

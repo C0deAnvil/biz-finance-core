@@ -59,9 +59,18 @@ INACTIVE_TASK_STATUSES = (
 StockKey = tuple[str, int | None]
 
 
-def stock_key(*, product_id: int | None = None, material_id: int | None = None) -> StockKey:
-    """产品/原料的统一字典键(替代原先散落在 3 个 router 里的 _stock_key 副本)。"""
-    return ("product", product_id) if product_id else ("material", material_id)
+def stock_key(
+    *,
+    product_id: int | None = None,
+    material_id: int | None = None,
+    packaging_config_id: int | None = None,
+) -> StockKey:
+    """产品、原料、包装物的统一字典键。"""
+    if product_id:
+        return ("product", product_id)
+    if material_id:
+        return ("material", material_id)
+    return ("packaging", packaging_config_id)
 
 
 # ===== 行级(单个 inventories 行)=====
@@ -123,18 +132,19 @@ def material_production_commitment(db: Session, *, material_id: int) -> Decimal:
 def purchase_in_transit_map(db: Session) -> dict[StockKey, Decimal]:
     """采购在途 = 活跃采购单的 已下单量 - 已收货量,按产品/原料聚合。"""
     result: dict[StockKey, Decimal] = {}
-    for product_id, material_id, ordered_quantity, received_quantity in db.execute(
+    for product_id, material_id, packaging_config_id, ordered_quantity, received_quantity in db.execute(
         select(
             PurchaseOrderItem.product_id,
             PurchaseOrderItem.material_id,
+            PurchaseOrderItem.packaging_config_id,
             func.coalesce(func.sum(PurchaseOrderItem.quantity), 0),
             func.coalesce(func.sum(PurchaseOrderItem.received_quantity), 0),
         )
         .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
         .where(PurchaseOrder.status.in_(ACTIVE_PURCHASE_STATUSES))
-        .group_by(PurchaseOrderItem.product_id, PurchaseOrderItem.material_id)
+        .group_by(PurchaseOrderItem.product_id, PurchaseOrderItem.material_id, PurchaseOrderItem.packaging_config_id)
     ).all():
-        result[stock_key(product_id=product_id, material_id=material_id)] = max(
+        result[stock_key(product_id=product_id, material_id=material_id, packaging_config_id=packaging_config_id)] = max(
             Decimal(ordered_quantity or 0) - Decimal(received_quantity or 0),
             Decimal("0"),
         )

@@ -1566,7 +1566,7 @@ def _build_inventory_capital_report_rows(
 ) -> list[dict]:
     rows = db.execute(
         select(Inventory)
-        .options(joinedload(Inventory.warehouse), joinedload(Inventory.product), joinedload(Inventory.material))
+        .options(joinedload(Inventory.warehouse), joinedload(Inventory.product), joinedload(Inventory.material), joinedload(Inventory.packaging_config))
         .order_by(Inventory.updated_at.desc())
     ).scalars().all()
     data = []
@@ -1575,9 +1575,9 @@ def _build_inventory_capital_report_rows(
             continue
         if not _in_date_range(row.updated_at, date_from, date_to):
             continue
-        item = row.product or row.material
-        item_name = item.name if item else None
-        item_code = getattr(item, 'product_code', None) or getattr(item, 'material_code', None)
+        item = row.product or row.material or row.packaging_config
+        item_name = getattr(item, 'name', None) or getattr(item, 'packaging_name', None)
+        item_code = getattr(item, 'product_code', None) or getattr(item, 'material_code', None) or (f'BZ-{item.id}' if item else None)
         if not _match_keyword(keyword, item_name, item_code, row.warehouse.name if row.warehouse else None):
             continue
         quantity = Decimal(row.quantity or 0)
@@ -1591,8 +1591,8 @@ def _build_inventory_capital_report_rows(
                 'updated_at': row.updated_at.isoformat() if row.updated_at else None,
                 'warehouse_id': row.warehouse_id,
                 'warehouse_name': row.warehouse.name if row.warehouse else None,
-                'item_type': 'product' if row.product_id else 'material',
-                'item_id': row.product_id or row.material_id,
+                'item_type': 'product' if row.product_id else ('material' if row.material_id else 'packaging'),
+                'item_id': row.product_id or row.material_id or row.packaging_config_id,
                 'item_code': item_code,
                 'item_name': item_name,
                 'quantity': float(quantity),

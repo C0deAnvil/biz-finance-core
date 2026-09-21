@@ -137,6 +137,7 @@ def create_receipt(payload: PurchaseReceiptCreate, current_user: User, db: Sessi
                 {
                     "product_id": order_item.product_id,
                     "material_id": order_item.material_id,
+                    "packaging_config_id": order_item.packaging_config_id if not order_item.product_id and not order_item.material_id else None,
                     "batch_no": item_payload.batch_no,
                     "quantity": float(item_payload.received_quantity or 0),
                     "unit_cost": float(item_payload.unit_cost or 0),
@@ -284,6 +285,7 @@ def create_purchase_return(payload: PurchaseReturnCreate, current_user: User, db
                 Inventory.warehouse_id == payload.warehouse_id,
                 Inventory.product_id == order_item.product_id,
                 Inventory.material_id == order_item.material_id,
+                Inventory.packaging_config_id == (order_item.packaging_config_id if not order_item.product_id and not order_item.material_id else None),
             )
         ).scalar_one_or_none()
         unit_cost = Decimal(inventory.avg_unit_cost or 0) if inventory else Decimal("0")
@@ -293,10 +295,13 @@ def create_purchase_return(payload: PurchaseReturnCreate, current_user: User, db
             reinspection_names.append(order_item.product.name)
         elif order_item.material and order_item.material.name:
             reinspection_names.append(order_item.material.name)
+        elif order_item.packaging_config:
+            reinspection_names.append(order_item.packaging_config.packaging_name)
         request_items.append(
             {
                 "product_id": order_item.product_id,
                 "material_id": order_item.material_id,
+                "packaging_config_id": order_item.packaging_config_id if not order_item.product_id and not order_item.material_id else None,
                 "batch_no": None,
                 "quantity": float(item_payload.returned_quantity or 0),
                 "unit_cost": float(unit_cost),

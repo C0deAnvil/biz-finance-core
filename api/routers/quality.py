@@ -86,7 +86,9 @@ def _purchase_quality_target_warehouse_id(db: Session, order_item: PurchaseOrder
         return get_raw_warehouse(db).id
     if order_item.product_id:
         return get_finished_warehouse(db).id
-    raise HTTPException(status_code=409, detail="采购质检入库明细缺少产品或原料信息")
+    if order_item.packaging_config_id:
+        return get_raw_warehouse(db).id
+    raise HTTPException(status_code=409, detail="采购质检入库明细缺少库存对象信息")
 
 
 def _is_failed_grade(grade: str | None) -> bool:
@@ -1117,12 +1119,17 @@ def allow_inbound(
             source_type="purchase_receipt",
             source_id=receipt.id,
             source_no=receipt.receipt_no,
-            warehouse_id=_purchase_quality_target_warehouse_id(db, order_item),
+            warehouse_id=(
+                receipt.warehouse_id
+                if order_item.packaging_config_id and not order_item.product_id and not order_item.material_id
+                else _purchase_quality_target_warehouse_id(db, order_item)
+            ),
             requested_by_id=current_user.id,
             items=[
                 {
                     "product_id": order_item.product_id,
                     "material_id": order_item.material_id,
+                    "packaging_config_id": order_item.packaging_config_id if not order_item.product_id and not order_item.material_id else None,
                     "purchase_receipt_item_id": receipt_item.id,
                     "batch_no": receipt_item.batch_no,
                     "quantity": float(inbound_quantity),

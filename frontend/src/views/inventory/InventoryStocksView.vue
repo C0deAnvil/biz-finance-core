@@ -15,6 +15,7 @@
         <el-select v-model="filters.itemType" clearable placeholder="类型" class="w-140">
           <el-option label="产品" value="product" />
           <el-option label="原料" value="material" />
+          <el-option label="包装" value="packaging" />
         </el-select>
         <el-input v-model="filters.keyword" clearable placeholder="搜索编码 / 名称" class="w-240" />
         <el-switch v-model="filters.alertOnly" inline-prompt active-text="仅预警" inactive-text="全部" />
@@ -29,7 +30,7 @@
         <el-table-column prop="warehouse_name" label="仓库" width="180" />
         <el-table-column label="类型" width="100">
           <template #default="scope">
-            <el-tag :type="scope.row.item_type === 'product' ? 'success' : 'warning'">{{ scope.row.item_type === 'product' ? '产品' : '原料' }}</el-tag>
+            <el-tag :type="scope.row.item_type === 'product' ? 'success' : scope.row.item_type === 'material' ? 'warning' : 'info'">{{ itemTypeLabel(scope.row.item_type) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="item_code" label="编码" width="150" />
@@ -131,7 +132,7 @@
           <div class="drawer-title">{{ activeStock.item_name }}</div>
           <div class="drawer-subtitle">{{ activeStock.warehouse_name }} · {{ activeStock.item_code }}</div>
         </div>
-        <el-tag :type="activeStock.item_type === 'product' ? 'success' : 'warning'">{{ activeStock.item_type === 'product' ? '产品' : '原料' }}</el-tag>
+        <el-tag :type="activeStock.item_type === 'product' ? 'success' : activeStock.item_type === 'material' ? 'warning' : 'info'">{{ itemTypeLabel(activeStock.item_type) }}</el-tag>
       </div>
       <el-table :data="transactionRows" stripe>
         <el-table-column prop="transaction_no" label="流水号" width="150" />
@@ -253,6 +254,7 @@
               <el-select v-model="scope.row.item_type" style="width: 100%" @change="handleManualItemTypeChange(scope.row)">
                 <el-option label="产品" value="product" />
                 <el-option label="原料" value="material" />
+                <el-option label="包装" value="packaging" />
               </el-select>
             </template>
           </el-table-column>
@@ -260,9 +262,9 @@
             <template #default="scope">
               <el-select v-model="scope.row.item_id" filterable style="width: 100%">
                 <el-option
-                  v-for="item in scope.row.item_type === 'product' ? products : materials"
+                  v-for="item in manualItemOptions(scope.row.item_type)"
                   :key="item.id"
-                  :label="item.name"
+                  :label="item.name || item.packaging_name"
                   :value="item.id"
                 />
               </el-select>
@@ -351,6 +353,7 @@ const rows = ref([])
 const warehouses = ref([])
 const products = ref([])
 const materials = ref([])
+const packagingConfigs = ref([])
 const transactions = ref([])
 const operationRequests = ref([])
 const drawerVisible = ref(false)
@@ -492,6 +495,14 @@ function handleManualItemTypeChange(row) {
   row.item_id = null
 }
 
+function itemTypeLabel(itemType) {
+  return itemType === 'product' ? '产品' : itemType === 'material' ? '原料' : '包装'
+}
+
+function manualItemOptions(itemType) {
+  return itemType === 'product' ? products.value : itemType === 'material' ? materials.value : packagingConfigs.value
+}
+
 function removeManualItem(index) {
   manualForm.items.splice(index, 1)
 }
@@ -515,7 +526,7 @@ async function openTransactions(row) {
   activeStock.value = row
   const params = new URLSearchParams({ page: '1', page_size: '100' })
   params.set('warehouse_id', String(row.warehouse_id))
-  params.set(row.item_type === 'product' ? 'product_id' : 'material_id', String(row.item_id))
+  params.set(row.item_type === 'product' ? 'product_id' : row.item_type === 'material' ? 'material_id' : 'packaging_config_id', String(row.item_id))
   const data = await get(`/api/inventory/transactions?${params.toString()}`)
   transactions.value = data.items || data
   drawerVisible.value = true
@@ -531,6 +542,7 @@ function buildOperationForm(row) {
   operationForm.items = (row.original_items || row.handled_items || []).map((item) => ({
     product_id: item.product_id || null,
     material_id: item.material_id || null,
+    packaging_config_id: item.packaging_config_id || null,
     batch_no: item.batch_no || '',
     expected_quantity: Number(item.quantity || 0),
     original_quantity: Number(item.quantity || 0),
@@ -548,6 +560,9 @@ function operationItemName(row) {
   }
   if (row.material_id) {
     return materials.value.find((item) => item.id === row.material_id)?.name || `原料#${row.material_id}`
+  }
+  if (row.packaging_config_id) {
+    return packagingConfigs.value.find((item) => item.id === row.packaging_config_id)?.packaging_name || `包装#${row.packaging_config_id}`
   }
   return '-'
 }
@@ -636,6 +651,7 @@ async function submitManualOperation() {
     .map((item) => ({
       product_id: item.item_type === 'product' ? item.item_id : null,
       material_id: item.item_type === 'material' ? item.item_id : null,
+      packaging_config_id: item.item_type === 'packaging' ? item.item_id : null,
       batch_no: item.batch_no || null,
       quantity: item.quantity,
       unit_cost: item.unit_cost || 0
@@ -672,12 +688,14 @@ function exportTable() {
 }
 
 onMounted(async () => {
-  const [productRows, materialRows] = await Promise.all([
+  const [productRows, materialRows, packagingRows] = await Promise.all([
     get('/api/master-data/products'),
-    get('/api/master-data/materials')
+    get('/api/master-data/materials'),
+    get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
   ])
   products.value = productRows
   materials.value = materialRows
+  packagingConfigs.value = packagingRows
   await load()
 })
 

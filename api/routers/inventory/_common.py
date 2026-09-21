@@ -24,6 +24,7 @@ from models import (
     PurchaseReceiptItem,
     Role,
     OperationLog,
+    PackagingConfig,
     ReceivableRecord,
     order_type_style,
     SalesOrderItem,
@@ -41,7 +42,7 @@ from schemas.production import FulfillmentDemandManualCreateRequest, SalesOrderR
 from schemas.sales import PlacementActionRequest, QueueActionRequest, SalesShipmentRequest
 from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
 from services.replenishment_service import create_manual_fulfillment_demand, ensure_fulfillment_demand_routing, resolve_demand_progress
-from services.display import clean_display_text, inventory_request_category_label, status_label, transaction_type_label
+from services.display import calculate_bag_count, clean_display_text, get_inventory_packaging_config, inventory_request_category_label, status_label, transaction_type_label
 from services.display import payment_type_label
 from services.organization import get_inventory_scope_warehouse_ids, user_in_scope, warehouse_in_scope
 from services.workflow import (
@@ -101,22 +102,26 @@ def _serialize_stock(
     available_quantity = 可置货量(实有-占用),决定能否交货;
     expected_available_quantity = 补货可用量(实有+在途-占用),决定是否还要补货。
     """
-    key = stock_key(product_id=row.product_id, material_id=row.material_id)
+    key = stock_key(
+        product_id=row.product_id,
+        material_id=row.material_id,
+        packaging_config_id=row.packaging_config_id,
+    )
     in_transit_qty = Decimal((purchase_in_transit or {}).get(key, 0))
     available_quantity = placeable_of(row)
     expected_available_quantity = replenishment_available_of(row, purchase_in_transit=in_transit_qty)
-    item = row.product or row.material
-    item_type = "product" if row.product_id else "material"
-    safety_stock_qty = Decimal(item.safety_stock_qty or 0) if item else Decimal("0")
+    item = row.product or row.material or row.packaging_config
+    item_type = "product" if row.product_id else ("material" if row.material_id else "packaging")
+    safety_stock_qty = Decimal(getattr(item, "safety_stock_qty", 0) or 0)
     return {
         "id": row.id,
         "warehouse_id": row.warehouse_id,
         "warehouse_code": row.warehouse.code if row.warehouse else None,
         "warehouse_name": row.warehouse.name if row.warehouse else None,
-        "item_id": row.product_id or row.material_id,
+        "item_id": row.product_id or row.material_id or row.packaging_config_id,
         "item_type": item_type,
-        "item_code": row.product.product_code if row.product else (row.material.material_code if row.material else None),
-        "item_name": row.product.name if row.product else (row.material.name if row.material else ""),
+        "item_code": row.product.product_code if row.product else (row.material.material_code if row.material else (f"BZ-{row.packaging_config_id}" if row.packaging_config_id else None)),
+        "item_name": row.product.name if row.product else (row.material.name if row.material else (row.packaging_config.packaging_name if row.packaging_config else "")),
         "quantity": float(row.quantity),
         "reserved_quantity": float(row.reserved_quantity),
         "in_transit": float(row.in_transit or 0),
@@ -131,11 +136,12 @@ def _serialize_stock(
     }
 
 
-def _serialize_transaction(row: InventoryTransaction, warehouse_map: dict, product_map: dict, material_map: dict) -> dict:
+def _serialize_transaction(row: InventoryTransaction, warehouse_map: dict, product_map: dict, material_map: dict, packaging_map: dict | None = None) -> dict:
     product = product_map.get(row.product_id)
     material = material_map.get(row.material_id)
+    packaging = (packaging_map or {}).get(row.packaging_config_id)
     warehouse = warehouse_map.get(row.warehouse_id)
-    item_type = "product" if row.product_id else "material"
+    item_type = "product" if row.product_id else ("material" if row.material_id else "packaging")
     return {
         "id": row.id,
         "transaction_no": row.transaction_no,
@@ -143,10 +149,10 @@ def _serialize_transaction(row: InventoryTransaction, warehouse_map: dict, produ
         "transaction_type_label": transaction_type_label(row.transaction_type),
         "warehouse_id": row.warehouse_id,
         "warehouse_name": warehouse.name if warehouse else None,
-        "item_id": row.product_id or row.material_id,
+        "item_id": row.product_id or row.material_id or row.packaging_config_id,
         "item_type": item_type,
-        "item_code": product.product_code if product else (material.material_code if material else None),
-        "item_name": product.name if product else (material.name if material else None),
+        "item_code": product.product_code if product else (material.material_code if material else (f"BZ-{packaging.id}" if packaging else None)),
+        "item_name": product.name if product else (material.name if material else (packaging.packaging_name if packaging else None)),
         "batch_no": row.batch_no,
         "quantity": float(row.quantity),
         "unit_cost": float(row.unit_cost),
@@ -177,7 +183,7 @@ def _serialize_stock_take_task(task: StockTakeTask, warehouse_map: dict[int, War
 
 
 def _serialize_stock_take_item(item: StockTakeItem, inventory: Inventory | None) -> dict:
-    item_type = "product" if inventory and inventory.product_id else "material"
+    item_type = "product" if inventory and inventory.product_id else ("material" if inventory and inventory.material_id else "packaging")
     item_name = None
     item_code = None
     if inventory and inventory.product:
@@ -186,6 +192,9 @@ def _serialize_stock_take_item(item: StockTakeItem, inventory: Inventory | None)
     elif inventory and inventory.material:
         item_name = inventory.material.name
         item_code = inventory.material.material_code
+    elif inventory and inventory.packaging_config:
+        item_name = inventory.packaging_config.packaging_name
+        item_code = f"BZ-{inventory.packaging_config.id}"
     return {
         "id": item.id,
         "inventory_id": item.inventory_id,
@@ -201,9 +210,9 @@ def _serialize_stock_take_item(item: StockTakeItem, inventory: Inventory | None)
 
 
 def _serialize_stock_take_template_item(inventory: Inventory) -> dict:
-    item_type = "product" if inventory.product_id else "material"
-    item_name = inventory.product.name if inventory.product else (inventory.material.name if inventory.material else None)
-    item_code = inventory.product.product_code if inventory.product else (inventory.material.material_code if inventory.material else None)
+    item_type = "product" if inventory.product_id else ("material" if inventory.material_id else "packaging")
+    item_name = inventory.product.name if inventory.product else (inventory.material.name if inventory.material else (inventory.packaging_config.packaging_name if inventory.packaging_config else None))
+    item_code = inventory.product.product_code if inventory.product else (inventory.material.material_code if inventory.material else (f"BZ-{inventory.packaging_config.id}" if inventory.packaging_config else None))
     return {
         "inventory_id": inventory.id,
         "item_type": item_type,
@@ -289,6 +298,17 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
     unreserved_map = {
         row.product_id: max(placeable_of(row), Decimal("0")) for row in inventory_rows
     }
+    packaging_rows = db.execute(
+        select(Inventory).where(
+            Inventory.warehouse_id == finished_warehouse_id,
+            Inventory.packaging_config_id.is_not(None),
+            Inventory.product_id.is_(None),
+            Inventory.material_id.is_(None),
+        )
+    ).scalars().all()
+    packaging_free_pool = {
+        row.packaging_config_id: max(placeable_of(row), Decimal("0")) for row in packaging_rows
+    }
     items = []
     any_available = False
     all_enough = True
@@ -309,12 +329,20 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
         if item.product_id in unreserved_map:
             unreserved_map[item.product_id] = free_pool - take_from_pool
         available = reserved_for_me + take_from_pool
+        packaging = get_inventory_packaging_config(db, item.packaging_config)
+        packaging_target = Decimal(calculate_bag_count(placed + remaining_to_place, item.kg_per_bag) or 0) if packaging else Decimal("0")
+        packaging_allocated = Decimal(item.packaging_reserved_quantity or 0) + Decimal(item.packaging_shipped_quantity or 0)
+        packaging_required = max(packaging_target - packaging_allocated, Decimal("0"))
+        packaging_available = packaging_free_pool.get(packaging.id, Decimal("0")) if packaging else Decimal("0")
+        packaging_enough = not item.packaging_config_id or (packaging is not None and packaging_available >= packaging_required)
+        if packaging is not None and packaging_required > 0:
+            packaging_free_pool[packaging.id] = max(packaging_available - min(packaging_required, packaging_available), Decimal("0"))
         if remaining_to_place <= 0:
             item_status = "done"
-        elif available >= remaining_to_place:
+        elif available >= remaining_to_place and packaging_enough:
             item_status = "enough"
             any_available = True
-        elif available > 0:
+        elif available > 0 and (not item.packaging_config_id or packaging_available > 0):
             item_status = "partial"
             any_available = True
             all_enough = False
@@ -336,6 +364,12 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
                 "available_quantity": float(available),
                 "shortage_quantity": float(max(remaining_to_place - available, Decimal("0"))),
                 "item_status": item_status,
+                "packaging_config_id": packaging.id if packaging else None,
+                "packaging_name": packaging.packaging_name if packaging else None,
+                "kg_per_bag": float(item.kg_per_bag or 0) if item.kg_per_bag is not None else None,
+                "packaging_required_quantity": float(packaging_required),
+                "packaging_available_quantity": float(packaging_available),
+                "packaging_shortage_quantity": float(max(packaging_required - packaging_available, Decimal("0"))),
             }
         )
     if all_enough:
@@ -668,6 +702,7 @@ def _purchase_operation_source_detail(db: Session, request: InventoryOperationRe
             joinedload(PurchaseOrder.supplier),
             joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.product),
             joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.material),
+            joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.packaging_config),
         )
         .where(PurchaseOrder.id == receipt.purchase_order_id)
     ).unique().scalar_one_or_none()
@@ -697,12 +732,12 @@ def _purchase_operation_source_detail(db: Session, request: InventoryOperationRe
                 "item_name": (
                     order_item.product.name
                     if order_item and order_item.product
-                    else (order_item.material.name if order_item and order_item.material else None)
+                    else (order_item.material.name if order_item and order_item.material else (order_item.packaging_config.packaging_name if order_item and order_item.packaging_config else None))
                 ),
                 "item_code": (
                     order_item.product.product_code
                     if order_item and order_item.product
-                    else (order_item.material.material_code if order_item and order_item.material else None)
+                    else (order_item.material.material_code if order_item and order_item.material else (f"BZ-{order_item.packaging_config_id}" if order_item and order_item.packaging_config_id else None))
                 ),
                 "order_quantity": float(order_item.quantity or 0) if order_item else 0,
                 "received_quantity": float(row.received_quantity or 0),
@@ -828,6 +863,7 @@ def _apply_stock_take_submission(task: StockTakeTask, payload: StockTakeSubmit |
         .options(
             joinedload(StockTakeItem.inventory).joinedload(Inventory.product),
             joinedload(StockTakeItem.inventory).joinedload(Inventory.material),
+            joinedload(StockTakeItem.inventory).joinedload(Inventory.packaging_config),
         )
         .where(StockTakeItem.stock_take_task_id == task.id)
     ).scalars().all()
@@ -858,6 +894,7 @@ def _apply_stock_take_submission(task: StockTakeTask, payload: StockTakeSubmit |
                 warehouse_id=inventory.warehouse_id,
                 product_id=inventory.product_id,
                 material_id=inventory.material_id,
+                packaging_config_id=inventory.packaging_config_id,
                 quantity=difference_quantity,
                 unit_cost=Decimal(inventory.avg_unit_cost or 0),
                 transaction_type="stock_take_adjustment",

@@ -90,7 +90,7 @@
         <el-alert :title="texts.createDialog.tip" type="warning" :closable="false" show-icon class="mb-12" />
         <el-table :data="items" border>
           <el-table-column :label="texts.createDialog.itemName" min-width="220">
-            <template #default="scope">{{ scope.row.product_name || scope.row.material_name || '-' }}</template>
+            <template #default="scope">{{ scope.row.product_name || scope.row.material_name || scope.row.packaging_name || '-' }}</template>
           </el-table-column>
           <el-table-column prop="quantity" :label="texts.createDialog.orderQty" width="120">
             <template #default="scope">{{ formatNumber(scope.row.quantity) }}</template>

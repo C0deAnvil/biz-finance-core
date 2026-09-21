@@ -8,6 +8,7 @@ from schemas.accounts import SettlementAccountInput
 class PurchaseOrderItemInput(BaseModel):
     product_id: int | None = None
     material_id: int | None = None
+    packaging_config_id: int | None = None
     quantity: Decimal = Field(..., gt=0)
     unit_price: Decimal = Field(..., gt=0)
 

@@ -17,6 +17,7 @@ from models import (
     Notification,
     NotificationRecipient,
     OperationLog,
+    PackagingConfig,
     Product,
     Role,
     SequenceCounter,
@@ -301,11 +302,17 @@ def ensure_inventory_record(
     warehouse_id: int,
     product_id: int | None = None,
     material_id: int | None = None,
+    packaging_config_id: int | None = None,
     for_update: bool = False,
 ):
     conditions = [Inventory.warehouse_id == warehouse_id]
     conditions.append(Inventory.product_id == product_id if product_id is not None else Inventory.product_id.is_(None))
     conditions.append(Inventory.material_id == material_id if material_id is not None else Inventory.material_id.is_(None))
+    conditions.append(
+        Inventory.packaging_config_id == packaging_config_id
+        if packaging_config_id is not None
+        else Inventory.packaging_config_id.is_(None)
+    )
     query = select(Inventory).where(*conditions)
     if for_update:
         query = query.with_for_update()
@@ -315,6 +322,7 @@ def ensure_inventory_record(
             warehouse_id=warehouse_id,
             product_id=product_id,
             material_id=material_id,
+            packaging_config_id=packaging_config_id,
             quantity=0,
             reserved_quantity=0,
             avg_unit_cost=0,
@@ -517,13 +525,13 @@ def ensure_workflow_routing(
 
 
 def _inventory_item_context(inventory: Inventory) -> dict:
-    item = inventory.product or inventory.material
+    item = inventory.product or inventory.material or inventory.packaging_config
     safety_stock_qty = Decimal(getattr(item, 'safety_stock_qty', 0) or 0)
     available_quantity = Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0)
     return {
-        'item_name': getattr(item, 'name', '未命名物料'),
-        'item_code': getattr(item, 'product_code', None) or getattr(item, 'material_code', None) or '-',
-        'item_type': 'product' if inventory.product_id else 'material',
+        'item_name': getattr(item, 'name', None) or getattr(item, 'packaging_name', '未命名物料'),
+        'item_code': getattr(item, 'product_code', None) or getattr(item, 'material_code', None) or (f'BZ-{item.id}' if item else '-'),
+        'item_type': 'product' if inventory.product_id else ('material' if inventory.material_id else 'packaging'),
         'warehouse_name': inventory.warehouse.name if inventory.warehouse else f'仓库#{inventory.warehouse_id}',
         'safety_stock_qty': safety_stock_qty,
         'available_quantity': available_quantity,
@@ -656,6 +664,31 @@ def sync_low_stock_alerts(db: Session):
         for material_id in material_ids:
             if material_id not in existing_material_ids:
                 ensure_inventory_record(db, warehouse_id=raw_warehouse.id, material_id=material_id)
+    packaging_ids = [
+        row[0]
+        for row in db.execute(
+            select(PackagingConfig.id).where(
+                PackagingConfig.entity_type == 'global',
+                PackagingConfig.is_active.is_(True),
+            )
+        ).all()
+    ]
+    if packaging_ids:
+        warehouses = db.execute(select(Warehouse.id)).all()
+        existing_packaging_keys = {
+            (row.warehouse_id, row.packaging_config_id)
+            for row in db.execute(
+                select(Inventory).where(Inventory.packaging_config_id.in_(packaging_ids))
+            ).scalars().all()
+        }
+        for (warehouse_id,) in warehouses:
+            for packaging_config_id in packaging_ids:
+                if (warehouse_id, packaging_config_id) not in existing_packaging_keys:
+                    ensure_inventory_record(
+                        db,
+                        warehouse_id=warehouse_id,
+                        packaging_config_id=packaging_config_id,
+                    )
     db.flush()
     inventories = db.execute(select(Inventory).order_by(Inventory.id.asc())).scalars().all()
     for inventory in inventories:
@@ -673,6 +706,7 @@ def apply_inventory_change(
     batch_no: str | None = None,
     product_id: int | None = None,
     material_id: int | None = None,
+    packaging_config_id: int | None = None,
     related_type: str | None = None,
     related_id: int | None = None,
     created_by_id: int | None = None,
@@ -683,6 +717,7 @@ def apply_inventory_change(
         warehouse_id=warehouse_id,
         product_id=product_id,
         material_id=material_id,
+        packaging_config_id=packaging_config_id,
         for_update=quantity < 0,
     )
     previous_qty = Decimal(inventory.quantity or 0)
@@ -702,6 +737,7 @@ def apply_inventory_change(
         warehouse_id=warehouse_id,
         product_id=product_id,
         material_id=material_id,
+        packaging_config_id=packaging_config_id,
         batch_no=batch_no,
         quantity=quantity,
         unit_cost=unit_cost,
@@ -719,6 +755,7 @@ def apply_inventory_change(
                 InventoryBatch.batch_no == batch_no,
                 InventoryBatch.product_id == product_id,
                 InventoryBatch.material_id == material_id,
+                InventoryBatch.packaging_config_id == packaging_config_id,
             )
         ).scalar_one_or_none()
         if batch is None:
@@ -726,6 +763,7 @@ def apply_inventory_change(
                 warehouse_id=warehouse_id,
                 product_id=product_id,
                 material_id=material_id,
+                packaging_config_id=packaging_config_id,
                 batch_no=batch_no,
                 quantity=0,
                 unit_cost=unit_cost,

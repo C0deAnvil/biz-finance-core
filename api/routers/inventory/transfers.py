@@ -24,6 +24,7 @@ from models import (
     PurchaseReceiptItem,
     Role,
     OperationLog,
+    PackagingConfig,
     ReceivableRecord,
     order_type_style,
     SalesOrderItem,
@@ -82,16 +83,15 @@ def create_stock_transfer(
     quantity = Decimal(str(payload.quantity))
     if quantity <= 0:
         raise HTTPException(status_code=409, detail="移库数量必须大于 0")
-    if payload.product_id and payload.material_id:
-        raise HTTPException(status_code=409, detail="商品与原料只能二选一")
-    if not payload.product_id and not payload.material_id:
-        raise HTTPException(status_code=409, detail="请选择商品或原料")
+    if sum(bool(value) for value in (payload.product_id, payload.material_id, payload.packaging_config_id)) != 1:
+        raise HTTPException(status_code=409, detail="请选择商品、原料或包装中的一种")
 
     inventory = db.execute(
         select(Inventory).where(
             Inventory.warehouse_id == source_warehouse.id,
             Inventory.product_id == payload.product_id,
             Inventory.material_id == payload.material_id,
+            Inventory.packaging_config_id == payload.packaging_config_id,
         )
     ).with_for_update().scalar_one_or_none()
     if inventory is None:
@@ -106,6 +106,7 @@ def create_stock_transfer(
         target_warehouse_id=target_warehouse.id,
         product_id=payload.product_id,
         material_id=payload.material_id,
+        packaging_config_id=payload.packaging_config_id,
         quantity=quantity,
         status="pending_outbound",
         created_by_id=current_user.id,
@@ -137,6 +138,7 @@ def list_stock_transfers(
             joinedload(StockTransfer.target_warehouse),
             joinedload(StockTransfer.product),
             joinedload(StockTransfer.material),
+            joinedload(StockTransfer.packaging_config),
             joinedload(StockTransfer.created_by),
         )
         .order_by(StockTransfer.created_at.desc())
@@ -164,7 +166,8 @@ def list_stock_transfers(
                 "target_warehouse_name": row.target_warehouse.name if row.target_warehouse else None,
                 "product_id": row.product_id,
                 "material_id": row.material_id,
-                "item_name": (row.product.name if row.product else None) or (row.material.name if row.material else None),
+                "packaging_config_id": row.packaging_config_id,
+                "item_name": (row.product.name if row.product else None) or (row.material.name if row.material else None) or (row.packaging_config.packaging_name if row.packaging_config else None),
                 "quantity": float(row.quantity),
                 "status": row.status,
                 "status_label": _transfer_status_label(row.status),
@@ -201,6 +204,7 @@ def confirm_transfer_outbound(
             Inventory.warehouse_id == transfer.source_warehouse_id,
             Inventory.product_id == transfer.product_id,
             Inventory.material_id == transfer.material_id,
+            Inventory.packaging_config_id == transfer.packaging_config_id,
         )
     ).with_for_update().scalar_one_or_none()
     if inventory is None:
@@ -213,6 +217,7 @@ def confirm_transfer_outbound(
         warehouse_id=transfer.source_warehouse_id,
         product_id=transfer.product_id,
         material_id=transfer.material_id,
+        packaging_config_id=transfer.packaging_config_id,
         quantity=-Decimal(transfer.quantity),
         unit_cost=Decimal(inventory.avg_unit_cost or 0),
         transaction_type="stock_transfer_out",
@@ -254,6 +259,7 @@ def submit_transfer_quality(
                 Inventory.warehouse_id == transfer.source_warehouse_id,
                 Inventory.product_id == transfer.product_id,
                 Inventory.material_id == transfer.material_id,
+                Inventory.packaging_config_id == transfer.packaging_config_id,
             )
         ).with_for_update().scalar_one_or_none()
         apply_inventory_change(
@@ -261,6 +267,7 @@ def submit_transfer_quality(
             warehouse_id=transfer.source_warehouse_id,
             product_id=transfer.product_id,
             material_id=transfer.material_id,
+            packaging_config_id=transfer.packaging_config_id,
             quantity=Decimal(transfer.quantity),
             unit_cost=Decimal(source_inventory.avg_unit_cost or 0) if source_inventory else Decimal("0"),
             transaction_type="stock_transfer_return",
@@ -302,6 +309,7 @@ def confirm_transfer_inbound(
             Inventory.warehouse_id == transfer.source_warehouse_id,
             Inventory.product_id == transfer.product_id,
             Inventory.material_id == transfer.material_id,
+            Inventory.packaging_config_id == transfer.packaging_config_id,
         )
     ).with_for_update().scalar_one_or_none()
     unit_cost = Decimal(source_inventory.avg_unit_cost or 0) if source_inventory else Decimal("0")
@@ -310,6 +318,7 @@ def confirm_transfer_inbound(
         warehouse_id=transfer.target_warehouse_id,
         product_id=transfer.product_id,
         material_id=transfer.material_id,
+        packaging_config_id=transfer.packaging_config_id,
         quantity=Decimal(transfer.quantity),
         unit_cost=unit_cost,
         transaction_type="stock_transfer_in",

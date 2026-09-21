@@ -28,6 +28,9 @@
                     <span class="place-prod">{{ it.product_name }}</span>
                     <span class="place-nums">已置 {{ formatNumber(it.placed_quantity) }} / 待置 {{ formatNumber(it.remaining_to_place) }} / 可用 {{ formatNumber(it.available_quantity) }}</span>
                   </div>
+                  <div v-if="it.packaging_name" class="place-nums">
+                    包装 {{ it.packaging_name }}：需 {{ formatNumber(it.packaging_required_quantity) }} / 可用 {{ formatNumber(it.packaging_available_quantity) }}
+                  </div>
                   <div class="place-bar">
                     <div
                       class="place-bar-fill"
@@ -282,6 +285,14 @@
                 ><span>本单可置量</span></el-tooltip>
               </template>
               <template #default="scope">{{ formatNumber(scope.row.available_quantity) }}</template>
+            </el-table-column>
+            <el-table-column label="包装库存" min-width="150">
+              <template #default="scope">
+                <span v-if="scope.row.packaging_name">
+                  {{ scope.row.packaging_name }}：需 {{ formatNumber(scope.row.packaging_required_quantity) }} / 可用 {{ formatNumber(scope.row.packaging_available_quantity) }}
+                </span>
+                <span v-else>-</span>
+              </template>
             </el-table-column>
             <el-table-column label="本次置货" width="140">
               <template #default="scope">
@@ -666,7 +677,7 @@ function placementRowClass({ row }) {
 
 const placementShortage = computed(() => {
   if (!activePlacement.value?.items) return []
-  return activePlacement.value.items.filter((it) => Number(it.remaining_to_place || 0) > Number(it.available_quantity || 0))
+  return activePlacement.value.items.filter((it) => Number(it.remaining_to_place || 0) > Number(it.available_quantity || 0) || Number(it.packaging_shortage_quantity || 0) > 0)
 })
 const placementShortageTotal = computed(() =>
   placementShortage.value.reduce((sum, it) => sum + Math.max(Number(it.remaining_to_place || 0) - Number(it.available_quantity || 0), 0), 0)

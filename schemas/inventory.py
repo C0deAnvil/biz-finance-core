@@ -24,6 +24,7 @@ class StockTakeCreate(BaseModel):
 class InventoryOperationItemInput(BaseModel):
     product_id: int | None = None
     material_id: int | None = None
+    packaging_config_id: int | None = None
     batch_no: str | None = None
     quantity: Decimal = Field(..., gt=0)
     unit_cost: Decimal = Field(default=0, ge=0)
@@ -58,6 +59,7 @@ class StockTransferCreateRequest(BaseModel):
     target_warehouse_id: int
     product_id: int | None = None
     material_id: int | None = None
+    packaging_config_id: int | None = None
     quantity: float = Field(..., gt=0)
     remark: str | None = Field(default=None, max_length=500)
 

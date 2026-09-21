@@ -24,6 +24,7 @@ from models import (
     PurchaseReceiptItem,
     Role,
     OperationLog,
+    PackagingConfig,
     ReceivableRecord,
     order_type_style,
     SalesOrderItem,
@@ -79,9 +80,10 @@ def list_stocks(
     db.commit()
     query = (
         select(Inventory)
-        .options(joinedload(Inventory.product), joinedload(Inventory.material), joinedload(Inventory.warehouse))
+        .options(joinedload(Inventory.product), joinedload(Inventory.material), joinedload(Inventory.packaging_config), joinedload(Inventory.warehouse))
         .outerjoin(Product, Inventory.product_id == Product.id)
         .outerjoin(Material, Inventory.material_id == Material.id)
+        .outerjoin(PackagingConfig, Inventory.packaging_config_id == PackagingConfig.id)
         .join(Warehouse, Inventory.warehouse_id == Warehouse.id)
         .order_by(Inventory.updated_at.desc())
     )
@@ -94,9 +96,11 @@ def list_stocks(
         query = query.where(Inventory.product_id.is_not(None))
     elif item_type == "material":
         query = query.where(Inventory.material_id.is_not(None))
+    elif item_type == "packaging":
+        query = query.where(Inventory.packaging_config_id.is_not(None))
     if keyword:
         pattern = f"%{keyword.strip()}%"
-        query = query.where(or_(Product.name.ilike(pattern), Product.product_code.ilike(pattern), Material.name.ilike(pattern), Material.material_code.ilike(pattern), Warehouse.name.ilike(pattern), Warehouse.code.ilike(pattern)))
+        query = query.where(or_(Product.name.ilike(pattern), Product.product_code.ilike(pattern), Material.name.ilike(pattern), Material.material_code.ilike(pattern), PackagingConfig.packaging_name.ilike(pattern), Warehouse.name.ilike(pattern), Warehouse.code.ilike(pattern)))
     if alert_only:
         query = query.where(
             or_(
@@ -182,7 +186,7 @@ def list_stocks(
 
 @router.get("/transactions")
 def list_transactions(
-    warehouse_id: int | None = Query(default=None), product_id: int | None = Query(default=None), material_id: int | None = Query(default=None),
+    warehouse_id: int | None = Query(default=None), product_id: int | None = Query(default=None), material_id: int | None = Query(default=None), packaging_config_id: int | None = Query(default=None),
     page: int | None = Query(default=None, ge=1), page_size: int = Query(default=50, ge=1, le=100),
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
@@ -196,6 +200,8 @@ def list_transactions(
         query = query.where(InventoryTransaction.product_id == product_id)
     if material_id:
         query = query.where(InventoryTransaction.material_id == material_id)
+    if packaging_config_id:
+        query = query.where(InventoryTransaction.packaging_config_id == packaging_config_id)
     total = None
     if page is not None:
         total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
@@ -204,6 +210,7 @@ def list_transactions(
     warehouse_ids = {row.warehouse_id for row in rows if row.warehouse_id}
     product_ids = {row.product_id for row in rows if row.product_id}
     material_ids = {row.material_id for row in rows if row.material_id}
+    packaging_ids = {row.packaging_config_id for row in rows if row.packaging_config_id}
     warehouse_map = {
         row.id: row for row in db.execute(select(Warehouse).where(Warehouse.id.in_(warehouse_ids))).scalars().all()
     } if warehouse_ids else {}
@@ -213,7 +220,10 @@ def list_transactions(
     material_map = {
         row.id: row for row in db.execute(select(Material).where(Material.id.in_(material_ids))).scalars().all()
     } if material_ids else {}
-    items = [_serialize_transaction(row, warehouse_map, product_map, material_map) for row in rows]
+    packaging_map = {
+        row.id: row for row in db.execute(select(PackagingConfig).where(PackagingConfig.id.in_(packaging_ids))).scalars().all()
+    } if packaging_ids else {}
+    items = [_serialize_transaction(row, warehouse_map, product_map, material_map, packaging_map) for row in rows]
     if page is not None:
         return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total or 0}})
     return api_response(data=items)
@@ -416,7 +426,7 @@ def create_manual_operation(
     if not payload.items:
         raise HTTPException(status_code=409, detail="请至少填写一条库存明细")
     for item in payload.items:
-        if bool(item.product_id) == bool(item.material_id):
+        if sum(bool(value) for value in (item.product_id, item.material_id, item.packaging_config_id)) != 1:
             raise HTTPException(status_code=409, detail="每条手工出入库明细必须且只能选择一种库存对象")
         if item.product_id:
             exists = db.execute(select(Product.id).where(Product.id == item.product_id)).scalar_one_or_none()
@@ -426,6 +436,10 @@ def create_manual_operation(
             exists = db.execute(select(Material.id).where(Material.id == item.material_id)).scalar_one_or_none()
             if exists is None:
                 raise HTTPException(status_code=404, detail="手工出入库原料不存在")
+        if item.packaging_config_id:
+            exists = db.execute(select(PackagingConfig.id).where(PackagingConfig.id == item.packaging_config_id)).scalar_one_or_none()
+            if exists is None:
+                raise HTTPException(status_code=404, detail="手工出入库包装不存在")
 
     request = InventoryOperationRequest(
         request_no=next_business_no(db, "RK" if payload.operation_type == "inbound" else "CK"),
@@ -443,6 +457,7 @@ def create_manual_operation(
             {
                 "product_id": item.product_id,
                 "material_id": item.material_id,
+                "packaging_config_id": item.packaging_config_id,
                 "batch_no": item.batch_no,
                 "quantity": float(item.quantity),
                 "unit_cost": float(item.unit_cost or 0),
@@ -522,7 +537,7 @@ def get_stock_take_template(
         raise HTTPException(status_code=403, detail="仅可查看本仓库范围内的盘点模板")
     inventories = db.execute(
         select(Inventory)
-        .options(joinedload(Inventory.product), joinedload(Inventory.material))
+        .options(joinedload(Inventory.product), joinedload(Inventory.material), joinedload(Inventory.packaging_config))
         .where(Inventory.warehouse_id == warehouse_id)
         .order_by(Inventory.id.asc())
     ).scalars().all()
@@ -568,6 +583,7 @@ def get_stock_take_detail(task_id: int, current_user: User = Depends(get_current
         .options(
             joinedload(StockTakeItem.inventory).joinedload(Inventory.product),
             joinedload(StockTakeItem.inventory).joinedload(Inventory.material),
+            joinedload(StockTakeItem.inventory).joinedload(Inventory.packaging_config),
         )
         .where(StockTakeItem.stock_take_task_id == task.id)
         .order_by(StockTakeItem.id.asc())

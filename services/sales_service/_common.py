@@ -34,7 +34,7 @@ from models import (
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
-from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
+from services.display import calculate_bag_count, get_default_packaging_config, get_inventory_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
@@ -79,7 +79,7 @@ from models import (
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
-from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
+from services.display import calculate_bag_count, get_default_packaging_config, get_inventory_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
@@ -433,15 +433,35 @@ def release_order_reservation(db: Session, *, order: SalesOrder) -> Decimal:
     released_total = Decimal("0")
     for item in order.items:
         reserved = Decimal(item.reserved_quantity or 0)
-        if reserved <= 0:
+        if reserved > 0:
+            inventory = inventory_map.get(item.product_id)
+            if inventory is not None:
+                inventory.reserved_quantity = max(
+                    Decimal(inventory.reserved_quantity or 0) - reserved, Decimal("0")
+                )
+            item.reserved_quantity = Decimal("0")
+            released_total += reserved
+        packaging_reserved = Decimal(item.packaging_reserved_quantity or 0)
+        if packaging_reserved <= 0:
             continue
-        inventory = inventory_map.get(item.product_id)
-        if inventory is not None:
-            inventory.reserved_quantity = max(
-                Decimal(inventory.reserved_quantity or 0) - reserved, Decimal("0")
-            )
-        item.reserved_quantity = Decimal("0")
-        released_total += reserved
+        packaging = get_inventory_packaging_config(db, item.packaging_config)
+        if packaging is not None:
+            packaging_inventory = db.execute(
+                select(Inventory)
+                .where(
+                    Inventory.warehouse_id == _finished_warehouse(db).id,
+                    Inventory.product_id.is_(None),
+                    Inventory.material_id.is_(None),
+                    Inventory.packaging_config_id == packaging.id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if packaging_inventory is not None:
+                packaging_inventory.reserved_quantity = max(
+                    Decimal(packaging_inventory.reserved_quantity or 0) - packaging_reserved,
+                    Decimal("0"),
+                )
+        item.packaging_reserved_quantity = Decimal("0")
     return released_total
 
 

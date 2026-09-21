@@ -42,6 +42,7 @@ def _normalized_inventory_items(items: list[dict]) -> list[dict]:
             {
                 "product_id": item.get("product_id") or None,
                 "material_id": item.get("material_id") or None,
+                "packaging_config_id": item.get("packaging_config_id") or None,
                 "batch_no": (item.get("batch_no") or None),
                 "quantity": str(Decimal(str(item.get("quantity") or 0)).normalize()),
                 "unit_cost": str(Decimal(str(item.get("unit_cost") or 0)).normalize()),
@@ -60,12 +61,13 @@ def _inventory_request_identity_items(items: list[dict]) -> list[dict]:
     return normalized
 
 
-def _quantity_bucket(items: list[dict]) -> dict[tuple[int | None, int | None, str | None], Decimal]:
-    bucket: dict[tuple[int | None, int | None, str | None], Decimal] = {}
+def _quantity_bucket(items: list[dict]) -> dict[tuple[int | None, int | None, int | None, str | None], Decimal]:
+    bucket: dict[tuple[int | None, int | None, int | None, str | None], Decimal] = {}
     for item in items or []:
         key = (
             item.get("product_id") or None,
             item.get("material_id") or None,
+            item.get("packaging_config_id") or None,
             item.get("batch_no") or None,
         )
         bucket[key] = bucket.get(key, Decimal("0")) + Decimal(str(item.get("quantity") or 0))
@@ -598,6 +600,7 @@ def complete_inventory_operation_request(
         {
             "product_id": item.product_id,
             "material_id": item.material_id,
+            "packaging_config_id": item.packaging_config_id,
             "batch_no": item.batch_no,
             "quantity": float(item.quantity),
             "unit_cost": float(item.unit_cost or 0),
@@ -621,6 +624,7 @@ def complete_inventory_operation_request(
                 warehouse_id=request.warehouse_id,
                 product_id=item.product_id,
                 material_id=item.material_id,
+                packaging_config_id=item.packaging_config_id,
                 quantity=Decimal(item.quantity) * sign,
                 unit_cost=Decimal(item.unit_cost or 0),
                 batch_no=item.batch_no,

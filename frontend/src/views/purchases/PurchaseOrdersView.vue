@@ -187,17 +187,18 @@
           <el-button v-if="canManageOrders" size="small" @click="addItem">新增明细</el-button>
         </div>
         <el-table :data="form.items" border>
-          <el-table-column label="产品/原料" min-width="220">
+          <el-table-column label="产品/原料/包装" min-width="220">
             <template #default="scope">
               <el-select v-model="scope.row.type" style="width: 110px; margin-right: 8px" :disabled="!canManageOrders" @change="handlePurchaseItemTypeChange(scope.row)">
                 <el-option label="产品" value="product" />
                 <el-option label="原料" value="material" />
+                <el-option label="包装" value="packaging" />
               </el-select>
               <el-select v-model="scope.row.target_id" filterable style="width: calc(100% - 118px)" :disabled="!canManageOrders" @change="() => handlePurchaseItemSelect(scope.row)">
                 <el-option
                   v-for="item in itemOptions(scope.row)"
                   :key="item.id"
-                  :label="item.name"
+                  :label="item.name || item.packaging_name"
                   :value="item.id"
                 />
               </el-select>
@@ -264,6 +265,7 @@
       <el-table :data="detail?.items || []" stripe class="mt-16">
         <el-table-column prop="product_name" label="产品" />
         <el-table-column prop="material_name" label="原料" />
+        <el-table-column prop="packaging_name" label="包装" />
         <el-table-column prop="display_specification" label="规格" width="130" />
         <el-table-column prop="quantity" label="数量" />
         <el-table-column prop="bag_count" label="袋数" width="110" />
@@ -292,6 +294,7 @@
       <el-table :data="confirmDetail?.items || []" stripe class="mt-16">
         <el-table-column prop="product_name" label="产品" />
         <el-table-column prop="material_name" label="原料" />
+        <el-table-column prop="packaging_name" label="包装" />
         <el-table-column prop="quantity" label="数量" />
         <el-table-column prop="unit_price" label="单价" />
       </el-table>
@@ -396,6 +399,7 @@ const suppliers = ref([])
 const userOptions = ref([])
 const products = ref([])
 const materials = ref([])
+const packagingConfigs = ref([])
 const supplierCatalogItems = ref([])
 const demandSupplierOptions = ref([])
 const supplierAi = ref(null)
@@ -559,15 +563,16 @@ function removeItem(index) {
 }
 
 function currentItemSource(row) {
-  return row.type === 'product'
-    ? products.value.find((item) => item.id === row.target_id)
-    : materials.value.find((item) => item.id === row.target_id)
+  if (row.type === 'product') return products.value.find((item) => item.id === row.target_id)
+  if (row.type === 'material') return materials.value.find((item) => item.id === row.target_id)
+  return packagingConfigs.value.find((item) => item.id === row.target_id)
 }
 
 function itemOptions(row) {
   if (!form.supplier_id) {
-    return row.type === 'product' ? products.value : materials.value
+    return row.type === 'product' ? products.value : row.type === 'material' ? materials.value : packagingConfigs.value
   }
+  if (row.type === 'packaging') return packagingConfigs.value
   if (!supplierCatalogItems.value.length) {
     return []
   }
@@ -621,10 +626,12 @@ async function loadSupplierAi(supplierId) {
 }
 
 function itemSpec(row) {
+  if (row.type === 'packaging') return currentItemSource(row)?.specification_text || '-'
   return currentItemSource(row)?.specification || '-'
 }
 
 function currentCatalogItem(row) {
+  if (row.type === 'packaging') return null
   return supplierCatalogItems.value.find((item) => {
     if (item.item_type !== row.type) return false
     return row.type === 'product' ? item.product_id === row.target_id : item.material_id === row.target_id
@@ -648,11 +655,16 @@ function handlePurchaseItemTypeChange(row) {
 }
 
 function handlePurchaseItemSelect(row) {
+  if (row.type === 'packaging') {
+    row.unit_price = Number(currentItemSource(row)?.unit_price || 0)
+    return
+  }
   const latestPrice = currentCatalogItem(row)?.latest_price
   row.unit_price = latestPrice ? Number(latestPrice) : 0
 }
 
 function bagCount(row) {
+  if (row.type === 'packaging') return '-'
   const kgPerBag = Number(currentItemSource(row)?.packaging?.kg_per_bag || 0)
   if (!kgPerBag || !row.quantity) return '-'
   return Math.ceil(Number(row.quantity) / kgPerBag)
@@ -926,7 +938,7 @@ async function submit() {
   if (form.supplier_id) {
     await loadSupplierCatalog(form.supplier_id)
     if (form.items.some((item) => !item.target_id || !itemOptions(item).some((option) => option.id === item.target_id))) {
-      ElMessage.warning('采购明细只能选择当前供应商可供货名录中的产品或原料')
+      ElMessage.warning('采购明细必须选择有效的产品、原料或包装')
       return
     }
   }
@@ -937,6 +949,7 @@ async function submit() {
     items: form.items.map((item) => ({
       product_id: item.type === 'product' ? item.target_id : null,
       material_id: item.type === 'material' ? item.target_id : null,
+      packaging_config_id: item.type === 'packaging' ? item.target_id : null,
       quantity: item.quantity,
       unit_price: item.unit_price
     }))
@@ -1021,8 +1034,8 @@ async function editOrder(row) {
   await loadSupplierAi(order.supplier_id)
   form.payment_type = order.payment_type
   form.items = (order.items || []).map((item) => ({
-    type: item.product_id ? 'product' : 'material',
-    target_id: item.product_id || item.material_id,
+    type: item.product_id ? 'product' : item.material_id ? 'material' : 'packaging',
+    target_id: item.product_id || item.material_id || item.packaging_config_id,
     quantity: item.quantity,
     unit_price: item.unit_price
   }))
@@ -1051,6 +1064,7 @@ onMounted(async () => {
   suppliers.value = await get('/api/master-data/suppliers')
   products.value = await get('/api/master-data/products')
   materials.value = await get('/api/master-data/materials')
+  packagingConfigs.value = await get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
   await load()
 })
 

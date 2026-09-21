@@ -24,6 +24,7 @@ from models import (
     PurchaseReceiptItem,
     Role,
     OperationLog,
+    PackagingConfig,
     ReceivableRecord,
     order_type_style,
     SalesOrderItem,
@@ -41,7 +42,7 @@ from schemas.production import FulfillmentDemandManualCreateRequest, SalesOrderR
 from schemas.sales import PlacementActionRequest, QueueActionRequest, SalesShipmentRequest
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
 from services.replenishment_service import create_manual_fulfillment_demand, ensure_fulfillment_demand_routing, resolve_demand_progress
-from services.display import clean_display_text, inventory_request_category_label, status_label, transaction_type_label
+from services.display import calculate_bag_count, clean_display_text, get_inventory_packaging_config, inventory_request_category_label, status_label, transaction_type_label
 from services.display import payment_type_label
 from services.organization import get_inventory_scope_warehouse_ids, user_in_scope, warehouse_in_scope
 from services.workflow import (
@@ -63,6 +64,29 @@ from services.inventory_availability import placeable_of
 
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
+
+
+def _sales_item_packaging_units(item: SalesOrderItem, quantity: Decimal) -> Decimal:
+    if not item.packaging_config_id or not item.kg_per_bag or quantity <= 0:
+        return Decimal("0")
+    return Decimal(calculate_bag_count(quantity, item.kg_per_bag) or 0)
+
+
+def _lock_sales_packaging_inventory(db: Session, *, warehouse_id: int, item: SalesOrderItem) -> tuple[PackagingConfig | None, Inventory | None]:
+    packaging = get_inventory_packaging_config(db, item.packaging_config)
+    if packaging is None:
+        return None, None
+    inventory = db.execute(
+        select(Inventory)
+        .where(
+            Inventory.warehouse_id == warehouse_id,
+            Inventory.product_id.is_(None),
+            Inventory.material_id.is_(None),
+            Inventory.packaging_config_id == packaging.id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    return packaging, inventory
 
 
 @router.get("/queues")
@@ -290,23 +314,58 @@ def mark_placement(
                 }
             )
             continue
+        packaging, packaging_inventory = _lock_sales_packaging_inventory(
+            db,
+            warehouse_id=finished_warehouse_id,
+            item=item,
+        )
+        target_packaging_units = _sales_item_packaging_units(item, placed_after)
+        allocated_packaging_units = Decimal(item.packaging_reserved_quantity or 0) + Decimal(item.packaging_shipped_quantity or 0)
+        packaging_extra_needed = max(target_packaging_units - allocated_packaging_units, Decimal("0"))
+        if item.packaging_config_id and packaging is None:
+            raise HTTPException(status_code=409, detail=f"{_order_item_name(item)} 的包装未关联全局包装主数据，无法核算包装库存")
+        packaging_placeable = max(placeable_of(packaging_inventory), Decimal("0"))
+        if packaging_extra_needed > packaging_placeable:
+            shortage_rows.append(
+                {
+                    "product_id": item.product_id,
+                    "product_name": _order_item_name(item),
+                    "packaging_config_id": packaging.id if packaging else None,
+                    "packaging_name": packaging.packaging_name if packaging else None,
+                    "required_quantity": float(packaging_extra_needed),
+                    "available_quantity": float(packaging_placeable),
+                    "shortage_quantity": float(packaging_extra_needed - packaging_placeable),
+                    "shortage_type": "packaging",
+                }
+            )
+            continue
         item.placed_quantity = placed_after
         if extra_needed > 0 and inventory is not None:
             inventory.reserved_quantity = Decimal(inventory.reserved_quantity or 0) + extra_needed
             item.reserved_quantity = already_reserved + extra_needed
+        if packaging_extra_needed > 0 and packaging_inventory is not None:
+            packaging_inventory.reserved_quantity = Decimal(packaging_inventory.reserved_quantity or 0) + packaging_extra_needed
+            item.packaging_reserved_quantity = Decimal(item.packaging_reserved_quantity or 0) + packaging_extra_needed
         placed_any = True
 
     if shortage_rows:
         db.commit()
+        has_product_shortage = any(row.get("shortage_type") != "packaging" for row in shortage_rows)
+        has_packaging_shortage = any(row.get("shortage_type") == "packaging" for row in shortage_rows)
+        shortage_message = (
+            "部分商品或包装库存不足，已完成其余可置货明细；请先采购或入库包装"
+            if has_packaging_shortage
+            else "部分商品库存不足,已置入可置货部分;是否提补货需求?"
+        )
         # 需求:置货后库存不足→询问是否提补货需求(不自动生成),缺口明细交给前端弹窗确认
         return api_response(
             code=409,
-            msg="部分商品库存不足,已置入可置货部分;是否提补货需求?",
+            msg=shortage_message,
             data={
-                "code": "finished_product_stock_shortage",
-                "message": "部分商品库存不足,已置入可置货部分;是否提补货需求?",
+                "code": "finished_product_stock_shortage" if has_product_shortage else "packaging_stock_shortage",
+                "message": shortage_message,
                 "shortages": shortage_rows,
-                "demand_required": True,
+                "demand_required": has_product_shortage,
             },
         )
 
@@ -570,6 +629,26 @@ def mark_shipment(
         shippable_quantity = reserved_for_me + unreserved
         if ship_quantity > shippable_quantity:
             raise HTTPException(status_code=409, detail=f"{_order_item_name(order_item)} 当前可用库存不足")
+        packaging, packaging_inventory = _lock_sales_packaging_inventory(
+            db,
+            warehouse_id=warehouse_id,
+            item=order_item,
+        )
+        target_packaging_shipped = _sales_item_packaging_units(
+            order_item,
+            Decimal(order_item.shipped_quantity or 0) + ship_quantity,
+        )
+        packaging_ship_quantity = max(
+            target_packaging_shipped - Decimal(order_item.packaging_shipped_quantity or 0),
+            Decimal("0"),
+        )
+        if order_item.packaging_config_id and packaging is None:
+            raise HTTPException(status_code=409, detail=f"{_order_item_name(order_item)} 的包装未关联全局包装主数据，无法核算包装库存")
+        packaging_reserved_for_me = Decimal(order_item.packaging_reserved_quantity or 0)
+        packaging_shippable = packaging_reserved_for_me + max(placeable_of(packaging_inventory), Decimal("0"))
+        if packaging_ship_quantity > packaging_shippable:
+            name = packaging.packaging_name if packaging else "包装"
+            raise HTTPException(status_code=409, detail=f"{_order_item_name(order_item)} 所需{name}库存不足")
         apply_inventory_change(
             db,
             warehouse_id=warehouse_id,
@@ -583,6 +662,27 @@ def mark_shipment(
             related_id=order.id,
             created_by_id=current_user.id,
         )
+        if packaging_ship_quantity > 0 and packaging is not None:
+            apply_inventory_change(
+                db,
+                warehouse_id=warehouse_id,
+                packaging_config_id=packaging.id,
+                quantity=-packaging_ship_quantity,
+                unit_cost=Decimal(packaging_inventory.avg_unit_cost or 0) if packaging_inventory else Decimal("0"),
+                batch_no=None,
+                transaction_type="sales_packaging_outbound",
+                related_type="sales_order",
+                related_id=order.id,
+                created_by_id=current_user.id,
+            )
+            packaging_release = min(packaging_ship_quantity, packaging_reserved_for_me)
+            if packaging_release > 0:
+                order_item.packaging_reserved_quantity = packaging_reserved_for_me - packaging_release
+                packaging_inventory.reserved_quantity = max(
+                    Decimal(packaging_inventory.reserved_quantity or 0) - packaging_release,
+                    Decimal("0"),
+                )
+            order_item.packaging_shipped_quantity = Decimal(order_item.packaging_shipped_quantity or 0) + packaging_ship_quantity
         # 发货即"占用兑现":实有已扣,占用同步释放(只释放本明细实际占的那部分)
         release_qty = min(ship_quantity, reserved_for_me)
         if release_qty > 0:

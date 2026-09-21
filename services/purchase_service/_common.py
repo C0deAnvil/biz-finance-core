@@ -19,6 +19,7 @@ from models import (
     Material,
     MaterialReplenishmentDemand,
     PayableRecord,
+    PackagingConfig,
     Product,
     ProductionMaterialUsage,
     PurchaseOrder,
@@ -200,6 +201,7 @@ def _load_order(db: Session, order_id: int) -> PurchaseOrder | None:
                 joinedload(PurchaseOrder.operator_user),
                 joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.product),
                 joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.material),
+                joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.packaging_config),
             )
             .where(PurchaseOrder.id == order_id)
         )
@@ -221,6 +223,9 @@ def _build_order_items(db: Session, order: PurchaseOrder, payload_items) -> tupl
     total_amount = Decimal("0")
     quantity_threshold_triggered = False
     for item_payload in payload_items:
+        if sum(bool(value) for value in (item_payload.product_id, item_payload.material_id, item_payload.packaging_config_id)) != 1:
+            raise HTTPException(status_code=400, detail="每条采购明细必须且只能选择产品、原料或包装中的一种")
+        packaging_item = None
         if item_payload.product_id:
             product = db.execute(select(Product).where(Product.id == item_payload.product_id)).scalar_one_or_none()
             if product is None:
@@ -231,8 +236,19 @@ def _build_order_items(db: Session, order: PurchaseOrder, payload_items) -> tupl
             if material is None:
                 raise HTTPException(status_code=404, detail="采购原料不存在")
             item_threshold = Decimal(material.purchase_threshold_qty or 0)
+        elif item_payload.packaging_config_id:
+            packaging_item = db.execute(
+                select(PackagingConfig).where(
+                    PackagingConfig.id == item_payload.packaging_config_id,
+                    PackagingConfig.entity_type == "global",
+                    PackagingConfig.is_active.is_(True),
+                )
+            ).scalar_one_or_none()
+            if packaging_item is None:
+                raise HTTPException(status_code=404, detail="采购包装不存在或已停用")
+            item_threshold = Decimal("0")
         else:
-            raise HTTPException(status_code=400, detail="采购明细必须选择产品或原料")
+            raise HTTPException(status_code=400, detail="采购明细必须选择产品、原料或包装")
 
         quantity = Decimal(item_payload.quantity or 0)
         if item_threshold > 0 and quantity >= item_threshold:
@@ -240,7 +256,7 @@ def _build_order_items(db: Session, order: PurchaseOrder, payload_items) -> tupl
 
         line_total = Decimal(item_payload.quantity) * Decimal(item_payload.unit_price)
         total_amount += line_total
-        packaging = None
+        packaging = packaging_item if item_payload.packaging_config_id and not item_payload.product_id and not item_payload.material_id else None
         if item_payload.product_id:
             packaging = get_default_packaging_config(db, entity_type="product", entity_id=item_payload.product_id)
         elif item_payload.material_id:
@@ -255,9 +271,9 @@ def _build_order_items(db: Session, order: PurchaseOrder, payload_items) -> tupl
                 unit_price=item_payload.unit_price,
                 total_amount=line_total,
                 packaging_config_id=packaging.id if packaging else None,
-                kg_per_bag=packaging.kg_per_bag if packaging else None,
-                bag_count=calculate_bag_count(item_payload.quantity, packaging.kg_per_bag) if packaging else None,
-                display_specification=packaging_spec_text(packaging.kg_per_bag) if packaging else None,
+                kg_per_bag=packaging.kg_per_bag if packaging and (item_payload.product_id or item_payload.material_id) else None,
+                bag_count=calculate_bag_count(item_payload.quantity, packaging.kg_per_bag) if packaging and (item_payload.product_id or item_payload.material_id) else None,
+                display_specification=(packaging.packaging_name if item_payload.packaging_config_id and not item_payload.product_id and not item_payload.material_id else packaging_spec_text(packaging.kg_per_bag) if packaging else None),
             )
         )
     threshold_amount = _purchase_approval_amount_threshold(db)
@@ -305,12 +321,15 @@ def _refresh_purchase_payment_request_arrival_status(db: Session, order_id: int)
 
 
 def _validate_supplier_catalog(db: Session, supplier_id: int, payload_items) -> None:
+    catalog_items = [item for item in payload_items if item.product_id or item.material_id]
+    if not catalog_items:
+        return
     rows = db.execute(select(SupplierCatalogItem).where(SupplierCatalogItem.supplier_id == supplier_id)).scalars().all()
     if not rows:
         raise HTTPException(status_code=409, detail="当前供应商尚未维护可供货名录，不能创建采购单")
     allowed_product_ids = {row.product_id for row in rows if row.product_id}
     allowed_material_ids = {row.material_id for row in rows if row.material_id}
-    for item_payload in payload_items:
+    for item_payload in catalog_items:
         if item_payload.product_id and item_payload.product_id not in allowed_product_ids:
             raise HTTPException(status_code=409, detail="当前供应商名录中不包含所选产品")
         if item_payload.material_id and item_payload.material_id not in allowed_material_ids:

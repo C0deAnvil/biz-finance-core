@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, Notification, NotificationRecipient, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse, order_type_style
+from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, Notification, NotificationRecipient, PackagingConfig, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse, order_type_style
 from models import FulfillmentDemand
 from responses import api_response
 from schemas.production import FulfillmentDemandUpdateRequest
@@ -177,6 +177,7 @@ def get_purchase_order(order_id: int, current_user: User = Depends(get_current_u
         .options(
             joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.product),
             joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.material),
+            joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.packaging_config),
             joinedload(PurchaseOrder.supplier),
             joinedload(PurchaseOrder.operator_user),
         )
@@ -221,6 +222,8 @@ def get_purchase_order(order_id: int, current_user: User = Depends(get_current_u
                     "material_id": item.material_id,
                     "material_name": item.material.name if item.material else None,
                     "material_code": item.material.material_code if item.material else None,
+                    "packaging_config_id": item.packaging_config_id if not item.product_id and not item.material_id else None,
+                    "packaging_name": item.packaging_config.packaging_name if item.packaging_config and not item.product_id and not item.material_id else None,
                     "quantity": float(item.quantity),
                     "unit_price": float(item.unit_price),
                     "display_specification": item.display_specification,

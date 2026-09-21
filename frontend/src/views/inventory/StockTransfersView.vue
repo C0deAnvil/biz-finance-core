@@ -77,6 +77,7 @@
           <el-radio-group v-model="itemType" @change="resetItems">
             <el-radio value="product">商品</el-radio>
             <el-radio value="material">原料</el-radio>
+            <el-radio value="packaging">包装</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="itemType === 'product'" label="商品" required>
@@ -84,9 +85,14 @@
             <el-option v-for="p in products" :key="p.id" :label="`${p.product_code} / ${p.name}`" :value="p.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-else label="原料" required>
+        <el-form-item v-else-if="itemType === 'material'" label="原料" required>
           <el-select v-model="createForm.material_id" filterable style="width:100%" placeholder="按名称或编码搜索">
             <el-option v-for="m in materials" :key="m.id" :label="`${m.material_code} / ${m.name}`" :value="m.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else label="包装" required>
+          <el-select v-model="createForm.packaging_config_id" filterable style="width:100%" placeholder="按包装名称搜索">
+            <el-option v-for="p in packagingConfigs" :key="p.id" :label="p.packaging_name" :value="p.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="移库数量" required>
@@ -256,6 +262,7 @@ const rows = ref([])
 const warehouses = ref([])
 const products = ref([])
 const materials = ref([])
+const packagingConfigs = ref([])
 const loading = ref(false)
 
 const createVisible = ref(false)
@@ -267,6 +274,7 @@ const createForm = reactive({
   target_warehouse_id: null,
   product_id: null,
   material_id: null,
+  packaging_config_id: null,
   quantity: 1,
   remark: ''
 })
@@ -326,6 +334,7 @@ function statusTag(status) {
 function resetItems() {
   createForm.product_id = null
   createForm.material_id = null
+  createForm.packaging_config_id = null
 }
 
 async function load() {
@@ -345,6 +354,7 @@ async function loadOptions() {
     if (!warehouses.value.length) warehouses.value = await get('/api/master-data/warehouses')
     if (!products.value.length) products.value = await get('/api/master-data/products')
     if (!materials.value.length) materials.value = await get('/api/master-data/materials')
+    if (!packagingConfigs.value.length) packagingConfigs.value = await get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
   } catch (error) {
     ElMessage.error(error?.message || '加载仓库或货品失败')
   }
@@ -356,6 +366,7 @@ async function openCreate() {
     target_warehouse_id: null,
     product_id: null,
     material_id: null,
+    packaging_config_id: null,
     quantity: 1,
     remark: ''
   })
@@ -385,6 +396,10 @@ async function submitCreate() {
     ElMessage.warning('请选择原料')
     return
   }
+  if (itemType.value === 'packaging' && !createForm.packaging_config_id) {
+    ElMessage.warning('请选择包装')
+    return
+  }
   creating.value = true
   try {
     await post('/api/inventory/transfers', {
@@ -392,6 +407,7 @@ async function submitCreate() {
       target_warehouse_id: createForm.target_warehouse_id,
       product_id: itemType.value === 'product' ? createForm.product_id : null,
       material_id: itemType.value === 'material' ? createForm.material_id : null,
+      packaging_config_id: itemType.value === 'packaging' ? createForm.packaging_config_id : null,
       quantity: Number(createForm.quantity),
       remark: createForm.remark || null
     })

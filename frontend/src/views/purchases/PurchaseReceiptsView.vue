@@ -368,7 +368,7 @@ async function loadOrderDetail(id) {
   }
   form.items = detailData.items.map((item) => ({
     purchase_order_item_id: item.id,
-    name: item.product_name || item.material_name,
+    name: item.product_name || item.material_name || item.packaging_name,
     pending_quantity: Number(item.quantity) - Number(item.received_quantity),
     received_quantity: Math.max(0, Number(item.quantity) - Number(item.received_quantity)),
     difference_remark: '',

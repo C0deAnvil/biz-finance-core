@@ -21,15 +21,29 @@ def _create_customer(client, login) -> int:
 
 
 def _stock_product(client, login, *, warehouse_id: int, product_id: int, quantity: float) -> None:
-    """用手工入库铺实有库存。"""
+    """用手工入库铺实有库存，并补足默认包装，避免包装缺口干扰成品占用断言。"""
     login("inventory_super01")
+    packaging_response = client.get("/api/master-data/packaging-configs?entity_type=global&active_only=true")
+    assert packaging_response.status_code == 200, packaging_response.text
+    packaging_items = [
+        {
+            "packaging_config_id": row["id"],
+            "batch_no": uniq("BZ"),
+            "quantity": max(quantity, 1),
+            "unit_cost": 1,
+        }
+        for row in packaging_response.json().get("data") or []
+    ]
     resp = client.post(
         "/api/inventory/manual-operations",
         json={
             "warehouse_id": warehouse_id,
             "operation_type": "inbound",
             "remark": "pytest 铺库存",
-            "items": [{"product_id": product_id, "batch_no": uniq("PC"), "quantity": quantity, "unit_cost": 30}],
+            "items": [
+                {"product_id": product_id, "batch_no": uniq("PC"), "quantity": quantity, "unit_cost": 30},
+                *packaging_items,
+            ],
         },
     )
     assert resp.status_code == 200, resp.text

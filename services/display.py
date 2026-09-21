@@ -181,6 +181,7 @@ TRANSACTION_TYPE_LABELS = {
     "purchase_inbound": "采购入库",
     "purchase_return_outbound": "采购退货出库",
     "sales_outbound": "销售出库",
+    "sales_packaging_outbound": "销售包装出库",
     "sales_return_inbound": "销售退货入库",
     "production_material_outbound": "生产领料出库",
     "production_material_return_inbound": "生产退料入库",
@@ -315,6 +316,25 @@ def get_default_packaging_config(db: Session, *, entity_type: str, entity_id: in
             PackagingConfig.is_active.is_(True),
         )
         .order_by(PackagingConfig.is_default.desc(), PackagingConfig.id.asc())
+    ).scalars().first()
+
+
+def get_inventory_packaging_config(db: Session, packaging: PackagingConfig | None) -> PackagingConfig | None:
+    """Map an order-specific packaging choice to the global physical packaging stock item."""
+    if packaging is None:
+        return None
+    if packaging.entity_type == "global":
+        return packaging
+    return db.execute(
+        select(PackagingConfig)
+        .where(
+            PackagingConfig.entity_type == "global",
+            PackagingConfig.entity_id == 0,
+            PackagingConfig.is_active.is_(True),
+            PackagingConfig.packaging_name == packaging.packaging_name,
+            PackagingConfig.kg_per_bag == packaging.kg_per_bag,
+        )
+        .order_by(PackagingConfig.id.asc())
     ).scalars().first()
 
 
