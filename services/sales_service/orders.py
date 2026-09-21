@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -32,7 +33,7 @@ from models import (
     Warehouse,
 )
 from responses import api_response
-from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
+from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderDraftPayload, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.customer_activity import register_customer_order
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
@@ -133,43 +134,131 @@ def _sync_customer_address(db, customer, payload, current_user):
                         after_data={"customer_id": customer.id, "address": new_address})
 
 
-def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
+def _store_draft_payload(order: SalesOrder, payload: SalesOrderDraftPayload) -> None:
+    """保存原始表单；草稿阶段不创建订单明细，也不触发业务校验。"""
+    ext_json = dict(order.ext_json or {})
+    ext_json["draft_payload"] = payload.model_dump(mode="json")
+    order.ext_json = ext_json
+    order.customer_id = payload.customer_id
+    order.consignee = (payload.consignee or "").strip()
+    order.consignee_phone = (payload.consignee_phone or "").strip()
+    order.delivery_address = (payload.delivery_address or "").strip()
+    order.payment_type = (payload.payment_type or "").strip()
+    order.order_type = payload.order_type or "normal"
+    order.expected_delivery_date = payload.expected_delivery_date
+    order.deposit_amount = payload.deposit_amount or Decimal("0")
+    order.transport_fee = payload.transport_fee or Decimal("0")
+    order.packaging_fee = Decimal("0")
+    order.total_amount = Decimal("0")
+    order.order_remark = payload.order_remark
+    order.status = "draft"
+
+
+def _draft_payload_for_submit(order: SalesOrder) -> SalesOrderCreate:
+    raw_payload = (order.ext_json or {}).get("draft_payload")
+    if raw_payload is None:
+        # 兼容本次改造前已保存的完整草稿。
+        raw_payload = {
+            "customer_id": order.customer_id,
+            "operator_user_id": order.operator_user_id,
+            "consignee": order.consignee,
+            "consignee_phone": order.consignee_phone,
+            "delivery_address": order.delivery_address,
+            "payment_type": order.payment_type,
+            "order_type": order.order_type,
+            "expected_delivery_date": order.expected_delivery_date,
+            "deposit_amount": order.deposit_amount,
+            "transport_fee": order.transport_fee,
+            "order_remark": order.order_remark,
+            "items": [
+                {
+                    "product_id": item.product_id,
+                    "quantity": item.quantity,
+                    "unit_price": item.unit_price,
+                    "packaging_config_id": item.packaging_config_id,
+                    "remark": item.remark,
+                }
+                for item in order.items
+            ],
+        }
+    try:
+        payload = SalesOrderCreate.model_validate(raw_payload)
+    except ValidationError as error:
+        first_error = error.errors()[0]
+        field = " / ".join(str(part) for part in first_error["loc"])
+        raise HTTPException(status_code=422, detail=f"请完善草稿后再提交：{field}") from error
+    required_text_fields = {
+        "收货人": payload.consignee,
+        "联系电话": payload.consignee_phone,
+        "收货地址": payload.delivery_address,
+        "付款方式": payload.payment_type,
+    }
+    missing_field = next((label for label, value in required_text_fields.items() if not str(value or "").strip()), None)
+    if missing_field:
+        raise HTTPException(status_code=422, detail=f"请完善草稿后再提交：{missing_field}不能为空")
+    if not payload.items:
+        raise HTTPException(status_code=422, detail="请完善草稿后再提交：至少需要一条商品明细")
+    if any(item.packaging_config_id is None for item in payload.items):
+        raise HTTPException(status_code=422, detail="请完善草稿后再提交：商品明细必须选择包装")
+    return payload
+
+
+def _apply_submitted_order_payload(db: Session, *, order: SalesOrder, payload: SalesOrderCreate, current_user: User) -> Customer:
     customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
     if customer is None:
         raise HTTPException(status_code=404, detail="客户不存在")
     if not payload.items:
         raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
     _sync_customer_address(db, customer, payload, current_user)
+    order.customer_id = payload.customer_id
+    order.operator_user_id = _resolve_sales_operator_user_id(db, payload.operator_user_id, current_user)
+    order.consignee = payload.consignee
+    order.consignee_phone = payload.consignee_phone
+    order.delivery_address = payload.delivery_address
+    order.payment_type = payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales")
+    order.order_type = payload.order_type or "normal"
+    order.expected_delivery_date = payload.expected_delivery_date
+    order.deposit_amount = payload.deposit_amount
+    order.transport_fee = payload.transport_fee
+    order.packaging_fee = Decimal("0")
+    order.order_remark = payload.order_remark
+    _cleanup_order_item_references(db, order)
+    for item in list(order.items):
+        db.delete(item)
+    db.flush()
+    for log in db.execute(
+        select(SalesOrderPriceChangeLog).where(
+            SalesOrderPriceChangeLog.sales_order_id == order.id,
+            SalesOrderPriceChangeLog.status == "pending",
+        )
+    ).scalars().all():
+        db.delete(log)
+    order.price_approval_status = "not_required"
+    order.price_approved_by_id = None
+    order.price_approved_at = None
+    complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
+    order.total_amount = _build_order_items(db, order_id=order.id, payload_items=payload.items) + Decimal(order.transport_fee or 0)
+    ext_json = dict(order.ext_json or {})
+    ext_json.pop("draft_payload", None)
+    order.ext_json = ext_json or None
+    return customer
 
-    # 不再拆单：整单保留全部明细，库存缺口统一在生产/采购补货需求环节处理
-    effective_items = [
-        {
-            "product_id": item.product_id,
-            "quantity": item.quantity,
-            "unit_price": item.unit_price,
-            "packaging_config_id": item.packaging_config_id,
-            "remark": item.remark,
-            "price_change_remark": getattr(item, "price_change_remark", None),
-        }
-        for item in payload.items
-    ]
 
-    operator_user_id = _resolve_sales_operator_user_id(db, payload.operator_user_id, current_user)
+def create_order(payload: SalesOrderDraftPayload, current_user: User, db: Session):
     order = SalesOrder(
         order_no=next_business_no(db, "XS"),
         split_phase=1,
-        customer_id=payload.customer_id,
+        customer_id=None,
         sales_user_id=current_user.id,
-        operator_user_id=operator_user_id,
-        consignee=payload.consignee,
-        consignee_phone=payload.consignee_phone,
-        delivery_address=payload.delivery_address,
-        payment_type=payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales"),
-        order_type=payload.order_type or "normal",
-        expected_delivery_date=payload.expected_delivery_date,
+        operator_user_id=current_user.id,
+        consignee="",
+        consignee_phone="",
+        delivery_address="",
+        payment_type="",
+        order_type="normal",
         status="draft",
-        deposit_amount=payload.deposit_amount,
-        transport_fee=payload.transport_fee,
+        deposit_amount=0,
+        transport_fee=0,
         packaging_fee=0,
         total_amount=0,
         cost_amount=0,
@@ -179,21 +268,7 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
     db.add(order)
     db.flush()
     order.split_group_no = order.order_no
-
-    order.total_amount = _build_order_items(db, order_id=order.id, payload_items=effective_items) + Decimal(order.transport_fee or 0)
-
-    # 末次下单时间 / 流失复购判定：距上一笔订单 > 365 天且本单 > 100 元即记为流失复购，并自动打 T 标签
-    churn_result = register_customer_order(
-        db,
-        customer=customer,
-        order_amount=order.total_amount,
-        order_time=order.created_at,
-        created_by_id=current_user.id,
-    )
-
-    # 草稿阶段:不创建置货队列/审批待办,不做库存占用,不生成补货需求
-    # 缺口仅提醒销售与库管:财务审批通过后由库管在置货环节按需生成补货需求
-    _notify_sales_order_shortage(db, order=order, current_user=current_user)
+    _store_draft_payload(order, payload)
 
     write_operation_log(
         db,
@@ -204,8 +279,8 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
         after_data={
             "customer_id": order.customer_id,
             "status": order.status,
-            "total_amount": float(order.total_amount),
-            "item_count": len(effective_items),
+            "total_amount": 0,
+            "item_count": 0,
             "split_child_order_no": None,
         },
     )
@@ -219,8 +294,8 @@ def create_order(payload: SalesOrderCreate, current_user: User, db: Session):
             "replenishment_created": False,
             "replenishment_demands": [],
             "shipment_deferred_by_shortage": False,
-            "churn_repurchase": churn_result.get("churn_repurchase", False),
-            "churn_gap_days": churn_result.get("gap_days"),
+            "churn_repurchase": False,
+            "churn_gap_days": None,
         }
     )
 
@@ -238,6 +313,16 @@ def submit_order(order_id: int, current_user: User, db: Session, assigned_financ
     if order.status not in {"draft", "rejected"}:
         raise HTTPException(status_code=409, detail="仅草稿或已驳回订单可提交审批")
 
+    payload = _draft_payload_for_submit(order)
+    customer = _apply_submitted_order_payload(db, order=order, payload=payload, current_user=current_user)
+    churn_result = register_customer_order(
+        db,
+        customer=customer,
+        order_amount=order.total_amount,
+        order_time=order.created_at,
+        created_by_id=current_user.id,
+    )
+    _notify_sales_order_shortage(db, order=order, current_user=current_user)
     order.status = "pending_confirmation"
     order.rejection_reason = None
     order.assigned_finance_user_id = resolve_assigned_finance_user_id(db, assigned_finance_user_id)
@@ -276,26 +361,19 @@ def submit_order(order_id: int, current_user: User, db: Session, assigned_financ
         module="sales",
         action="submit_order",
         content=f"客户订单 {order.order_no} 提交财务审批",
-        after_data={"order_id": order.id, "status": order.status},
+        after_data={"order_id": order.id, "status": order.status, "churn_repurchase": churn_result.get("churn_repurchase", False)},
     )
     db.commit()
     return api_response(data={"id": order.id, "order_no": order.order_no, "status": order.status})
 
 
-def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, db: Session):
+def update_order(order_id: int, payload: SalesOrderDraftPayload, current_user: User, db: Session):
     order = _load_order(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
     _ensure_order_owner_or_admin(order, current_user)
     if order.status not in {"draft", "rejected"}:
         raise HTTPException(status_code=409, detail="仅草稿或已驳回订单允许修改(已提交订单请通过财务改单流程)")
-
-    customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
-    if customer is None:
-        raise HTTPException(status_code=404, detail="客户不存在")
-    if not payload.items:
-        raise HTTPException(status_code=400, detail="客户订单至少需要一条明细")
-    _sync_customer_address(db, customer, payload, current_user)
 
     before_data = {
         "customer_id": order.customer_id,
@@ -304,40 +382,8 @@ def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, d
         "item_count": len(order.items),
     }
 
-    order.customer_id = payload.customer_id
-    order.operator_user_id = _resolve_sales_operator_user_id(db, payload.operator_user_id or order.operator_user_id, current_user)
-    order.consignee = payload.consignee
-    order.consignee_phone = payload.consignee_phone
-    order.delivery_address = payload.delivery_address
-    order.payment_type = payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales")
-    order.order_type = payload.order_type or "normal"
-    order.expected_delivery_date = payload.expected_delivery_date
-    order.deposit_amount = payload.deposit_amount
-    order.transport_fee = payload.transport_fee
-    order.packaging_fee = 0
-    order.order_remark = payload.order_remark
     order.rejection_reason = None
-
-    # 删除旧明细前必须先解除 / 清理关联的补货需求引用,否则外键约束报错
-    _cleanup_order_item_references(db, order)
-    for item in list(order.items):
-        db.delete(item)
-    db.flush()
-    for log in db.execute(
-        select(SalesOrderPriceChangeLog).where(
-            SalesOrderPriceChangeLog.sales_order_id == order.id,
-            SalesOrderPriceChangeLog.status == "pending",
-        )
-    ).scalars().all():
-        db.delete(log)
-    order.price_approval_status = "not_required"
-    order.price_approved_by_id = None
-    order.price_approved_at = None
-    complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
-    order.total_amount = _build_order_items(db, order_id=order.id, payload_items=payload.items) + Decimal(order.transport_fee or 0)
-    order.status = "draft"
-
-    _notify_sales_order_shortage(db, order=order, current_user=current_user)
+    _store_draft_payload(order, payload)
     write_operation_log(
         db,
         user_id=current_user.id,
@@ -349,7 +395,7 @@ def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User, d
             "customer_id": order.customer_id,
             "status": order.status,
             "total_amount": float(order.total_amount),
-            "item_count": len(payload.items),
+            "item_count": 0,
         },
     )
     db.commit()

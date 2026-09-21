@@ -27,7 +27,7 @@ def test_zero_price_create_submit_and_higher_price_edit(client, login):
     oid = response.json()["data"]["id"]
     with SessionLocal() as db:
         assert db.get(SalesOrder, oid).total_amount == 0
-        assert db.scalar(select(SalesOrderItem.unit_price).where(SalesOrderItem.sales_order_id == oid)) == 0
+        assert db.scalar(select(SalesOrderItem.unit_price).where(SalesOrderItem.sales_order_id == oid)) is None
     response = client.post(f"/api/sales/orders/{oid}/submit")
     assert response.status_code == 200, response.text
     # 另建草稿，检验改价时从标准价改为高价无需备注。
@@ -37,6 +37,8 @@ def test_zero_price_create_submit_and_higher_price_edit(client, login):
     oid = response.json()["data"]["id"]
     payload["items"][0]["unit_price"] = 120
     response = client.put(f"/api/sales/orders/{oid}", json=payload)
+    assert response.status_code == 200, response.text
+    response = client.post(f"/api/sales/orders/{oid}/submit")
     assert response.status_code == 200, response.text
     with SessionLocal() as db:
         order = db.get(SalesOrder, oid)
@@ -53,6 +55,9 @@ def test_negative_prices_rejected_and_discount_remark_required(client, login):
     for price, expected in [(-1, 422), (0, 409), (90, 409)]:
         payload["items"][0].update(unit_price=price, price_change_remark="")
         response = client.post("/api/sales/orders", json=payload)
+        assert response.status_code == 200, response.text
+        order_id = response.json()["data"]["id"]
+        response = client.post(f"/api/sales/orders/{order_id}/submit")
         assert response.status_code == expected, response.text
 
 

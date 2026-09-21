@@ -11,7 +11,7 @@ from dependencies import get_current_user, require_roles
 from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_type_style, FulfillmentDemand, InventoryDispatchQueue, InventoryOperationRequest, InventoryTransaction, Notification, NotificationRecipient, OperationLog, Product, ProductionTask, PurchaseOrder, PurchaseReceipt, QualityTask, ReceivableRecord, RefundRecord, Role, SalesOrder, SalesOrderApproval, SalesOrderItem, SalesOrderPriceChangeLog, SalesReceiptRequest, SalesReturn, SalesReturnItem, TodoItem, User, Warehouse
 from responses import api_response
 from services.financial_accounts import account_label, settlement_account_fields
-from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderFinanceEditRequest, SalesOrderSubmitRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
+from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderDraftPayload, SalesOrderFinanceEditRequest, SalesOrderSubmitRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
 from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.organization import get_scoped_user_ids, user_in_scope
 from services.document_status import (
@@ -586,6 +586,31 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
     _ensure_sales_scope(db, current_user, order.sales_user_id)
+
+    # 不完整草稿只需要回填编辑表单；不要再走已提交订单的结算、关联单据和流程汇总，
+    # 否则空客户/空明细会被旧详情逻辑当作完整订单处理而报 500。
+    if order.status == "draft" and (order.ext_json or {}).get("draft_payload") is not None:
+        return api_response(
+            data={
+                "id": order.id,
+                "order_no": order.order_no,
+                "status": order.status,
+                "status_label": status_label(order.status),
+                "customer": {"id": order.customer.id, "name": order.customer.name} if order.customer else None,
+                "operator_user_id": order.operator_user_id,
+                "consignee": order.consignee,
+                "consignee_phone": order.consignee_phone,
+                "delivery_address": order.delivery_address,
+                "payment_type": order.payment_type,
+                "order_type": order.order_type or "normal",
+                "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
+                "deposit_amount": float(order.deposit_amount or 0),
+                "transport_fee": float(order.transport_fee or 0),
+                "order_remark": order.order_remark,
+                "items": [],
+                "draft_payload": (order.ext_json or {}).get("draft_payload"),
+            }
+        )
     receivables = db.execute(select(ReceivableRecord).where(ReceivableRecord.sales_order_id == order.id)).scalars().all()
     received_amount = _received_amount_map(receivables).get(order.id, Decimal("0"))
     settlement_status = _settlement_status(Decimal(order.total_amount or 0), received_amount)
@@ -613,6 +638,7 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             "price_approved_by_id": order.price_approved_by_id,
             "price_approved_at": order.price_approved_at.isoformat() if order.price_approved_at else None,
             "customer": {"id": order.customer.id, "name": order.customer.name} if order.customer else None,
+            "draft_payload": (order.ext_json or {}).get("draft_payload") if order.status == "draft" else None,
             "operator_user_id": order.operator_user_id,
             "operator_name": order.operator_user.full_name if order.operator_user else None,
             "consignee": order.consignee,
@@ -819,7 +845,7 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
 
 
 @router.post("/orders")
-def create_order(payload: SalesOrderCreate, current_user: User = Depends(require_roles("sales")), db: Session = Depends(get_db)):
+def create_order(payload: SalesOrderDraftPayload, current_user: User = Depends(require_roles("sales")), db: Session = Depends(get_db)):
     return create_order_service(payload, current_user, db)
 
 
@@ -840,7 +866,7 @@ def submit_order(
 
 
 @router.put("/orders/{order_id}")
-def update_order(order_id: int, payload: SalesOrderUpdate, current_user: User = Depends(require_roles("sales")), db: Session = Depends(get_db)):
+def update_order(order_id: int, payload: SalesOrderDraftPayload, current_user: User = Depends(require_roles("sales")), db: Session = Depends(get_db)):
     return update_order_service(order_id, payload, current_user, db)
 
 

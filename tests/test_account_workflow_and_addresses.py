@@ -144,6 +144,8 @@ def test_customer_address_updates_only_after_explicit_consent(client, login, syn
     response = client.put(f'/api/sales/orders/{order_id}', json=payload) if edit_existing else client.post('/api/sales/orders', json=payload)
     assert response.status_code == 200, response.text
     order_id = response.json()['data']['id']
+    # 草稿仅保存表单；显式同步客户地址在提交完整订单时才执行。
+    assert client.post(f'/api/sales/orders/{order_id}/submit').status_code == 200
     with SessionLocal() as db:
         assert db.get(SalesOrder, order_id).delivery_address == '新的收货地址'
         assert db.get(Customer, payload['customer_id']).address == ('新的收货地址' if sync else original)
@@ -155,11 +157,12 @@ def test_address_conflict_and_failed_order_do_not_overwrite_customer(client, log
         original = db.get(Customer, payload['customer_id']).address
     payload.update(delivery_address='新地址', update_customer_address=True, customer_address_before='过期地址')
     response = client.post('/api/sales/orders', json=payload)
-    assert response.status_code == 409, response.text
+    assert response.status_code == 200, response.text
+    assert client.post(f'/api/sales/orders/{response.json()["data"]["id"]}/submit').status_code == 409
     payload['customer_address_before'] = original
     payload['items'][0]['product_id'] = 99999999
     response = client.post('/api/sales/orders', json=payload)
-    assert response.status_code == 404, response.text
+    assert response.status_code == 200, response.text
+    assert client.post(f'/api/sales/orders/{response.json()["data"]["id"]}/submit').status_code == 404
     with SessionLocal() as db:
         assert db.get(Customer, payload['customer_id']).address == original
-        assert db.scalar(select(SalesOrder.id).where(SalesOrder.customer_id == payload['customer_id'])) is None

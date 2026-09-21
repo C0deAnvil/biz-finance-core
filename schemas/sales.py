@@ -14,6 +14,33 @@ class SalesOrderItemInput(BaseModel):
     price_change_remark: str | None = Field(default=None, max_length=255)
 
 
+class SalesOrderDraftItemInput(BaseModel):
+    """草稿允许商品行尚未填写完整，完整性在提交时统一校验。"""
+    product_id: int | None = None
+    quantity: Decimal | None = None
+    unit_price: Decimal | None = None
+    packaging_config_id: int | None = None
+    remark: str | None = Field(default=None, max_length=255)
+    price_change_remark: str | None = Field(default=None, max_length=255)
+
+
+class SalesOrderDraftPayload(BaseModel):
+    update_customer_address: bool = False
+    customer_address_before: str | None = Field(default=None, max_length=255)
+    customer_id: int | None = None
+    operator_user_id: int | None = None
+    consignee: str | None = Field(default=None, max_length=100)
+    consignee_phone: str | None = Field(default=None, max_length=30)
+    delivery_address: str | None = Field(default=None, max_length=255)
+    payment_type: str | None = Field(default=None, max_length=50)
+    order_type: str | None = Field(default="normal", max_length=30)
+    expected_delivery_date: date | None = None
+    deposit_amount: Decimal | None = 0
+    transport_fee: Decimal | None = 0
+    order_remark: str | None = None
+    items: list[SalesOrderDraftItemInput] = Field(default_factory=list)
+
+
 class SalesOrderCreate(BaseModel):
     update_customer_address: bool = False
     customer_address_before: str | None = Field(default=None, max_length=255)

@@ -779,7 +779,8 @@ class SalesOrder(TimestampMixin, Base):
     parent_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
     split_group_no = Column(String(60), nullable=True)
     split_phase = Column(Integer, nullable=False, default=1)
-    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    # 草稿允许尚未选择客户；提交订单前由服务层统一校验为必填。
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True)
     receipt_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True, index=True)
     sales_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)

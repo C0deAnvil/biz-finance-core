@@ -285,7 +285,7 @@
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button v-if="canSubmitOrderForm" type="primary" :loading="dialogSubmitting" @click="submit">{{ editingId ? '保存修改' : '保存草稿' }}</el-button>
+        <el-button v-if="canSubmitOrderForm" type="primary" :loading="dialogSubmitting" @click="submit">保存草稿</el-button>
       </template>
     </el-dialog>
 
@@ -1133,41 +1133,43 @@ function validateOrderPayload() {
 
 async function submit() {
   if (dialogSubmitting.value) return
-  const payload = validateOrderPayload()
-  if (!payload) return
-  if (!(await confirmStockShortageIfNeeded())) return
+  // 草稿允许未选择客户、产品或包装；完整校验在列表中的“提交”操作执行。
+  const payload = {
+    customer_id: form.customer_id && form.customer_id !== NEW_CUSTOMER_VALUE ? Number(form.customer_id) : null,
+    operator_user_id: form.operator_user_id || auth.user?.id || null,
+    consignee: String(form.consignee || '').trim() || null,
+    consignee_phone: String(form.consignee_phone || '').trim() || null,
+    delivery_address: String(form.delivery_address || '').trim() || null,
+    payment_type: form.payment_type || null,
+    order_type: form.order_type || 'normal',
+    expected_delivery_date: form.expected_delivery_date || null,
+    deposit_amount: Number(form.deposit_amount || 0),
+    transport_fee: Number(form.transport_fee || 0),
+    order_remark: String(form.order_remark || '').trim() || null,
+    items: form.items.map((item) => ({
+      product_id: item.product_id ? Number(item.product_id) : null,
+      packaging_config_id: item.packaging_config_id ? Number(item.packaging_config_id) : null,
+      quantity: item.quantity === '' || item.quantity == null ? null : Number(item.quantity),
+      unit_price: item.unit_price === '' || item.unit_price == null ? null : Number(item.unit_price),
+      remark: String(item.remark || '').trim() || null,
+      price_change_remark: String(item.price_change_remark || '').trim() || null
+    }))
+  }
 
   dialogSubmitting.value = true
   try {
-    const customer = customers.value.find(item => item.id === payload.customer_id)
-    const originalAddress = String(customer?.address || '').trim()
-    if (customer && payload.delivery_address !== originalAddress) {
-      try {
-        await ElMessageBox.confirm(
-          `本单收货地址与客户档案不同。是否同步更新客户地址？\n原地址：${originalAddress || '未填写'}\n新地址：${payload.delivery_address}`,
-          '同步客户地址',
-          { confirmButtonText: '是，更新客户地址', cancelButtonText: '否，仅保存本单', distinguishCancelAndClose: true, type: 'warning' }
-        )
-        payload.update_customer_address = true
-        payload.customer_address_before = originalAddress
-      } catch (action) {
-        if (action === 'close') return
-        if (action !== 'cancel') throw action
-      }
-    }
     if (editingId.value) {
       await put(`/api/sales/orders/${editingId.value}`, payload)
-      ElMessage.success('订单已更新')
+      ElMessage.success('草稿已保存')
     } else {
       const result = await post('/api/sales/orders', payload)
       await ElMessageBox.alert(
-        `订单 ${result.order_no} 已创建为草稿。请确认信息无误后提交财务审批；审批通过后由库管在置货环节按需生成采购/生产补货需求。`,
+        `订单 ${result.order_no} 已保存为草稿。可稍后继续编辑；点击列表中的“提交”时才会校验完整信息并提交财务审批。`,
         '订单已创建',
         { type: 'success', confirmButtonText: '知道了' }
       )
       ElMessage.success(`订单已创建：${result.order_no}`)
     }
-    if (payload.update_customer_address && customer) customer.address = payload.delivery_address
     dialogVisible.value = false
     resetForm()
     // 新建/编辑后落的是草稿,跳草稿页才能看到刚保存的单(原先跳"审核中"会显示不出来)
@@ -1235,28 +1237,30 @@ async function editOrder(row) {
   setActiveStatusTabByRow(row)
   resetForm()
   editingId.value = row.id
+  const draft = order.draft_payload || {}
+  const draftItems = draft.items?.length ? draft.items : (order.items?.length ? order.items : [{ product_id: null, packaging_config_id: null, quantity: 1, unit_price: 0 }])
   Object.assign(form, {
-    customer_id: order.customer.id,
-    operator_user_id: order.operator_user_id || auth.user?.id,
-    consignee: order.consignee,
-    consignee_phone: order.consignee_phone,
-    delivery_address: order.delivery_address,
-    payment_type: order.payment_type,
-    order_type: order.order_type || 'normal',
-    expected_delivery_date: order.expected_delivery_date || null,
-    deposit_amount: order.deposit_amount,
-    transport_fee: order.transport_fee,
-    order_remark: order.order_remark || '',
-    items: order.items.map((item) => ({
+    customer_id: draft.customer_id ?? order.customer?.id ?? null,
+    operator_user_id: draft.operator_user_id || order.operator_user_id || auth.user?.id,
+    consignee: draft.consignee ?? order.consignee ?? '',
+    consignee_phone: draft.consignee_phone ?? order.consignee_phone ?? '',
+    delivery_address: draft.delivery_address ?? order.delivery_address ?? '',
+    payment_type: draft.payment_type ?? order.payment_type ?? '先付定金后付尾款',
+    order_type: draft.order_type ?? order.order_type ?? 'normal',
+    expected_delivery_date: draft.expected_delivery_date ?? order.expected_delivery_date ?? null,
+    deposit_amount: draft.deposit_amount ?? order.deposit_amount ?? 0,
+    transport_fee: draft.transport_fee ?? order.transport_fee ?? 0,
+    order_remark: draft.order_remark ?? order.order_remark ?? '',
+    items: draftItems.map((item) => ({
       product_id: item.product_id,
       packaging_config_id: selectedPackaging(item.product_id, item.packaging_config_id)?.id || null,
-      quantity: item.quantity,
-      unit_price: item.unit_price,
+      quantity: item.quantity ?? 1,
+      unit_price: item.unit_price ?? 0,
       remark: item.remark || '',
-      price_change_remark: ''
+      price_change_remark: item.price_change_remark || ''
     }))
   })
-  await loadCustomerAi(order.customer.id)
+  if (form.customer_id) await loadCustomerAi(form.customer_id)
   await loadOrderRecommendations()
   dialogVisible.value = true
 }
