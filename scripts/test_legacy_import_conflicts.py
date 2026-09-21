@@ -251,6 +251,28 @@ class ImportConflictTests(unittest.TestCase):
         rows = [dict(ptypeid="1", pusercode="P", pname="产品", pfullname="产品全称")]
         self.assertEqual(len(name_repair.plan_name_repairs(self.db, rows)[1]), 1)
 
+    def test_name_repair_ignores_cross_table_code_when_both_are_already_full(self):
+        _, product, material = self.masters()
+        product.name = material.name = "吨桶"
+        product.product_code = material.material_code = "吨桶"
+        self.db.commit()
+        rows = [dict(ptypeid="1", pusercode="吨桶", pname="吨桶", pfullname="吨桶")]
+        self.assertEqual(name_repair.plan_name_repairs(self.db, rows), ([], []))
+
+    def test_item_name_coverage_diagnoses_full_repairable_and_unmatched(self):
+        _, product, material = self.masters()
+        product.name = "产品全称"
+        material.name = "原料"
+        self.db.add(Product(product_code="LOCAL", name="本地产品", price=0, unit="kg"))
+        self.db.commit()
+        rows = [dict(ptypeid="1", pusercode="P", pname="产品", pfullname="产品全称"),
+                dict(ptypeid="2", pusercode="M", pname="原料", pfullname="原料全称")]
+        stats, samples = name_repair.diagnose_item_name_coverage(self.db, rows)
+        self.assertEqual(stats["产品"]["already_full"], 1)
+        self.assertEqual(stats["产品"]["no_source_code"], 1)
+        self.assertEqual(stats["原料"]["repairable"], 1)
+        self.assertEqual(samples, [])
+
     def test_name_repair_rolls_back_when_target_changed(self):
         _, product, material = self.masters()
         rows = [dict(ptypeid="1", pusercode="P", pname="产品", pfullname="产品全称"),

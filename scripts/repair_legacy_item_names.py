@@ -34,6 +34,13 @@ def plan_name_repairs(db, rows):
         if not matches:
             continue
         if len(matches) != 1:
+            # 同一编码偶尔同时存在于产品和原料表；如果这些档案本来都已经等于
+            # 源数据全称（例如“吨桶”），无需把它误报成待核对。
+            if all(
+                any(full and current == truncate(full, 200) for _short, full in candidates)
+                for _table, _label, _row_id, current in matches
+            ):
+                continue
             skipped.append({"code": code, "reason": "编码对应多份源数据或多个目标档案，需人工核对"})
             continue
         table, label, row_id, current = matches[0]
@@ -55,6 +62,55 @@ def plan_name_repairs(db, rows):
         changes.append({"table": table, "type": label, "id": row_id, "code": code,
                         "before": current, "after": full})
     return changes, skipped
+
+
+def diagnose_item_name_coverage(db, rows):
+    """汇总产品/原料与旧商品全称的匹配情况，不修改数据库。"""
+    source_by_code = defaultdict(set)
+    for row in rows:
+        if not s(row.get("ptypeid")) or not is_leaf(row):
+            continue
+        code = truncate(s(row.get("pusercode")) or f"OLD_{s(row['ptypeid'])}", 50)
+        source_by_code[code].add((s(row.get("pname")), s(row.get("pfullname"))))
+
+    targets_by_code = defaultdict(list)
+    target_rows = []
+    for model, field, label in ((Product, Product.product_code, "产品"),
+                                (Material, Material.material_code, "原料")):
+        for row_id, code, current in db.execute(select(model.id, field, model.name)):
+            item = (label, row_id, code, current)
+            target_rows.append(item)
+            targets_by_code[code].append(item)
+
+    stats = defaultdict(lambda: defaultdict(int))
+    samples = []
+    for label, _row_id, code, current in target_rows:
+        result = stats[label]
+        result["total"] += 1
+        candidates = source_by_code.get(code, set())
+        if not candidates:
+            result["no_source_code"] += 1
+            continue
+        result["source_code_matched"] += 1
+        if any(full and current == truncate(full, 200) for _short, full in candidates):
+            result["already_full"] += 1
+            continue
+        if len(targets_by_code[code]) != 1:
+            result["ambiguous_target"] += 1
+            continue
+        matching = {(short, full) for short, full in candidates if current == truncate(short, 200)}
+        if len(matching) == 1:
+            _short, full = next(iter(matching))
+            if full and current != truncate(full, 200):
+                result["repairable"] += 1
+                continue
+        result["current_other"] += 1
+        if len(samples) < 30:
+            samples.append({
+                "type": label, "code": code, "current": current,
+                "source": sorted({f"{short} -> {full}" for short, full in candidates}),
+            })
+    return stats, samples
 
 
 def plan_supplier_name_repairs(db, rows):
@@ -157,6 +213,7 @@ def main():
         help="原导入数据目录，如 old_data/export；需要核对多套旧账时可重复传入",
     )
     parser.add_argument("--apply", action="store_true", help="正式提交名称修复；默认只读预览")
+    parser.add_argument("--diagnose", action="store_true", help="输出产品/原料编号与全称覆盖诊断")
     args = parser.parse_args()
     item_rows = []
     supplier_rows = []
@@ -176,6 +233,19 @@ def main():
         supplier_changes, supplier_skipped = plan_supplier_name_repairs(db, supplier_rows)
         changes = supplier_changes + item_changes
         skipped = supplier_skipped + item_skipped
+        if args.diagnose:
+            coverage, coverage_samples = diagnose_item_name_coverage(db, item_rows)
+            print("产品/原料名称覆盖诊断：")
+            for label in ("产品", "原料"):
+                values = coverage[label]
+                print(
+                    f"  {label}：数据库 {values['total']}，源编号匹配 {values['source_code_matched']}，"
+                    f"已是全称 {values['already_full']}，可自动修复 {values['repairable']}，"
+                    f"当前名称与源简称不一致 {values['current_other']}，"
+                    f"同编号跨表冲突 {values['ambiguous_target']}，无对应源编号 {values['no_source_code']}"
+                )
+            for item in coverage_samples:
+                print(f"  待核对 {item['type']} {item['code']}：当前“{item['current']}”；源数据 {item['source']}")
         for change in changes:
             print(f"{change['type']} {change['code']}: {change['before']} -> {change['after']}")
         for item in skipped:

@@ -30,6 +30,18 @@ python scripts/repair_legacy_item_names.py \
 
 确认预览后，在同一条命令末尾添加 `--apply`。
 
+如果预览显示产品为 0，但页面仍有疑似简称，可查看编号覆盖情况：
+
+```bash
+python scripts/repair_legacy_item_names.py \
+  --source old_data/export \
+  --source old_data/export_shiji2020 \
+  --diagnose
+```
+
+诊断会分别统计已经是全称、可自动修复、编号未匹配、当前名称被人工修改及同编号
+跨表冲突的数量，不会修改数据库。
+
 连接使用项目 `DATABASE_URL` 等既有配置。执行前确认指向需要修复的数据库。
 脚本按编码和当前旧简称共同匹配，只修复仍等于原简称的档案；全称为空、已经是
 全称、人工改名、多个来源名称冲突、产品/原料跨表编码重复、超长全称均不强制
