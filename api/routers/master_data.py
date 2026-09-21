@@ -1287,10 +1287,13 @@ def list_materials(
     page: int | None = Query(default=None, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
     keyword: str | None = None,
+    active_only: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = select(Material).order_by(Material.created_at.desc(), Material.id.desc())
+    if active_only:
+        query = query.where(Material.is_active.is_(True))
     if keyword and keyword.strip():
         term = keyword.strip()
         query = query.where(or_(Material.material_code.contains(term, autoescape=True),

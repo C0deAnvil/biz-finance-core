@@ -65,10 +65,9 @@
         <div class="form-grid">
           <label>
             <span>成品</span>
-            <select v-model.number="form.product_id" :disabled="Boolean(editingId)">
-              <option value="">请选择成品</option>
-              <option v-for="item in products" :key="item.id" :value="item.id">{{ item.name }}</option>
-            </select>
+            <el-select v-model="form.product_id" filterable clearable placeholder="输入产品编号、名称或规格搜索" :disabled="Boolean(editingId)" style="width: 100%">
+              <el-option v-for="item in products" :key="item.id" :label="[item.product_code, item.name, item.specification || '无规格'].join(' - ')" :value="item.id" />
+            </el-select>
           </label>
           <label>
             <span>包装</span>
@@ -105,10 +104,9 @@
           <tbody>
             <tr v-for="(item, index) in form.items" :key="index">
               <td>
-                <select v-model.number="item.material_id">
-                  <option value="">请选择原料</option>
-                  <option v-for="material in materials" :key="material.id" :value="material.id">{{ material.name }}</option>
-                </select>
+                <el-select v-model="item.material_id" filterable clearable placeholder="输入原料编号、名称或规格搜索" style="width: 100%">
+                  <el-option v-for="material in materials" :key="material.id" :label="[material.material_code, material.name, material.specification || '无规格'].join(' - ')" :value="material.id" />
+                </el-select>
               </td>
               <td>
                 <input v-model.number="item.standard_quantity" type="number" min="0.01" step="0.01" />
@@ -132,7 +130,11 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/select/style/css'
+
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+
+import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 
 import { get, post, put, remove } from '../../api/client'
 import PageSection from '../../components/PageSection.vue'
@@ -231,11 +233,11 @@ function resetForm() {
 
 async function loadBaseData() {
   const [productRows, packagingRows, materialRows] = await Promise.all([
-    get('/api/master-data/products', { force: true }),
+    get('/api/master-data/products?active_only=true', { force: true }),
     get('/api/master-data/packaging-configs?entity_type=global&active_only=true', { force: true }),
-    get('/api/master-data/materials', { force: true })
+    get('/api/master-data/materials?active_only=true', { force: true })
   ])
-  products.value = Array.isArray(productRows) ? productRows : []
+  products.value = (Array.isArray(productRows) ? productRows : []).filter((item) => item.fulfillment_mode === 'production')
   packagingOptions.value = Array.isArray(packagingRows) ? packagingRows : []
   materials.value = Array.isArray(materialRows) ? materialRows : []
 }

@@ -264,8 +264,8 @@
           <el-table-column prop="bag_count" label="袋数" width="100"><template #default="scope">{{ formatNumber(scope.row.bag_count) }}</template></el-table-column>
         </el-table>
         <el-form-item label="产品">
-          <el-select v-model="createForm.product_id" style="width: 100%" @change="syncPlannedQuantity">
-            <el-option v-for="item in availableProducts" :key="item.id" :label="item.name" :value="item.id" />
+          <el-select v-model="createForm.product_id" filterable placeholder="输入产品编号、名称或规格搜索" style="width: 100%" @change="syncPlannedQuantity">
+            <el-option v-for="item in availableProducts" :key="item.id" :label="[item.product_code, item.name, item.specification || '无规格'].join(' - ')" :value="item.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="计划数量"><el-input-number v-model="createForm.planned_quantity" :min="0.01" style="width: 100%" /></el-form-item>
@@ -608,14 +608,15 @@ const materialRequestOverLimitRows = computed(() =>
   materialRequestForm.material_usages.filter((item) => Number(item.requested_quantity || 0) > Number(item.allowed_quantity || 0))
 )
 const availableProducts = computed(() => {
+  const productionProducts = products.value.filter((item) => item.fulfillment_mode === 'production')
   if (createForm.source_type !== 'sales_order') {
-    return products.value
+    return productionProducts
   }
   if (!selectedSalesOrder.value?.items?.length) {
     return []
   }
   const orderProductIds = new Set(selectedSalesOrder.value.items.map((item) => item.product_id))
-  return products.value.filter((item) => orderProductIds.has(item.id))
+  return productionProducts.filter((item) => orderProductIds.has(item.id))
 })
 
 function plannedQuantityForComplete() {
@@ -1301,7 +1302,7 @@ async function loadFinishedWarehouses() {
 }
 
 onMounted(async () => {
-  const productData = await get('/api/master-data/products')
+  const productData = await get('/api/master-data/products?active_only=true')
   products.value = Array.isArray(productData) ? productData : (productData?.items || [])
   boms.value = await get('/api/production/boms')
   // 该接口返回 {items, pagination} 对象:原先直接赋值会让下拉框显示两条 undefined。
