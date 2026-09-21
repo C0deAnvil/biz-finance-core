@@ -281,12 +281,10 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
     - red: 所有商品均无可用库存 或 无法继续部分置货
     同时返回每个明细的待置货/已置货/可用库存。
     """
-    finished_warehouse_id = _finished_warehouse_id(db)
     product_ids = [item.product_id for item in order.items if item.product_id]
     inventory_rows = (
         db.execute(
             select(Inventory).where(
-                Inventory.warehouse_id == finished_warehouse_id,
                 Inventory.product_id.in_(product_ids),
                 Inventory.material_id.is_(None),
             )
@@ -295,20 +293,24 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
         else []
     )
     # 仓库层面还没被任何订单占用的散量(可供本单继续追加占用)
-    unreserved_map = {
-        row.product_id: max(placeable_of(row), Decimal("0")) for row in inventory_rows
-    }
+    unreserved_map: dict[int, Decimal] = {}
+    for row in inventory_rows:
+        unreserved_map[row.product_id] = (
+            unreserved_map.get(row.product_id, Decimal("0")) + max(placeable_of(row), Decimal("0"))
+        )
     packaging_rows = db.execute(
         select(Inventory).where(
-            Inventory.warehouse_id == finished_warehouse_id,
             Inventory.packaging_config_id.is_not(None),
             Inventory.product_id.is_(None),
             Inventory.material_id.is_(None),
         )
     ).scalars().all()
-    packaging_free_pool = {
-        row.packaging_config_id: max(placeable_of(row), Decimal("0")) for row in packaging_rows
-    }
+    packaging_free_pool: dict[int, Decimal] = {}
+    for row in packaging_rows:
+        packaging_free_pool[row.packaging_config_id] = (
+            packaging_free_pool.get(row.packaging_config_id, Decimal("0"))
+            + max(placeable_of(row), Decimal("0"))
+        )
     items = []
     any_available = False
     all_enough = True

@@ -89,6 +89,49 @@ def _lock_sales_packaging_inventory(db: Session, *, warehouse_id: int, item: Sal
     return packaging, inventory
 
 
+def _lock_product_inventories(db: Session, product_id: int) -> list[Inventory]:
+    """锁定所有仓库中的同一成品库存，用于公司级置货。"""
+    return db.execute(
+        select(Inventory)
+        .where(
+            Inventory.product_id == product_id,
+            Inventory.material_id.is_(None),
+        )
+        .order_by(Inventory.warehouse_id, Inventory.id)
+        .with_for_update()
+    ).scalars().all()
+
+
+def _lock_packaging_inventories(db: Session, packaging_id: int) -> list[Inventory]:
+    """锁定所有仓库中的同一包装库存，用于公司级置货。"""
+    return db.execute(
+        select(Inventory)
+        .where(
+            Inventory.packaging_config_id == packaging_id,
+            Inventory.product_id.is_(None),
+            Inventory.material_id.is_(None),
+        )
+        .order_by(Inventory.warehouse_id, Inventory.id)
+        .with_for_update()
+    ).scalars().all()
+
+
+def _placeable_total(rows: list[Inventory]) -> Decimal:
+    return sum((max(placeable_of(row), Decimal("0")) for row in rows), Decimal("0"))
+
+
+def _reserve_from_rows(rows: list[Inventory], quantity: Decimal) -> None:
+    """将新增占用按仓库顺序分摊到仍有可用量的库存行。"""
+    remaining = quantity
+    for row in rows:
+        if remaining <= 0:
+            break
+        take = min(max(placeable_of(row), Decimal("0")), remaining)
+        if take > 0:
+            row.reserved_quantity = Decimal(row.reserved_quantity or 0) + take
+            remaining -= take
+
+
 @router.get("/queues")
 def list_dispatch_queues(
     placement_page: int = Query(default=1, ge=1),
@@ -100,10 +143,6 @@ def list_dispatch_queues(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role.code == "inventory":
-        warehouse_ids = _scoped_warehouse_ids(db, current_user)
-        if warehouse_ids is not None and _finished_warehouse_id(db) not in warehouse_ids:
-            return api_response(data={"placement": [], "shipment": []})
     placement_filter = (
         SalesOrder.status.in_(["pending_confirmation", "pending_shipment"]),
         InventoryDispatchQueue.placement_status == "pending",
@@ -214,10 +253,6 @@ def get_inventory_sales_order_detail(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role.code == "inventory":
-        warehouse_ids = _scoped_warehouse_ids(db, current_user)
-        if warehouse_ids is not None and _finished_warehouse_id(db) not in warehouse_ids:
-            raise HTTPException(status_code=403, detail="当前账号无权查看成品仓客户订单")
     order = db.execute(
         select(SalesOrder)
         .options(
@@ -243,8 +278,6 @@ def mark_placement(
     current_user: User = Depends(require_roles("inventory")),
     db: Session = Depends(get_db),
 ):
-    if not warehouse_in_scope(db, current_user, _finished_warehouse_id(db)):
-        raise HTTPException(status_code=403, detail="当前账号无权处理成品仓置货任务")
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.id == queue_id)).scalar_one_or_none()
     if queue is None:
         raise HTTPException(status_code=404, detail="置货队列不存在")
@@ -264,7 +297,6 @@ def mark_placement(
         return api_response(code=409, msg=blocked_reason, data={"code": "placement_blocked", "message": blocked_reason})
 
     # 2. 分批次置货:按明细提交置货数量
-    finished_warehouse_id = _finished_warehouse_id(db)
     item_map = {item.id: item for item in order.items}
     shortage_rows = []
     placed_any = False
@@ -284,22 +316,14 @@ def mark_placement(
                 code=409,
                 msg=f"商品 {_order_item_name(item)} 置货数量超过待置货量(剩余 {float(remaining_quantity)})",
             )
-        inventory = db.execute(
-            select(Inventory)
-            .where(
-                Inventory.warehouse_id == finished_warehouse_id,
-                Inventory.product_id == item.product_id,
-                Inventory.material_id.is_(None),
-            )
-            .with_for_update()
-        ).scalar_one_or_none()
+        inventories = _lock_product_inventories(db, item.product_id)
         # 财务审批时已为本明细占用了库存(item.reserved_quantity),置货不再重复占用,
         # 否则同一订单会被占两次(库存 200/订单 100 → 置货后占用 200)。
         # 只有当累计置货量超过已占量时(例如审批时库存不足、后来补货到货),才按当前可置货量补足差额。
         already_reserved = Decimal(item.reserved_quantity or 0)
         placed_after = Decimal(item.placed_quantity or 0) + place_qty
         extra_needed = max(placed_after - already_reserved, Decimal("0"))
-        placeable = max(placeable_of(inventory), Decimal("0"))
+        placeable = _placeable_total(inventories)
         if extra_needed > placeable:
             # 可支撑的置货量 = 已占量 + 现在还能占到的量
             can_place_total = already_reserved + placeable
@@ -314,17 +338,14 @@ def mark_placement(
                 }
             )
             continue
-        packaging, packaging_inventory = _lock_sales_packaging_inventory(
-            db,
-            warehouse_id=finished_warehouse_id,
-            item=item,
-        )
+        packaging = get_inventory_packaging_config(db, item.packaging_config)
+        packaging_inventories = _lock_packaging_inventories(db, packaging.id) if packaging else []
         target_packaging_units = _sales_item_packaging_units(item, placed_after)
         allocated_packaging_units = Decimal(item.packaging_reserved_quantity or 0) + Decimal(item.packaging_shipped_quantity or 0)
         packaging_extra_needed = max(target_packaging_units - allocated_packaging_units, Decimal("0"))
         if item.packaging_config_id and packaging is None:
             raise HTTPException(status_code=409, detail=f"{_order_item_name(item)} 的包装未关联全局包装主数据，无法核算包装库存")
-        packaging_placeable = max(placeable_of(packaging_inventory), Decimal("0"))
+        packaging_placeable = _placeable_total(packaging_inventories)
         if packaging_extra_needed > packaging_placeable:
             shortage_rows.append(
                 {
@@ -340,11 +361,11 @@ def mark_placement(
             )
             continue
         item.placed_quantity = placed_after
-        if extra_needed > 0 and inventory is not None:
-            inventory.reserved_quantity = Decimal(inventory.reserved_quantity or 0) + extra_needed
+        if extra_needed > 0:
+            _reserve_from_rows(inventories, extra_needed)
             item.reserved_quantity = already_reserved + extra_needed
-        if packaging_extra_needed > 0 and packaging_inventory is not None:
-            packaging_inventory.reserved_quantity = Decimal(packaging_inventory.reserved_quantity or 0) + packaging_extra_needed
+        if packaging_extra_needed > 0:
+            _reserve_from_rows(packaging_inventories, packaging_extra_needed)
             item.packaging_reserved_quantity = Decimal(item.packaging_reserved_quantity or 0) + packaging_extra_needed
         placed_any = True
 
@@ -457,8 +478,6 @@ def create_queue_replenishment_demands(
     db: Session = Depends(get_db),
 ):
     """置货后库存不足时,由库管确认后批量提补货需求(数量默认缺口,可修改)。"""
-    if not warehouse_in_scope(db, current_user, _finished_warehouse_id(db)):
-        raise HTTPException(status_code=403, detail="当前账号无权处理成品仓置货任务")
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.id == queue_id)).scalar_one_or_none()
     if queue is None:
         raise HTTPException(status_code=404, detail="置货队列不存在")
