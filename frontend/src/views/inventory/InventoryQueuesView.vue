@@ -4,12 +4,14 @@
       <el-col :span="12">
         <PageSection title="待置货列表" description="销售订单待确认时显示，便于库存提前置货。">
           <template #actions>
+            <el-input v-model="placementSearch" clearable placeholder="搜索订单号、负责人或产品" style="width: 260px" @keyup.enter="searchPlacement" @clear="searchPlacement" />
+            <el-button @click="searchPlacement">搜索</el-button>
             <el-button type="primary" plain @click="openManualDemand">提补货需求</el-button>
             <el-button plain @click="openMyDemands">我的补货需求</el-button>
             <el-button @click="load">刷新</el-button>
           </template>
           <el-table :data="pagedPlacementRows" stripe :row-class-name="placementRowClass">
-            <el-table-column prop="order_no" label="订单号" width="150">
+            <el-table-column prop="order_no" label="订单号" width="170">
               <template #default="scope">
                 <el-button text type="primary" @click="openOrderDetail(scope.row)">{{ scope.row.order_no }}</el-button>
               </template>
@@ -20,8 +22,8 @@
                 <span v-else class="text-muted">-</span>
               </template>
             </el-table-column>
-            <el-table-column prop="customer_name" label="客户" min-width="110" show-overflow-tooltip />
-            <el-table-column label="商品/置货进度" min-width="260">
+            <el-table-column prop="sales_user_name" label="负责人" width="140" show-overflow-tooltip />
+            <el-table-column label="商品/置货进度" min-width="520">
               <template #default="scope">
                 <div v-for="it in (scope.row.items || [])" :key="it.sales_order_item_id" class="place-progress">
                   <div class="place-progress-head">
@@ -87,15 +89,28 @@
       <el-col :span="12">
         <PageSection title="待发货列表" description="订单进入待发货后显示；库管在此确认本次发货数量并直接完成出库。未全部发货的订单会继续保留在列表中。">
           <template #actions>
+            <el-input v-model="shipmentSearch" clearable placeholder="搜索订单号、负责人或产品" style="width: 260px" @keyup.enter="searchShipment" @clear="searchShipment" />
+            <el-button @click="searchShipment">搜索</el-button>
             <el-button @click="load">刷新</el-button>
           </template>
           <el-table :data="pagedShipmentRows" stripe>
-            <el-table-column prop="order_no" label="订单号" width="140">
+            <el-table-column prop="order_no" label="订单号" width="170">
               <template #default="scope">
                 <el-button text type="primary" @click="openOrderDetail(scope.row)">{{ scope.row.order_no }}</el-button>
               </template>
             </el-table-column>
-            <el-table-column prop="customer_name" label="客户" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="sales_user_name" label="负责人" width="140" show-overflow-tooltip />
+            <el-table-column label="商品/发货进度" min-width="500">
+              <template #default="scope">
+                <div v-for="it in (scope.row.items || [])" :key="it.sales_order_item_id" class="place-progress">
+                  <div class="place-progress-head">
+                    <span class="place-prod">{{ it.product_name }}<span v-if="it.display_specification">（{{ it.display_specification }}）</span></span>
+                    <span class="place-nums">已发 {{ formatNumber(it.shipped_quantity) }} / 待发 {{ formatNumber(it.remaining_quantity) }}</span>
+                  </div>
+                  <div v-if="it.packaging_name" class="place-nums">包装 {{ it.packaging_name }}<span v-if="it.kg_per_bag">，{{ formatNumber(it.kg_per_bag) }} kg/袋</span></div>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column prop="status" label="状态" width="100">
               <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ statusLabel(scope.row.status) }}</el-tag></template>
             </el-table-column>
@@ -120,7 +135,7 @@
       </el-col>
     </el-row>
 
-    <PageSection title="客户订单看板" description="仅展示去除单价和金额后的客户订单摘要，便于库存追踪已发货与已完结订单。">
+    <PageSection v-if="false" title="客户订单看板" description="仅展示去除单价和金额后的客户订单摘要，便于库存追踪已发货与已完结订单。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
       </template>
@@ -174,7 +189,7 @@
       <el-form v-if="activeShipment" :model="shipmentForm" label-width="100px">
         <el-row :gutter="16" class="shipment-head">
           <el-col :span="8"><span class="field-label">客户订单：</span>{{ activeShipment.order_no }}</el-col>
-          <el-col :span="8"><span class="field-label">客户：</span>{{ activeShipment.customer_name || '-' }}</el-col>
+          <el-col :span="8"><span class="field-label">负责人：</span>{{ activeShipment.sales_user_name || '-' }}</el-col>
           <el-col :span="8"><span class="field-label">状态：</span>{{ statusLabel(activeShipment.order_status || activeShipment.status) }}</el-col>
         </el-row>
         <el-table :data="shipmentForm.items" border>
@@ -262,7 +277,7 @@
         <el-form label-width="100px">
           <el-row :gutter="16" class="shipment-head">
             <el-col :span="8"><span class="field-label">客户订单：</span>{{ activePlacement.order_no }}</el-col>
-            <el-col :span="8"><span class="field-label">客户：</span>{{ activePlacement.customer_name || '-' }}</el-col>
+          <el-col :span="8"><span class="field-label">负责人：</span>{{ activePlacement.sales_user_name || '-' }}</el-col>
             <el-col :span="8">
               <span class="field-label">置货状态：</span>
               <el-tag :type="stockStatusTag(activePlacement.stock_status)" effect="dark" size="small">{{ stockStatusLabel(activePlacement.stock_status) }}</el-tag>
@@ -385,7 +400,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="detailVisible" title="客户订单详情" width="960px">
+    <el-dialog v-model="detailVisible" title="订单详情" width="960px">
       <template v-if="orderDetail">
         <div v-if="orderDetail.finance_edit_snapshot" class="detail-toolbar">
           <span>原始订单详情</span>
@@ -401,7 +416,7 @@
           <el-descriptions-item label="改单人">{{ orderDetail.finance_edit_snapshot.changed_by_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="改单时间">{{ formatDateTime(orderDetail.finance_edit_snapshot.changed_at) }}</el-descriptions-item>
           <el-descriptions-item label="改单说明" :span="2">{{ orderDetail.finance_edit_snapshot.content || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="客户">{{ orderDetail.finance_edit_snapshot.before_data?.customer_name || orderDetail.customer?.name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="负责人">{{ orderDetail.finance_edit_snapshot.before_data?.sales_user_name || orderDetail.sales_user_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="经办人">{{ orderDetail.finance_edit_snapshot.before_data?.operator_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ orderDetail.finance_edit_snapshot.before_data?.payment_type || '-' }}</el-descriptions-item>
           <el-descriptions-item label="收货人">{{ orderDetail.finance_edit_snapshot.before_data?.consignee || '-' }}</el-descriptions-item>
@@ -431,7 +446,7 @@
         </div>
         <el-descriptions :column="2" border>
           <el-descriptions-item label="客户订单">{{ orderDetail.order_no }}</el-descriptions-item>
-          <el-descriptions-item label="客户">{{ orderDetail.customer?.name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="负责人">{{ orderDetail.sales_user_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="订单状态">{{ orderDetail.status_label || statusLabel(orderDetail.status) }}</el-descriptions-item>
           <el-descriptions-item label="付款方式">{{ orderDetail.payment_type_label || '-' }}</el-descriptions-item>
           <el-descriptions-item label="财务修改确认">{{ financeEditConfirmText(orderDetail) }}</el-descriptions-item>
@@ -538,12 +553,21 @@ const shipmentSubmitting = ref(false)
 const placementPagination = reactive({ page: 1, pageSize: 10 })
 const shipmentPagination = reactive({ page: 1, pageSize: 10 })
 const salesOrderPagination = reactive({ page: 1, pageSize: 10 })
+const placementSearch = ref('')
+const shipmentSearch = ref('')
 const placementTotal = ref(0)
 const shipmentTotal = ref(0)
 const salesOrderTotal = ref(0)
 const pageSizes = [10, 20, 50, 100]
-const pagedPlacementRows = computed(() => queues.placement)
-const pagedShipmentRows = computed(() => queues.shipment)
+function matchesQueueSearch(row, keyword) {
+  const text = keyword.trim().toLowerCase()
+  if (!text) return true
+  const itemText = (row.items || []).map((item) => [item.product_name, item.product_code, item.display_specification, item.packaging_name].filter(Boolean).join(' ')).join(' ')
+  return [row.order_no, row.sales_user_name, itemText].filter(Boolean).join(' ').toLowerCase().includes(text)
+}
+
+const pagedPlacementRows = computed(() => queues.placement.filter((row) => matchesQueueSearch(row, placementSearch.value)))
+const pagedShipmentRows = computed(() => queues.shipment.filter((row) => matchesQueueSearch(row, shipmentSearch.value)))
 const pagedSalesOrderRows = computed(() => queues.salesOrders)
 
 async function load() {
@@ -553,7 +577,9 @@ async function load() {
     shipment_page: String(shipmentPagination.page),
     shipment_page_size: String(shipmentPagination.pageSize),
     sales_order_page: String(salesOrderPagination.page),
-    sales_order_page_size: String(salesOrderPagination.pageSize)
+    sales_order_page_size: String(salesOrderPagination.pageSize),
+    placement_keyword: placementSearch.value.trim(),
+    shipment_keyword: shipmentSearch.value.trim(),
   })
   const data = await get(`/api/inventory/queues?${query.toString()}`)
   queues.placement = data.placement || []
@@ -571,9 +597,19 @@ async function handlePlacementPaginationChange({ page, pageSize }) {
   await load()
 }
 
+async function searchPlacement() {
+  placementPagination.page = 1
+  await load()
+}
+
 async function handleShipmentPaginationChange({ page, pageSize }) {
   shipmentPagination.page = page
   shipmentPagination.pageSize = pageSize
+  await load()
+}
+
+async function searchShipment() {
+  shipmentPagination.page = 1
   await load()
 }
 
@@ -1065,6 +1101,12 @@ watch(() => [route.query.focusId, route.query.focusType], () => {
 .placement-green { --el-table-tr-bg-color: #f0f9eb; }
 .placement-yellow { --el-table-tr-bg-color: #fdf6ec; }
 .placement-red { --el-table-tr-bg-color: #fef0f0; }
+
+/* 库管需要同时查看完整进度，两个队列改为全宽上下排列。 */
+.queue-page > .el-row { flex-direction: column; }
+.queue-page > .el-row > .el-col { width: 100%; max-width: 100%; }
+.queue-page > .el-row > .el-col:first-child { order: 2; margin-top: 16px; }
+.queue-page > .el-row > .el-col:last-child { order: 1; }
 
 .shortage-tip { display: block; }
 .mt-12 { margin-top: 12px; }

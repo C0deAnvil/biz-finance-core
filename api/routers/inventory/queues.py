@@ -66,6 +66,21 @@ from services.inventory_availability import placeable_of
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
 
+def _queue_search_filter(keyword: str | None):
+    """待置货/待发货列表的统一搜索条件。"""
+    text = (keyword or "").strip()
+    if not text:
+        return None
+    pattern = f"%{text}%"
+    return or_(
+        SalesOrder.order_no.like(pattern),
+        SalesOrder.sales_user.has(or_(User.full_name.like(pattern), User.username.like(pattern))),
+        SalesOrder.items.any(
+            SalesOrderItem.product.has(or_(Product.name.like(pattern), Product.product_code.like(pattern)))
+        ),
+    )
+
+
 def _sales_item_packaging_units(item: SalesOrderItem, quantity: Decimal) -> Decimal:
     if not item.packaging_config_id or not item.kg_per_bag or quantity <= 0:
         return Decimal("0")
@@ -140,6 +155,8 @@ def list_dispatch_queues(
     shipment_page_size: int = Query(default=10, ge=1, le=100),
     sales_order_page: int = Query(default=1, ge=1),
     sales_order_page_size: int = Query(default=10, ge=1, le=100),
+    placement_keyword: str | None = Query(default=None, max_length=100),
+    shipment_keyword: str | None = Query(default=None, max_length=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -147,6 +164,9 @@ def list_dispatch_queues(
         SalesOrder.status.in_(["pending_confirmation", "pending_shipment"]),
         InventoryDispatchQueue.placement_status == "pending",
     )
+    placement_search = _queue_search_filter(placement_keyword)
+    if placement_search is not None:
+        placement_filter = (*placement_filter, placement_search)
     placement_count = db.execute(
         select(func.count(InventoryDispatchQueue.id))
         .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
@@ -163,7 +183,7 @@ def list_dispatch_queues(
     rows = db.execute(
         select(InventoryDispatchQueue)
         .options(
-            joinedload(InventoryDispatchQueue.sales_order).joinedload(SalesOrder.customer),
+            joinedload(InventoryDispatchQueue.sales_order).joinedload(SalesOrder.sales_user),
         )
         .where(InventoryDispatchQueue.id.in_(placement_ids or [-1]))
         .order_by(InventoryDispatchQueue.created_at.desc(), InventoryDispatchQueue.id.desc())
@@ -180,6 +200,9 @@ def list_dispatch_queues(
         .outerjoin(InventoryDispatchQueue, InventoryDispatchQueue.sales_order_id == SalesOrder.id)
         .where(shipment_filter)
     )
+    shipment_search = _queue_search_filter(shipment_keyword)
+    if shipment_search is not None:
+        shipment_base = shipment_base.where(shipment_search)
     if current_user.role.code == "sales":
         scoped_user_ids = [
             user.id for user in db.execute(select(User).where(User.is_active.is_(True))).scalars().all()
@@ -195,7 +218,7 @@ def list_dispatch_queues(
     shipment_orders = db.execute(
         select(SalesOrder)
         .options(
-            joinedload(SalesOrder.customer),
+            joinedload(SalesOrder.sales_user),
             selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
             selectinload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
         )
@@ -222,7 +245,7 @@ def list_dispatch_queues(
         db.execute(
             select(SalesOrder)
             .options(
-                joinedload(SalesOrder.customer),
+                joinedload(SalesOrder.sales_user),
                 selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
                 selectinload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
             )
@@ -256,7 +279,7 @@ def get_inventory_sales_order_detail(
     order = db.execute(
         select(SalesOrder)
         .options(
-            joinedload(SalesOrder.customer),
+            joinedload(SalesOrder.sales_user),
             joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
             joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
         )

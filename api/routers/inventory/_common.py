@@ -229,6 +229,12 @@ def _order_item_name(item: SalesOrderItem) -> str:
     return item.product.name if item.product else f"产品#{item.product_id}"
 
 
+def _sales_user_name(order: SalesOrder) -> str | None:
+    """库存岗位只展示开单销售负责人，不暴露客户公司名称。"""
+    user = order.sales_user
+    return (user.full_name or user.username) if user else None
+
+
 def _serialize_shipment_queue(row: InventoryDispatchQueue, db: Session, current_user: User) -> dict:
     order = row.sales_order
     process_status = sync_sales_order_process_status(db, order)
@@ -257,7 +263,7 @@ def _serialize_shipment_queue(row: InventoryDispatchQueue, db: Session, current_
         "queue_id": row.id,
         "order_id": row.sales_order_id,
         "order_no": order.order_no,
-        "customer_name": order.customer.name if order.customer else None,
+        "sales_user_name": _sales_user_name(order),
         "order_type": order.order_type,
         "order_type_label": order_type_style(order.order_type)["label"],
         "order_type_color": order_type_style(order.order_type)["color"],
@@ -430,7 +436,7 @@ def _serialize_placement_queue(row: InventoryDispatchQueue, db: Session, current
         'queue_id': row.id,
         'order_id': row.sales_order_id,
         'order_no': order.order_no,
-        'customer_name': order.customer.name if order.customer else None,
+        'sales_user_name': _sales_user_name(order),
         'order_type': order.order_type,
         'order_type_label': order_type_style(order.order_type)["label"],
         'order_type_color': order_type_style(order.order_type)["color"],
@@ -475,7 +481,7 @@ def _serialize_sales_order_as_shipment_queue(order: SalesOrder, db: Session, cur
         "queue_id": None,
         "order_id": order.id,
         "order_no": order.order_no,
-        "customer_name": order.customer.name if order.customer else None,
+        "sales_user_name": _sales_user_name(order),
         "order_type": order.order_type,
         "order_type_label": order_type_style(order.order_type)["label"],
         "order_type_color": order_type_style(order.order_type)["color"],
@@ -501,7 +507,7 @@ def _serialize_inventory_order_detail(order: SalesOrder, process_status: dict | 
         "status_label": status_label(order.status),
         "finance_edit_pending": bool(order.finance_edit_pending),
         "process_status": process_status,
-        "customer": {"id": order.customer.id, "name": order.customer.name} if order.customer else None,
+        "sales_user_name": _sales_user_name(order),
         "consignee": order.consignee,
         "consignee_phone": order.consignee_phone,
         "delivery_address": order.delivery_address,
