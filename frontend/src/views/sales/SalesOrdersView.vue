@@ -1284,8 +1284,30 @@ async function confirmSubmitOrder() {
   if (!row) return
   submitting.value = true
   try {
+    const order = await get(`/api/sales/orders/${row.id}`)
+    const draft = order.draft_payload || order
+    const customerId = draft.customer_id ?? order.customer?.id
+    const customer = customers.value.find((item) => item.id === customerId)
+    const deliveryAddress = String(draft.delivery_address || '').trim()
+    const customerAddress = String(customer?.address || '').trim()
+    let updateCustomerAddress = false
+    if (customer && deliveryAddress !== customerAddress) {
+      try {
+        await ElMessageBox.confirm(
+          `本单收货地址与客户档案不同。是否同步更新客户地址？\n原地址：${customerAddress || '未填写'}\n新地址：${deliveryAddress || '未填写'}`,
+          '同步客户地址',
+          { confirmButtonText: '是，更新客户地址', cancelButtonText: '否，仅提交订单', distinguishCancelAndClose: true, type: 'warning' }
+        )
+        updateCustomerAddress = true
+      } catch (action) {
+        if (action === 'close') return
+        if (action !== 'cancel') throw action
+      }
+    }
     await post(`/api/sales/orders/${row.id}/submit`, {
-      assigned_finance_user_id: submitForm.assigned_finance_user_id
+      assigned_finance_user_id: submitForm.assigned_finance_user_id,
+      update_customer_address: updateCustomerAddress,
+      customer_address_before: customerAddress
     })
     ElMessage.success('订单已提交财务审批')
     submitVisible.value = false

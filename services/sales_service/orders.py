@@ -300,7 +300,14 @@ def create_order(payload: SalesOrderDraftPayload, current_user: User, db: Sessio
     )
 
 
-def submit_order(order_id: int, current_user: User, db: Session, assigned_finance_user_id: int | None = None):
+def submit_order(
+    order_id: int,
+    current_user: User,
+    db: Session,
+    assigned_finance_user_id: int | None = None,
+    update_customer_address: bool = False,
+    customer_address_before: str | None = None,
+):
     """草稿/已驳回订单提交财务审批。提交后不可编辑、不可删除。
 
     可指定处理该单的财务人员;不指定时由系统按待办量轮询分配,
@@ -314,6 +321,8 @@ def submit_order(order_id: int, current_user: User, db: Session, assigned_financ
         raise HTTPException(status_code=409, detail="仅草稿或已驳回订单可提交审批")
 
     payload = _draft_payload_for_submit(order)
+    payload.update_customer_address = update_customer_address
+    payload.customer_address_before = customer_address_before
     customer = _apply_submitted_order_payload(db, order=order, payload=payload, current_user=current_user)
     churn_result = register_customer_order(
         db,

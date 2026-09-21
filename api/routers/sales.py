@@ -862,6 +862,8 @@ def submit_order(
         current_user,
         db,
         assigned_finance_user_id=payload.assigned_finance_user_id if payload else None,
+        update_customer_address=payload.update_customer_address if payload else False,
+        customer_address_before=payload.customer_address_before if payload else None,
     )
 
 
