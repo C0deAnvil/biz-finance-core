@@ -1,0 +1,259 @@
+-- 运行前请先备份 yecai_db。
+-- 适用版本：包装库存迁移 f8a9b0c1d2e3 已执行。
+USE yecai_db;
+
+/* ================================================================
+   1. 修复客户名称
+   规则：客户编号前两位严格不等于大写 KH 时，将完整编号写入客户名称。
+   使用两阶段更新，避免客户名称唯一索引在行更新过程中发生临时冲突。
+   ================================================================ */
+
+-- 预览：应修改的客户数量及潜在的最终名称冲突。
+SELECT COUNT(*) AS customers_to_fix
+FROM customers
+WHERE BINARY LEFT(code, 2) <> BINARY 'KH';
+
+SELECT
+    c.id,
+    c.code,
+    c.name,
+    conflict_customer.id AS conflict_customer_id,
+    conflict_customer.code AS conflict_customer_code,
+    conflict_customer.name AS conflict_customer_name
+FROM customers c
+JOIN customers conflict_customer
+  ON conflict_customer.name = c.code
+ AND conflict_customer.id <> c.id
+WHERE CAST(LEFT(c.code, 2) AS BINARY) <> CAST('KH' AS BINARY)
+  -- 如果冲突行也不是 KH 开头，它会在第一阶段先改为临时名称，不构成最终冲突。
+  AND CAST(LEFT(conflict_customer.code, 2) AS BINARY) = CAST('KH' AS BINARY);
+
+-- 上面的冲突查询必须返回 0 行，再执行本事务。
+START TRANSACTION;
+
+UPDATE customers
+SET name = CONCAT('__CUSTOMER_NAME_FIX_', id, '__')
+WHERE BINARY LEFT(code, 2) <> BINARY 'KH';
+
+UPDATE customers
+SET name = code
+WHERE BINARY LEFT(code, 2) <> BINARY 'KH';
+
+COMMIT;
+
+-- 验证：remaining_wrong_rows 应为 0。
+SELECT COUNT(*) AS remaining_wrong_rows
+FROM customers
+WHERE BINARY LEFT(code, 2) <> BINARY 'KH'
+  AND BINARY name <> BINARY code;
+
+
+/* ================================================================
+   2. 合并仓库
+   - 保留 CANGZHOU_FINISHED，名称统一为“沧州仓库”；
+   - 保留 LANGFANG_RAW，名称统一为“工厂仓库”；
+   - 所有原料库存按原料汇总到工厂仓库；
+   - 所有产品、包装库存按库存对象汇总到沧州仓库；
+   - 数量、占用量、在途量相加，平均成本按现有数量加权；
+   - 库存批次同步合并；历史业务单据的仓库外键迁移后再删除冗余仓库。
+   ================================================================ */
+
+-- 先确认这两个系统仓库各自只有一条记录。
+SELECT id, code, name, warehouse_type
+FROM warehouses
+WHERE code IN ('CANGZHOU_FINISHED', 'LANGFANG_RAW')
+ORDER BY code;
+
+SET @cangzhou_id := (
+    SELECT id FROM warehouses WHERE code = 'CANGZHOU_FINISHED' ORDER BY id LIMIT 1
+);
+SET @factory_id := (
+    SELECT id FROM warehouses WHERE code = 'LANGFANG_RAW' ORDER BY id LIMIT 1
+);
+
+START TRANSACTION;
+
+-- 记录所有冗余仓库应迁往的仓库，供历史单据外键迁移使用。
+DROP TEMPORARY TABLE IF EXISTS tmp_warehouse_redirect;
+CREATE TEMPORARY TABLE tmp_warehouse_redirect AS
+SELECT
+    id AS old_warehouse_id,
+    CASE WHEN warehouse_type = 'raw' THEN @factory_id ELSE @cangzhou_id END AS new_warehouse_id
+FROM warehouses
+WHERE id NOT IN (@factory_id, @cangzhou_id);
+
+-- 合并当前库存。每种原料只保留一行到工厂仓库；每种产品/包装只保留一行到沧州仓库。
+DROP TEMPORARY TABLE IF EXISTS tmp_inventory_merge;
+CREATE TEMPORARY TABLE tmp_inventory_merge AS
+SELECT
+    MIN(id) AS keeper_id,
+    CASE WHEN material_id IS NOT NULL THEN @factory_id ELSE @cangzhou_id END AS target_warehouse_id,
+    product_id,
+    material_id,
+    packaging_config_id,
+    SUM(COALESCE(quantity, 0)) AS merged_quantity,
+    SUM(COALESCE(reserved_quantity, 0)) AS merged_reserved_quantity,
+    SUM(COALESCE(in_transit, 0)) AS merged_in_transit,
+    CASE
+        WHEN SUM(COALESCE(quantity, 0)) > 0
+        THEN SUM(COALESCE(quantity, 0) * COALESCE(avg_unit_cost, 0))
+             / SUM(COALESCE(quantity, 0))
+        ELSE MAX(COALESCE(avg_unit_cost, 0))
+    END AS merged_avg_unit_cost
+FROM inventories
+GROUP BY product_id, material_id, packaging_config_id;
+
+-- 盘点明细引用库存主键，先全部改指向合并后保留的库存行。
+UPDATE stock_take_items item
+JOIN inventories inventory_row ON inventory_row.id = item.inventory_id
+JOIN tmp_inventory_merge merged
+  ON inventory_row.product_id <=> merged.product_id
+ AND inventory_row.material_id <=> merged.material_id
+ AND inventory_row.packaging_config_id <=> merged.packaging_config_id
+SET item.inventory_id = merged.keeper_id;
+
+DELETE inventory_row
+FROM inventories inventory_row
+JOIN tmp_inventory_merge merged
+  ON inventory_row.product_id <=> merged.product_id
+ AND inventory_row.material_id <=> merged.material_id
+ AND inventory_row.packaging_config_id <=> merged.packaging_config_id
+WHERE inventory_row.id <> merged.keeper_id;
+
+UPDATE inventories inventory_row
+JOIN tmp_inventory_merge merged ON merged.keeper_id = inventory_row.id
+SET inventory_row.warehouse_id = merged.target_warehouse_id,
+    inventory_row.quantity = merged.merged_quantity,
+    inventory_row.reserved_quantity = merged.merged_reserved_quantity,
+    inventory_row.in_transit = merged.merged_in_transit,
+    inventory_row.avg_unit_cost = merged.merged_avg_unit_cost,
+    inventory_row.updated_at = NOW();
+
+-- 同步合并库存批次，防止同一批次在旧仓库中重复保留。
+DROP TEMPORARY TABLE IF EXISTS tmp_batch_merge;
+CREATE TEMPORARY TABLE tmp_batch_merge AS
+SELECT
+    MIN(id) AS keeper_id,
+    CASE WHEN material_id IS NOT NULL THEN @factory_id ELSE @cangzhou_id END AS target_warehouse_id,
+    product_id,
+    material_id,
+    packaging_config_id,
+    batch_no,
+    SUM(COALESCE(quantity, 0)) AS merged_quantity,
+    CASE
+        WHEN SUM(COALESCE(quantity, 0)) > 0
+        THEN SUM(COALESCE(quantity, 0) * COALESCE(unit_cost, 0))
+             / SUM(COALESCE(quantity, 0))
+        ELSE MAX(COALESCE(unit_cost, 0))
+    END AS merged_unit_cost
+FROM inventory_batches
+GROUP BY product_id, material_id, packaging_config_id, batch_no;
+
+DELETE batch_row
+FROM inventory_batches batch_row
+JOIN tmp_batch_merge merged
+  ON batch_row.product_id <=> merged.product_id
+ AND batch_row.material_id <=> merged.material_id
+ AND batch_row.packaging_config_id <=> merged.packaging_config_id
+ AND batch_row.batch_no <=> merged.batch_no
+WHERE batch_row.id <> merged.keeper_id;
+
+UPDATE inventory_batches batch_row
+JOIN tmp_batch_merge merged ON merged.keeper_id = batch_row.id
+SET batch_row.warehouse_id = merged.target_warehouse_id,
+    batch_row.quantity = merged.merged_quantity,
+    batch_row.unit_cost = merged.merged_unit_cost,
+    batch_row.updated_at = NOW();
+
+-- 库存流水按库存对象归到两个保留仓库；流水金额和数量不变。
+UPDATE inventory_transactions
+SET warehouse_id = CASE
+    WHEN material_id IS NOT NULL THEN @factory_id
+    ELSE @cangzhou_id
+END
+WHERE warehouse_id NOT IN (@factory_id, @cangzhou_id)
+   OR (material_id IS NOT NULL AND warehouse_id <> @factory_id)
+   OR (material_id IS NULL AND warehouse_id <> @cangzhou_id);
+
+-- 迁移其余所有直接引用仓库的历史记录。
+UPDATE inventory_operation_requests row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.warehouse_id
+SET row_data.warehouse_id = redirect.new_warehouse_id;
+
+UPDATE logistics_records row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.warehouse_id
+SET row_data.warehouse_id = redirect.new_warehouse_id;
+
+UPDATE production_tasks row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.warehouse_id
+SET row_data.warehouse_id = redirect.new_warehouse_id;
+
+UPDATE purchase_receipts row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.warehouse_id
+SET row_data.warehouse_id = redirect.new_warehouse_id;
+
+UPDATE purchase_returns row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.warehouse_id
+SET row_data.warehouse_id = redirect.new_warehouse_id;
+
+UPDATE quality_inbound_applications row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.warehouse_id
+SET row_data.warehouse_id = redirect.new_warehouse_id;
+
+UPDATE quality_tasks row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.target_warehouse_id
+SET row_data.target_warehouse_id = redirect.new_warehouse_id;
+
+UPDATE stock_take_tasks row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.warehouse_id
+SET row_data.warehouse_id = redirect.new_warehouse_id;
+
+UPDATE stock_transfers row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.source_warehouse_id
+SET row_data.source_warehouse_id = redirect.new_warehouse_id;
+
+UPDATE stock_transfers row_data
+JOIN tmp_warehouse_redirect redirect ON redirect.old_warehouse_id = row_data.target_warehouse_id
+SET row_data.target_warehouse_id = redirect.new_warehouse_id;
+
+-- 所有外键已迁移，现在可以删除冗余仓库并统一名称与类型。
+DELETE FROM warehouses
+WHERE id NOT IN (@factory_id, @cangzhou_id);
+
+UPDATE warehouses
+SET name = '工厂仓库',
+    warehouse_type = 'raw',
+    updated_at = NOW()
+WHERE id = @factory_id;
+
+UPDATE warehouses
+SET name = '沧州仓库',
+    warehouse_type = 'finished',
+    updated_at = NOW()
+WHERE id = @cangzhou_id;
+
+DROP TEMPORARY TABLE IF EXISTS tmp_batch_merge;
+DROP TEMPORARY TABLE IF EXISTS tmp_inventory_merge;
+DROP TEMPORARY TABLE IF EXISTS tmp_warehouse_redirect;
+
+COMMIT;
+
+-- 最终验证：仓库应只有两行；原料只在工厂仓库，产品和包装只在沧州仓库。
+SELECT id, code, name, warehouse_type
+FROM warehouses
+ORDER BY id;
+
+SELECT
+    warehouse_id,
+    CASE
+        WHEN material_id IS NOT NULL THEN 'material'
+        WHEN product_id IS NOT NULL THEN 'product'
+        WHEN packaging_config_id IS NOT NULL THEN 'packaging'
+        ELSE 'unknown'
+    END AS item_type,
+    COUNT(*) AS inventory_rows,
+    SUM(quantity) AS total_quantity,
+    SUM(reserved_quantity) AS total_reserved_quantity
+FROM inventories
+GROUP BY warehouse_id, item_type
+ORDER BY warehouse_id, item_type;

@@ -16,7 +16,9 @@ def build_role_menus() -> dict[str, list[dict[str, str]]]:
     grouped: dict[str, dict[str, dict]] = {}
     for item in load_route_manifest():
         group_title = item.get("group") or "业务功能"
-        for role_code in item.get("menu_roles", []):
+        # 路由清单由多人维护，角色偶尔会被重复填写。按声明顺序去重，
+        # 避免同一路由在某个角色的侧边栏中出现两次。
+        for role_code in dict.fromkeys(item.get("menu_roles", [])):
             group_bucket = grouped.setdefault(role_code, {})
             group_item = group_bucket.setdefault(
                 group_title,
@@ -26,7 +28,8 @@ def build_role_menus() -> dict[str, list[dict[str, str]]]:
                     "children": [],
                 },
             )
-            group_item["children"].append({"title": item["title"], "path": item["path"]})
+            if not any(child.get("path") == item["path"] for child in group_item["children"]):
+                group_item["children"].append({"title": item["title"], "path": item["path"]})
     return {role_code: list(groups.values()) for role_code, groups in grouped.items()}
 
 

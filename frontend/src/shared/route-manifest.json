@@ -23,8 +23,7 @@
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin",
-      "finance"
+      "master_data_admin"
     ],
     "warmers": [
       {
@@ -81,8 +80,7 @@
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin",
-      "finance"
+      "master_data_admin"
     ],
     "preload_roles": [
       "manager",
