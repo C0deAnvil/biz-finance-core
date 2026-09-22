@@ -1236,6 +1236,7 @@ class ProductionTask(TimestampMixin, Base):
 
     product = relationship("Product")
     fulfillment_demand = relationship("FulfillmentDemand", foreign_keys=[fulfillment_demand_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
     completion_recorded_by = relationship("User", foreign_keys=[completion_recorded_by_id])
     # 供接口展示"本任务归属哪个入库仓库",避免只拿到 id
     warehouse = relationship("Warehouse", foreign_keys=[warehouse_id])

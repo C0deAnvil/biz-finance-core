@@ -686,11 +686,21 @@ function bagCount(row) {
 }
 
 async function load() {
-  const data = await get(`/api/purchases/orders?tab=${activeStatusTab.value}&page=${pagination.page}&page_size=${pagination.pageSize}`)
-  rows.value = data.items || []
-  total.value = Number(data.pagination?.total || 0)
+  try {
+    const data = await get(`/api/purchases/orders?tab=${activeStatusTab.value}&page=${pagination.page}&page_size=${pagination.pageSize}`)
+    rows.value = data.items || []
+    total.value = Number(data.pagination?.total || 0)
+  } catch (error) {
+    ElMessage.error(`采购订单加载失败：${error.message || '请稍后重试'}`)
+    return
+  }
   if (canManageOrders.value) {
-    fulfillmentDemands.value = await get('/api/purchases/fulfillment-demands')
+    try {
+      fulfillmentDemands.value = await get('/api/purchases/fulfillment-demands')
+    } catch (error) {
+      fulfillmentDemands.value = []
+      ElMessage.error(`采购补货需求加载失败：${error.message || '请稍后重试'}`)
+    }
   } else {
     fulfillmentDemands.value = []
   }
@@ -1074,13 +1084,17 @@ function exportTable() {
 }
 
 onMounted(async () => {
-  await loadSettings()
-  userOptions.value = await get('/api/admin/users/options')
-  suppliers.value = await get('/api/master-data/suppliers')
-  products.value = await get('/api/master-data/products')
-  materials.value = await get('/api/master-data/materials')
-  packagingConfigs.value = await get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
-  await load()
+  try {
+    await loadSettings()
+    userOptions.value = await get('/api/admin/users/options')
+    suppliers.value = await get('/api/master-data/suppliers')
+    products.value = await get('/api/master-data/products')
+    materials.value = await get('/api/master-data/materials')
+    packagingConfigs.value = await get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
+    await load()
+  } catch (error) {
+    ElMessage.error(`采购页面初始化失败：${error.message || '请稍后重试'}`)
+  }
 })
 
 watch(activeStatusTab, async () => {

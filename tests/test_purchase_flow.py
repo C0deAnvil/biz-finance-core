@@ -71,6 +71,14 @@ def test_purchase_order_create_and_list(client, login):
     assert any(int((row or {}).get("id") or 0) == order_id for row in rows), "新建采购单应出现在列表"
 
 
+def test_purchase_fulfillment_demands_list_loads(client, login):
+    """采购页必须能加载补货需求,即使暂时没有待处理需求。"""
+    login("purchase01")
+    resp = client.get("/api/purchases/fulfillment-demands")
+    assert resp.status_code == 200, f"采购补货需求列表加载失败: {resp.text}"
+    assert isinstance(resp.json().get("data"), list)
+
+
 def test_purchase_order_threshold_approval_flow(client, login):
     """达到采购审批阈值(数量阈值)的订单需要经理审批并采购员确认。"""
     supplier_id = create_supplier(client, login)
