@@ -189,7 +189,7 @@ const decisionVisible = ref(false)
 const detail = ref(null)
 const activeRow = ref(null)
 const decisionForm = reactive({ decision: 'approved', note: '' })
-const canApproveOrders = computed(() => ['finance', 'chairman', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('approve'))
+const canApproveOrders = computed(() => ['finance', 'finance_super', 'chairman', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('approve'))
 const { pagination, total, pageSizes, pagedItems: pagedRows, ensureVisible } = useLocalPagination(rows)
 const approvalHint = computed(() => {
   const amount = Number(activeRow.value?.receivable_amount || 0)

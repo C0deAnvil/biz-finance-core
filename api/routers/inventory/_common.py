@@ -406,9 +406,15 @@ def _has_open_demand(db: Session, *, sales_order_item_id: int) -> bool:
 
 
 def _placement_blocked_reason(db: Session, order: SalesOrder, stock_status: str) -> str | None:
-    """置货被阻止的原因(库存不足 / 定金未付),无阻止时返回 None。"""
+    """置货被阻止的原因，按财务审批、收款、库存顺序返回。"""
+    # 队列会在提交审批时就创建，库管首先应看到财务尚未放行，而不是被库存缺口误导。
+    if order.status == "pending_confirmation":
+        return "待财务审批并确认收款，暂不可置货"
+    if order.status != "pending_shipment":
+        return "客户订单尚未完成财务审批，暂不可置货"
+
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
-    if payment_type == "先付定金后付尾款":
+    if payment_type == "先收定金后收尾款":
         # 只要"累计已收 >= 应收定金"就可以置货,不限定收款是哪个阶段登记的。
         # 原先只统计 payment_stage == "deposit" 的记录,而财务选择"直接收款"时
         # 登记的是 payment_stage == "direct"(库里已有 4 笔共 1 万余元),

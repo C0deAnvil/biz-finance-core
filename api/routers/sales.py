@@ -950,15 +950,25 @@ def delete_order(order_id: int, current_user: User = Depends(require_roles("sale
 
 @router.get("/approvals/pending")
 def pending_approvals(
-    current_user: User = Depends(require_roles("finance", "chairman", "system_admin")),
+    current_user: User = Depends(require_roles("finance", "finance_super", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
-    rows = db.execute(
+    query = (
         select(SalesOrder)
         .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user))
         .where(SalesOrder.status == "pending_confirmation")
         .order_by(SalesOrder.updated_at.desc(), SalesOrder.id.desc())
-    ).scalars().all()
+    )
+    # 已指定财务的订单只展示给该处理人；未指定的历史订单仍由全体财务承接。
+    role_code = current_user.role.code if current_user.role else ""
+    if role_code in {"finance", "finance_super"}:
+        query = query.where(
+            or_(
+                SalesOrder.assigned_finance_user_id == current_user.id,
+                SalesOrder.assigned_finance_user_id.is_(None),
+            )
+        )
+    rows = db.execute(query).scalars().all()
     return api_response(
         data=[
             {
@@ -997,7 +1007,7 @@ def pending_approvals(
 def approve_order(
     order_id: int,
     payload: SalesApprovalRequest,
-    current_user: User = Depends(require_roles("finance", "chairman", "system_admin")),
+    current_user: User = Depends(require_roles("finance", "finance_super", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
     return approve_order_service(order_id, payload, current_user, db)
@@ -1006,7 +1016,7 @@ def approve_order(
 @router.post("/orders/{order_id}/convert-to-receivable")
 def convert_order_to_receivable(
     order_id: int,
-    current_user: User = Depends(require_roles("finance", "chairman", "system_admin")),
+    current_user: User = Depends(require_roles("finance", "finance_super", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
     """财务将待审批订单转为应收并放行后续置货/发货流程。"""

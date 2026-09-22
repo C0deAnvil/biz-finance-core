@@ -466,6 +466,15 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         raise HTTPException(status_code=404, detail="客户订单不存在")
     if order.status != "pending_confirmation":
         raise HTTPException(status_code=409, detail="当前订单状态不允许审批")
+    role_code = current_user.role.code if current_user.role else ""
+    # 指定了财务处理人时，其他财务既不能在审批列表看到，也不能绕过列表直接审批。
+    # 董事长和系统管理员保留监管/代审权限。
+    if (
+        role_code in {"finance", "finance_super"}
+        and order.assigned_finance_user_id is not None
+        and order.assigned_finance_user_id != current_user.id
+    ):
+        raise HTTPException(status_code=403, detail="该客户订单已指定由其他财务人员处理")
     if order.price_approval_status == "pending":
         raise HTTPException(status_code=409, detail="当前订单存在待审批改价，需财务审批通过后再推进")
 
@@ -491,6 +500,8 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
     if queue is None:
         queue = InventoryDispatchQueue(sales_order_id=order.id)
         db.add(queue)
+    # 订单一旦指定处理财务，后续审批结果通知也只发给该人；不能又广播给全体财务。
+    finance_recipient_ids = [order.assigned_finance_user_id] if order.assigned_finance_user_id else _finance_user_ids(db)
 
     if payload.decision == "approved":
         order.status = "pending_shipment"
@@ -550,7 +561,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
             title="客户订单审批通过",
             content=f"客户订单 {order.order_no} 已确认到账并进入待发货阶段。",
             module="sales",
-            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, *inventory_user_ids, *_finance_user_ids(db)])),
+            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, *inventory_user_ids, *finance_recipient_ids])),
             created_by_id=current_user.id,
             category="success",
         )
@@ -566,7 +577,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
             title="客户订单已驳回",
             content=f"客户订单 {order.order_no} 审批未通过，请根据驳回原因调整。",
             module="sales",
-            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, *_finance_user_ids(db)])),
+            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, *finance_recipient_ids])),
             created_by_id=current_user.id,
             category="warning",
         )

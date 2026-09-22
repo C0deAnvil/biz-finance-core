@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
@@ -23,6 +23,7 @@ from models import (
     QualityCostRecord,
     QualityDisposition,
     QualityTask,
+    ReceivablePlan,
     ReceivableRecord,
     RefundRecord,
     Role,
@@ -615,6 +616,14 @@ def list_receivable_records(
     )
     pending_order_filter = (
         SalesOrder.status != "cancelled",
+        # 只有财务审批后明确生成的应收计划，才属于应收管理。
+        # 不能因为一张订单尚未收到全款，就把刚提交、仍待审批的单据提前放进来。
+        exists(
+            select(ReceivablePlan.id).where(
+                ReceivablePlan.sales_order_id == SalesOrder.id,
+                ReceivablePlan.status != "completed",
+            )
+        ),
         func.coalesce(received_totals.c.received_amount, 0) < SalesOrder.total_amount,
     )
     stage_started_at = perf_counter()
