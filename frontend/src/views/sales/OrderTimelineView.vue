@@ -39,9 +39,12 @@
             <div class="lane lane-head">
               <div class="lane-label">任务 / 时间</div>
               <div class="lane-track">
-                <div v-for="tick in ticks" :key="tick.pct" class="tick-label" :style="{ left: tick.pct + '%' }">
-                  {{ tick.label }}
+                <div class="task-axis">
+                  <div v-for="tick in ticks" :key="tick.pct" class="tick-label" :style="{ left: tick.pct + '%' }" :title="tick.title">
+                    {{ tick.label }}
+                  </div>
                 </div>
+                <div class="task-status-head">处理状态</div>
               </div>
             </div>
             <div
@@ -59,22 +62,27 @@
                 <span class="lane-status" :class="task.status === 'completed' ? 'is-done' : 'is-active'">{{ task.milestone ? '节点' : task.status === 'completed' ? '完成' : '进行中' }}</span>
               </div>
               <div class="lane-track">
-                <div
-                  v-if="task.milestone || !task.end_at"
-                  class="task-point"
-                  :class="{ 'is-open': !task.milestone }"
-                  :style="{ left: xPct(task.start_at) + '%' }"
-                  :title="taskTitle(task)"
-                ></div>
-                <div
-                  v-if="!task.milestone && task.end_at"
-                  class="gantt-bar task-bar"
-                  :style="taskBarStyle(task)"
-                  :title="taskTitle(task)"
-                >
-                  <span>{{ task.label }}</span>
+                <div class="task-axis">
+                  <div
+                    v-if="task.milestone || !task.end_at"
+                    class="task-point"
+                    :class="{ 'is-open': !task.milestone }"
+                    :style="{ left: xPct(task.start_at) + '%' }"
+                    :title="taskTitle(task)"
+                  ></div>
+                  <div
+                    v-if="!task.milestone && task.end_at"
+                    class="gantt-bar task-bar"
+                    :style="taskBarStyle(task)"
+                    :title="taskTitle(task)"
+                  >
+                    <span>{{ task.label }}</span>
+                  </div>
                 </div>
-                <span v-if="!task.end_at && !task.milestone" class="task-open-label" :style="{ left: Math.min(83, xPct(task.start_at) + 2) + '%' }">待完成</span>
+                <div class="task-state-right" :class="task.status === 'completed' ? 'is-done' : 'is-active'" :title="taskTitle(task)">
+                  <div class="state-line"><span class="state-dot"></span><span class="state-text">{{ task.status_text || (task.status === 'completed' ? '已完成' : '处理中') }}</span></div>
+                  <div class="state-times">{{ shortDateTime(task.start_at) }}<template v-if="!task.milestone"> → {{ task.end_at ? shortDateTime(task.end_at) : '未结束' }}</template></div>
+                </div>
               </div>
             </div>
             <el-empty v-if="!visibleTasks.length" description="销售单提交后才开始生命周期" :image-size="60" />
@@ -315,12 +323,17 @@ const ticks = computed(() => {
       }
       return closest
     }))]
-    return indices.map((index) => ({ pct: axis.positions[index], label: formatDateTime(new Date(axis.times[index])) }))
+    return indices.map((index) => ({
+      pct: axis.positions[index],
+      label: shortDateTime(axis.times[index]),
+      title: formatDateTime(new Date(axis.times[index]))
+    }))
   }
   const span = Math.max(endMs.value - startMs.value, 1)
   return [0, 0.2, 0.4, 0.6, 0.8, 1].map((f) => ({
     pct: Math.round(f * 100),
-    label: formatDateTime(new Date(startMs.value + span * f))
+    label: shortDateTime(startMs.value + span * f),
+    title: formatDateTime(new Date(startMs.value + span * f))
   }))
 })
 
@@ -339,10 +352,19 @@ function taskBarStyle(task) {
   return { left: `${left}%`, width: `${Math.max(0.6, right - left)}%` }
 }
 
+function shortDateTime(value) {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return '-'
+  const pad = (number) => String(number).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 function taskTitle(task) {
   const lines = [task.label, `开始：${formatDateTime(task.start_at)}`]
   lines.push(task.end_at ? `结束：${formatDateTime(task.end_at)}` : task.milestone ? '单次事件' : '尚未完成')
+  if (task.status_text) lines.push(`状态：${task.status_text}`)
   if (task.document_no) lines.push(`关联单据：${task.document_no}`)
+  if (task.detail) lines.push(task.detail)
   return lines.join('\n')
 }
 
@@ -385,7 +407,16 @@ async function load() {
   loading.value = true
   try {
     timeline.value = await get(`/api/sales/orders/${orderId}/timeline`)
-    expandedTasks.value = Object.fromEntries((timeline.value?.tasks || []).filter((task) => task.children?.length).map((task) => [task.key, true]))
+    const defaults = {}
+    const expand = (tasks, depth) => {
+      for (const task of tasks || []) {
+        if (!task.children?.length) continue
+        if (depth < 4) defaults[task.key] = true
+        expand(task.children, depth + 1)
+      }
+    }
+    expand(timeline.value?.tasks, 0)
+    expandedTasks.value = defaults
   } catch (error) {
     timeline.value = null
   } finally {
@@ -418,8 +449,8 @@ onMounted(load)
 .head-meta b { color: #303133; }
 
 /* ===== 泳道图 ===== */
-.swimlane { border: 1px solid #e4edf6; border-radius: 12px; overflow: hidden; background: #fff; }
-.lane { display: grid; grid-template-columns: minmax(260px, 32%) minmax(0, 1fr); align-items: stretch; border-bottom: 1px dashed #eff2f6; min-height: 54px; }
+.swimlane { border: 1px solid #e4edf6; border-radius: 12px; overflow-x: auto; background: #fff; }
+.lane { display: grid; grid-template-columns: 320px minmax(0, 1fr); min-width: 1120px; align-items: stretch; border-bottom: 1px dashed #eff2f6; min-height: 60px; }
 .lane:last-child { border-bottom: none; }
 .lane-head { min-height: 40px; }
 .lane-label { padding: 8px 12px; border-right: 1px solid #eff2f6; background: #fafbfc; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; position: relative; }
@@ -440,14 +471,23 @@ onMounted(load)
 .lane.is-active .lane-label { background: color-mix(in srgb, var(--lane-color, #185f93) 8%, #fff); }
 .lane.is-active .lane-name { color: var(--lane-color, #185f93); }
 
-.lane-track { position: relative; min-height: 54px; background: repeating-linear-gradient(90deg, #eef1f5 0, #eef1f5 1px, transparent 1px, transparent 20%); }
-.lane-head .lane-track { min-height: 40px; }
+.lane-track { display: grid; grid-template-columns: minmax(0, 1fr) 215px; min-height: 60px; }
+.task-axis { position: relative; min-height: 60px; background: repeating-linear-gradient(90deg, #eef1f5 0, #eef1f5 1px, transparent 1px, transparent 20%); }
+.lane-head .lane-track, .lane-head .task-axis { min-height: 40px; }
+.task-status-head, .task-state-right { border-left: 1px solid #eff2f6; display: flex; align-items: center; padding: 0 12px; font-size: 12px; }
+.task-status-head { background: #fafbfc; color: #7a8a99; font-weight: 700; }
+.task-state-right { flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; overflow: hidden; cursor: help; }
+.task-state-right.is-active { color: #bd7118; background: #fffbf4; }
+.task-state-right.is-done { color: #29835c; background: #f4fbf6; }
+.state-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.state-line { display: flex; align-items: center; gap: 7px; width: 100%; font-weight: 700; }
+.state-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.state-times { color: #7a8a99; font-size: 11px; white-space: nowrap; }
 .gantt-bar { position: absolute; top: 16px; min-width: 38px; height: 22px; padding: 0 8px; border-radius: 5px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #fff; font-size: 11px; font-weight: 700; background: var(--lane-color, #909399); box-shadow: 0 2px 5px color-mix(in srgb, var(--lane-color, #909399) 28%, transparent); cursor: help; }
 .gantt-bar.is-current { outline: 2px solid color-mix(in srgb, var(--lane-color, #909399) 40%, white); outline-offset: 2px; }
 .task-bar { min-width: 2px; padding: 0 5px; }
 .task-point { position: absolute; z-index: 2; top: 20px; transform: translateX(-50%); width: 14px; height: 14px; border: 3px solid var(--lane-color, #909399); border-radius: 50%; background: #fff; cursor: help; }
 .task-point.is-open { border-style: dashed; }
-.task-open-label { position: absolute; top: 17px; font-size: 11px; color: #7a8a99; white-space: nowrap; }
 .lane-current { position: absolute; left: 45%; top: 18px; color: #909399; font-size: 12px; }
 .tick-label { position: absolute; top: 4px; transform: translateX(-50%); font-size: 10px; color: #a8b2bd; white-space: nowrap; }
 .lane-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; color: #c0c4cc; }
