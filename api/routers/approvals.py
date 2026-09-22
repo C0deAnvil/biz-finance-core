@@ -25,6 +25,7 @@ from models import (
     SalesOrder,
     SalesOrderApproval,
     SalesOrderItem,
+    SalesOrderPriceChangeLog,
     SalesReturn,
     SalesReturnItem,
     TodoItem,
@@ -36,11 +37,11 @@ from schemas.approvals import ApprovalDecisionRequest
 from schemas.reimbursements import BusinessMatterAuditRequest, ReimbursementAuditRequest
 from schemas.production import SpecialMaterialApproval
 from schemas.purchases import PurchaseApprovalRequest
-from schemas.sales import SalesApprovalRequest, SalesReceiptApprovalRequest, SalesReturnApprovalRequest
+from schemas.sales import SalesApprovalRequest, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReturnApprovalRequest
 from services.display import clean_display_text, payment_type_label, return_type_label, status_label
 from services.production_service import approve_special_request as approve_special_request_service
 from services.purchase_service import approve_purchase_order as approve_purchase_order_service, approve_purchase_payment_request as approve_purchase_payment_request_service
-from services.sales_service import approve_order as approve_sales_order_service, approve_return as approve_sales_return_service, approve_sales_receipt_request as approve_sales_receipt_request_service
+from services.sales_service import approve_order as approve_sales_order_service, approve_sales_price_change as approve_sales_price_change_service, approve_return as approve_sales_return_service, approve_sales_receipt_request as approve_sales_receipt_request_service
 from services.workflow import purchase_arrival_status
 from services.workflow_repair import repair_sales_receipt_workflows
 from api.routers.reimbursements import audit_business_matter as audit_business_matter_service, audit_reimbursement as audit_reimbursement_service
@@ -51,6 +52,7 @@ router = APIRouter(prefix="/approvals", tags=["approvals"])
 
 APPROVAL_TYPE_LABELS = {
     "sales_order": "销售订单审批",
+    "sales_price_change": "销售改价审批",
     "purchase_order": "采购订单审批",
     "purchase_payment_request": "采购付款审批",
     "sales_receipt_request": "销售收款确认",
@@ -63,6 +65,7 @@ APPROVAL_TYPE_LABELS = {
 
 TODO_APPROVAL_TYPE_MAP = {
     "sales_order_approval": "sales_order",
+    "sales_order_price_approval": "sales_price_change",
     "purchase_payment_request": "purchase_payment_request",
     "sales_receipt_request": "sales_receipt_request",
     "sales_return_approval": "sales_return",
@@ -73,7 +76,8 @@ TODO_APPROVAL_TYPE_MAP = {
 }
 
 APPROVAL_VIEW_ROLES = {
-    "sales_order": {"finance", "chairman", "system_admin"},
+    "sales_order": {"finance", "finance_super", "chairman", "system_admin"},
+    "sales_price_change": {"finance", "finance_super", "chairman", "system_admin"},
     "purchase_order": {"manager", "system_admin"},
     "purchase_payment_request": {"purchase", "chairman", "finance", "system_admin"},
     "sales_receipt_request": {"sales", "chairman", "finance", "system_admin"},
@@ -85,7 +89,8 @@ APPROVAL_VIEW_ROLES = {
 }
 
 APPROVAL_ACTION_ROLES = {
-    "sales_order": {"finance", "chairman", "system_admin"},
+    "sales_order": {"finance", "finance_super", "chairman", "system_admin"},
+    "sales_price_change": {"finance", "finance_super", "chairman", "system_admin"},
     "purchase_order": {"manager", "system_admin"},
     "purchase_payment_request": {"chairman", "system_admin"},
     "sales_receipt_request": {"finance", "system_admin"},
@@ -863,17 +868,52 @@ def _pending_todo_approvals(current_user: User, db: Session) -> list[dict]:
             continue
         if not _can_act_on_approval_type(current_user, approval_type):
             continue
+        title = row.title
+        summary = {"description": row.description}
+        if approval_type in {"sales_order", "sales_price_change"}:
+            order = db.execute(
+                select(SalesOrder)
+                .options(joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user))
+                .where(SalesOrder.id == row.business_id)
+            ).unique().scalar_one_or_none()
+            if order is None:
+                continue
+            is_price_change = approval_type == "sales_price_change" or order.price_approval_status == "pending" or order.status == "pending_price_approval"
+            if is_price_change:
+                approval_type = "sales_price_change"
+                title = f"待审批销售改价 {order.order_no}"
+                price_logs = db.execute(
+                    select(SalesOrderPriceChangeLog)
+                    .options(joinedload(SalesOrderPriceChangeLog.product))
+                    .where(SalesOrderPriceChangeLog.sales_order_id == order.id, SalesOrderPriceChangeLog.status == "pending")
+                ).scalars().all()
+                summary = {
+                    "order_no": order.order_no,
+                    "responsible_name": (order.operator_user.full_name if order.operator_user else None) or (order.sales_user.full_name if order.sales_user else None),
+                    "approval_reason": "订单销售价与标准价不一致，需审批改价",
+                    "price_change_remark": "；".join(
+                        f"{item.product.name if item.product else '-'}：标准价 {float(item.standard_price or 0)}，销售价 {float(item.actual_price or 0)}，备注：{item.remark or '-'}"
+                        for item in price_logs
+                    ) or "-",
+                }
+            else:
+                summary = {
+                    "order_no": order.order_no,
+                    "responsible_name": (order.operator_user.full_name if order.operator_user else None) or (order.sales_user.full_name if order.sales_user else None),
+                    "approval_reason": "客户订单已提交，待确认收款与放行",
+                    "total_amount": float(order.total_amount or 0),
+                }
         data.append(
             _base_item(
                 approval_type=approval_type,
                 business_id=row.business_id,
                 module=row.module,
-                title=row.title,
+                title=title,
                 status=row.status,
                 created_at=row.created_at,
                 can_approve=True,
                 can_reject=True,
-                summary={"description": row.description},
+                summary=summary,
             )
         )
     return data
@@ -896,6 +936,7 @@ def _sales_order_detail(business_id: int, db: Session) -> dict:
         select(SalesOrder)
         .options(
             joinedload(SalesOrder.customer),
+            joinedload(SalesOrder.sales_user),
             joinedload(SalesOrder.operator_user),
             joinedload(SalesOrder.items).joinedload(SalesOrderItem.product),
             joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
@@ -905,9 +946,16 @@ def _sales_order_detail(business_id: int, db: Session) -> dict:
     ).unique().scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="销售订单不存在")
+    price_logs = db.execute(
+        select(SalesOrderPriceChangeLog)
+        .options(joinedload(SalesOrderPriceChangeLog.product), joinedload(SalesOrderPriceChangeLog.changed_by))
+        .where(SalesOrderPriceChangeLog.sales_order_id == row.id)
+        .order_by(SalesOrderPriceChangeLog.created_at.asc(), SalesOrderPriceChangeLog.id.asc())
+    ).scalars().all()
     return {
         "order_no": row.order_no,
         "customer_name": row.customer.name if row.customer else None,
+        "sales_user_name": row.sales_user.full_name if row.sales_user else None,
         "operator_name": row.operator_user.full_name if row.operator_user else None,
         "status": row.status,
         "status_label": status_label(row.status),
@@ -920,6 +968,18 @@ def _sales_order_detail(business_id: int, db: Session) -> dict:
         "deposit_amount": float(row.deposit_amount),
         "transport_fee": float(row.transport_fee),
         "packaging_fee": float(row.packaging_fee),
+        "price_change_items": [
+            {
+                "product_name": item.product.name if item.product else None,
+                "standard_price": float(item.standard_price or 0),
+                "sales_price": float(item.actual_price or 0),
+                "price_difference": float(Decimal(item.actual_price or 0) - Decimal(item.standard_price or 0)),
+                "price_change_remark": item.remark,
+                "changed_by_name": item.changed_by.full_name if item.changed_by else None,
+                "status_label": status_label(item.status),
+            }
+            for item in price_logs
+        ],
         "items": [
             {
                 "product_name": item.product.name if item.product else None,
@@ -1340,6 +1400,8 @@ def get_approval_detail(approval_id: str, current_user: User = Depends(get_curre
     _ensure_approval_permission(current_user, approval_type, action="view")
     if approval_type == "sales_order":
         detail = _sales_order_detail(business_id, db)
+    elif approval_type == "sales_price_change":
+        detail = _sales_order_detail(business_id, db)
     elif approval_type == "purchase_order":
         detail = _purchase_order_detail(business_id, db)
     elif approval_type == "purchase_payment_request":
@@ -1374,6 +1436,13 @@ def approve_item(
         return approve_sales_order_service(
             business_id,
             SalesApprovalRequest(decision="approved", voucher_amount=payload.voucher_amount, actual_amount=payload.actual_amount, note=payload.note or payload.remark),
+            current_user,
+            db,
+        )
+    if approval_type == "sales_price_change":
+        return approve_sales_price_change_service(
+            business_id,
+            SalesPriceApprovalRequest(decision="approved", note=payload.note or payload.remark),
             current_user,
             db,
         )
@@ -1452,6 +1521,13 @@ def reject_item(
         return approve_sales_order_service(
             business_id,
             SalesApprovalRequest(decision="rejected", voucher_amount=payload.voucher_amount, actual_amount=payload.actual_amount, note=payload.note or payload.remark),
+            current_user,
+            db,
+        )
+    if approval_type == "sales_price_change":
+        return approve_sales_price_change_service(
+            business_id,
+            SalesPriceApprovalRequest(decision="rejected", note=payload.note or payload.remark),
             current_user,
             db,
         )

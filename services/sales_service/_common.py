@@ -320,11 +320,13 @@ def _build_order_items(
         order.packaging_fee = packaging_total
     if price_change_notices:
         finance_user_ids = _finance_user_ids(db)
+        # 董事长收到改价提醒时也应有可打开、可审批的待办，而不是只有通知。
+        price_approver_user_ids = list(dict.fromkeys([*finance_user_ids, *_role_user_ids(db, "chairman")]))
         if order is not None:
             order.price_approval_status = "pending"
             if order.status == "pending_confirmation":
                 order.status = "pending_price_approval"
-        for user_id in finance_user_ids:
+        for user_id in price_approver_user_ids:
             create_todo(
                 db,
                 title=f"待审批销售改价 {order.order_no if order else order_id}",
@@ -340,7 +342,7 @@ def _build_order_items(
             title="客户订单存在销售改价",
             content=f"客户订单 {order.order_no if order else order_id} 存在商品价格调整：" + "；".join(price_change_notices),
             module="sales",
-            recipient_user_ids=list(dict.fromkeys([*finance_user_ids, *_manager_chairman_user_ids(db)])),
+            recipient_user_ids=list(dict.fromkeys([*price_approver_user_ids, *_manager_chairman_user_ids(db)])),
             created_by_id=operator_user_id,
             category="warning",
         )

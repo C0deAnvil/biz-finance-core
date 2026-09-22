@@ -24,6 +24,8 @@
       <el-table :data="pagedPendingRows" stripe :row-class-name="pendingRowClassName">
         <el-table-column prop="approval_type_label" label="审批类型" width="160" />
         <el-table-column prop="title" label="标题" min-width="220" />
+        <el-table-column label="订单编号" width="160"><template #default="scope">{{ scope.row.summary?.order_no || '-' }}</template></el-table-column>
+        <el-table-column label="负责人" width="120"><template #default="scope">{{ scope.row.summary?.responsible_name || '-' }}</template></el-table-column>
         <el-table-column prop="module" label="模块" width="120" />
         <el-table-column prop="status_label" label="状态" width="120">
           <template #default="scope">
@@ -100,6 +102,15 @@
               {{ renderDetailCell(scope.row[column], column) }}
             </template>
           </el-table-column>
+        </el-table>
+
+        <el-table v-if="priceChangeItems.length" :data="priceChangeItems" stripe class="mt-16">
+          <el-table-column prop="product_name" label="产品" min-width="160" />
+          <el-table-column prop="standard_price" label="标准价格" width="120"><template #default="scope">{{ formatNumber(scope.row.standard_price) }}</template></el-table-column>
+          <el-table-column prop="sales_price" label="销售价格" width="120"><template #default="scope">{{ formatNumber(scope.row.sales_price) }}</template></el-table-column>
+          <el-table-column prop="price_difference" label="价差" width="110"><template #default="scope">{{ formatNumber(scope.row.price_difference) }}</template></el-table-column>
+          <el-table-column prop="price_change_remark" label="改价备注" min-width="220" />
+          <el-table-column prop="changed_by_name" label="提交人" width="120" />
         </el-table>
 
         <el-table v-if="attachmentItems.length" :data="attachmentItems" stripe class="mt-16">
@@ -215,6 +226,7 @@ const {
   pagedItems: pagedHistoryRows,
 } = useLocalPagination(historyRows)
 const detailItems = computed(() => detailPayload.value?.items || [])
+const priceChangeItems = computed(() => detailPayload.value?.price_change_items || [])
 const attachmentItems = computed(() => detailPayload.value?.attachment_items || [])
 const detailItemColumns = computed(() => {
   const firstRow = detailItems.value[0]
@@ -225,7 +237,7 @@ const detailEntries = computed(() => {
   const detail = detailPayload.value || {}
   return Object.entries(detail)
     .filter(([key, value]) => key !== 'items' && value != null && value !== '')
-    .filter(([key]) => key !== 'attachment_items')
+    .filter(([key]) => key !== 'attachment_items' && key !== 'price_change_items')
     .map(([key, value]) => ({
       key,
       label: itemColumnLabel(key),
@@ -245,6 +257,11 @@ function isActionOnly(row) {
 function itemColumnLabel(key) {
   const map = {
     order_no: '单号',
+    sales_user_name: '销售负责人',
+    operator_name: '开单人',
+    responsible_name: '负责人',
+    approval_reason: '审批原因',
+    price_change_remark: '改价备注',
     customer_name: '客户',
     supplier_name: '供应商',
     payment_type: '付款方式',
