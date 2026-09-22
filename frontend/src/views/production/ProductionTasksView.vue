@@ -64,6 +64,10 @@
     </PageSection>
 
     <PageSection v-if="canManageTasks" title="待生产补货需求" description="销售订单库存不足且产品为生产型时，会在此生成待处理需求。">
+      <el-tabs v-model="demandStatusTab" class="status-tabs" @tab-change="handleDemandStatusChange">
+        <el-tab-pane :label="`待完成 (${demandStatusTab === 'pending' ? demandTotal : ''})`" name="pending" />
+        <el-tab-pane label="已完成" name="completed" />
+      </el-tabs>
       <el-table :data="fulfillmentDemands" stripe>
         <el-table-column prop="demand_no" label="需求号" width="150">
           <template #default="scope">
@@ -123,7 +127,7 @@
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="info" @click="openMaterialProgress(scope.row)">原料进度</el-button>
-            <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建任务</el-button>
+            <el-button v-if="demandStatusTab === 'pending'" size="small" text type="primary" @click="prefillDemand(scope.row)">转建任务</el-button>
             <el-button v-if="scope.row.status === 'pending'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
           </template>
         </el-table-column>
@@ -559,6 +563,7 @@ const fulfillmentDemands = ref([])
 const activeDemand = ref(null)
 const demandPagination = reactive({ page: 1, pageSize: 10 })
 const demandTotal = ref(0)
+const demandStatusTab = ref('pending')
 const activeTaskTab = ref('ongoing')
 
 const completedStatuses = ['completed', 'cancelled', 'scrapped', 'partially_scrapped', 'reworked']
@@ -795,7 +800,7 @@ async function load() {
   rows.value = taskData.items || []
   total.value = Number(taskData.pagination?.total || 0)
   if (canManageTasks.value) {
-    const demandData = await get(`/api/production/fulfillment-demands?page=${demandPagination.page}&page_size=${demandPagination.pageSize}`)
+    const demandData = await get(`/api/production/fulfillment-demands?status_group=${demandStatusTab.value}&page=${demandPagination.page}&page_size=${demandPagination.pageSize}`)
     fulfillmentDemands.value = demandData.items || demandData || []
     demandTotal.value = Number(demandData.pagination?.total || demandData.total || 0)
   } else {
@@ -813,6 +818,11 @@ async function handleTaskPaginationChange({ page, pageSize }) {
 async function handleDemandPaginationChange({ page, pageSize }) {
   demandPagination.page = page
   demandPagination.pageSize = pageSize
+  await load()
+}
+
+async function handleDemandStatusChange() {
+  demandPagination.page = 1
   await load()
 }
 

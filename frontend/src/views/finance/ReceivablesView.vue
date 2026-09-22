@@ -9,7 +9,6 @@
     <PageSection title="待回款客户订单" description="仅展示财务审批后已转为应收的客户订单与回款台账；刚提交、等待客户订单审批的单据不会出现在这里。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
-        <el-button v-if="canRegisterReceipt" type="success" plain @click="openDirectRegisterDialog">登记回款</el-button>
       </template>
       <el-row :gutter="12" class="filters-row">
         <el-col :span="8">
@@ -70,15 +69,16 @@
         <el-table-column prop="total_amount" label="订单金额" width="120">
           <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
         </el-table-column>
+        <el-table-column prop="receivable_amount" label="应收金额" width="120">
+          <template #default="scope">{{ formatNumber(scope.row.receivable_amount) }}</template>
+        </el-table-column>
         <el-table-column prop="received_amount" label="已收金额" width="120">
           <template #default="scope">{{ formatNumber(scope.row.received_amount) }}</template>
         </el-table-column>
-        <el-table-column prop="remaining_amount" label="待收金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.remaining_amount) }}</template>
-        </el-table-column>
         <el-table-column label="操作" width="190" fixed="right">
           <template #default="scope">
-            <el-button size="small" text type="primary" @click="goToSalesOrder(scope.row.id)">订单</el-button>
+            <el-button size="small" text type="primary" @click="goToSalesOrder(scope.row.id)">详情</el-button>
+            <el-button v-if="canRegisterReceipt" size="small" text type="success" @click="openDirectRegisterDialog([scope.row])">登记回款</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -91,7 +91,7 @@
       />
     </PageSection>
 
-    <PageSection ref="receiptRequestSectionRef" title="收款确认协同台账" description="销售提交的定金、尾款、到货后全款、发货前全款和分期款确认统一在此查看；主流程不变，当前页仅补充直接登记与批量确认的例外入口。">
+    <PageSection v-if="false" ref="receiptRequestSectionRef" title="收款确认协同台账" description="历史协同台账暂时隐藏。">
       <el-table :data="pagedReceiptRequests" stripe :row-class-name="receiptRequestRowClassName">
         <el-table-column type="expand" width="52">
           <template #default="scope">
@@ -167,6 +167,18 @@
         :total="receiptRequestTotal"
         :page-sizes="pageSizes"
       />
+    </PageSection>
+
+    <PageSection title="已完成应收客户订单" description="应收金额已全部登记回款的订单会自动移至此处。">
+      <el-table :data="completedOrders" stripe>
+        <el-table-column prop="order_no" label="客户订单号" width="160" />
+        <el-table-column prop="customer_name" label="客户" min-width="180" />
+        <el-table-column prop="total_amount" label="订单金额" width="120"><template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template></el-table-column>
+        <el-table-column prop="receivable_amount" label="应收金额" width="120"><template #default="scope">{{ formatNumber(scope.row.receivable_amount) }}</template></el-table-column>
+        <el-table-column prop="received_amount" label="已收金额" width="120"><template #default="scope">{{ formatNumber(scope.row.received_amount) }}</template></el-table-column>
+        <el-table-column prop="completed_at" label="完成时间" min-width="170"><template #default="scope">{{ formatDateTime(scope.row.completed_at) }}</template></el-table-column>
+        <el-table-column label="操作" width="100" fixed="right"><template #default="scope"><el-button size="small" text type="primary" @click="goToSalesOrder(scope.row.id)">详情</el-button></template></el-table-column>
+      </el-table>
     </PageSection>
 
     <el-dialog v-model="receiptRegisterVisible" title="财务核对入账" width="760px">
@@ -417,11 +429,13 @@
       </template>
     </el-dialog>
 
-    <PageSection title="回款记录" description="董事长确认通过后自动写入回款台账和资金流水，财务在此统一查看。">
+    <PageSection title="回款记录" description="支持按客户订单号、客户名称、回款时间和备注搜索。">
+      <template #actions><el-input v-model="recordKeyword" clearable placeholder="搜索订单号、客户、时间或备注" style="width: 280px" /></template>
       <el-table :data="pagedRecordRows" stripe>
         <el-table-column prop="company_account_label" label="企业收款账户" min-width="240" show-overflow-tooltip />
         <el-table-column prop="counterparty_account_label" label="客户付款账户" min-width="240" show-overflow-tooltip />
         <el-table-column prop="sales_order_no" label="客户订单号" width="160" />
+        <el-table-column prop="customer_name" label="客户" min-width="160" />
         <el-table-column prop="amount" label="回款金额" width="120">
           <template #default="scope">{{ formatNumber(scope.row.amount) }}</template>
         </el-table-column>
@@ -581,6 +595,7 @@ const router = useRouter()
 const receiptRequestSectionRef = ref(null)
 const receivableSummary = reactive({})
 const pendingOrders = ref([])
+const completedOrders = ref([])
 const pendingOrderPagination = reactive({ page: 1, pageSize: 50 })
 // 日期区间筛选(后端 /api/finance/receivables 已支持 date_from/date_to)
 const filters = reactive({ dateRange: [] })
@@ -602,6 +617,7 @@ function receivablesUrl() {
 const pendingOrderTotal = ref(0)
 const receiptRequests = ref([])
 const records = ref([])
+const recordKeyword = ref('')
 const refunds = ref([])
 const purchaseReturns = ref([])
 const receiptMethodOptions = ref([])
@@ -665,7 +681,9 @@ const pendingReceivableTotal = computed(() =>
   Number(receivableSummary.pending_amount_total || 0)
 )
 const receivedReceivableTotal = computed(() =>
-  records.value.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  records.value
+    .filter((item) => item.receivable_plan_id)
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0)
 )
 const mergedReceiptCustomerName = computed(() => mergedReceiptRegisterForm.items[0]?.customer_name || '')
 const mergedReceiptRequestedTotal = computed(() => mergedReceiptRegisterForm.items.reduce((sum, item) => sum + Number(item.requested_amount || 0), 0))
@@ -676,7 +694,14 @@ const directRegisterTotal = computed(() => directRegisterForm.items.reduce((sum,
 const pagedPendingOrders = pendingOrders
 const { pagination: receiptRequestPagination, total: receiptRequestTotal, pagedItems: pagedReceiptRequests, ensureVisible: ensureReceiptRequestVisible } = useLocalPagination(receiptRequests)
 const pageSizes = [10, 20, 50, 100]
-const { pagination: recordPagination, total: recordTotal, pagedItems: pagedRecordRows } = useLocalPagination(records)
+const filteredRecords = computed(() => {
+  const keyword = recordKeyword.value.trim().toLowerCase()
+  if (!keyword) return records.value
+  return records.value.filter((row) => [row.sales_order_no, row.customer_name, row.received_at, row.remark_display, row.remark]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(keyword)))
+})
+const { pagination: recordPagination, total: recordTotal, pagedItems: pagedRecordRows } = useLocalPagination(filteredRecords)
 const { pagination: refundPagination, total: refundTotal, pagedItems: pagedRefundRows } = useLocalPagination(purchaseRefunds)
 
 function currentDateTime() {
@@ -730,6 +755,7 @@ async function loadReceivables() {
   const receivableData = await get(receivablesUrl())
   Object.assign(receivableSummary, receivableData.summary || {})
   pendingOrders.value = receivableData.pending_orders || []
+  completedOrders.value = receivableData.completed_orders || []
   pendingOrderTotal.value = Number(receivableData.pending_orders_pagination?.total || receivableData.summary?.pending_order_count || 0)
   receiptRequests.value = receivableData.receipt_requests || []
   records.value = receivableData.records || []
@@ -750,6 +776,7 @@ async function load() {
   ])
   Object.assign(receivableSummary, receivableData.summary || {})
   pendingOrders.value = receivableData.pending_orders || []
+  completedOrders.value = receivableData.completed_orders || []
   pendingOrderTotal.value = Number(receivableData.pending_orders_pagination?.total || receivableData.summary?.pending_order_count || 0)
   receiptRequests.value = receivableData.receipt_requests || []
   records.value = receivableData.records || []
@@ -893,13 +920,13 @@ function openReceiptRegister(row) {
   receiptRegisterVisible.value = true
 }
 
-function openDirectRegisterDialog() {
-  if (!selectedPendingOrders.value.length) {
+function openDirectRegisterDialog(rows = selectedPendingOrders.value) {
+  if (!rows.length) {
     ElMessage.warning('请至少选择一张同一客户的客户订单')
     return
   }
   const customerKeys = new Set(
-    selectedPendingOrders.value
+    rows
       .map((item) => item.customer_id ?? item.customer_name ?? null)
       .filter((item) => item !== null && item !== undefined && item !== '')
   )
@@ -907,16 +934,16 @@ function openDirectRegisterDialog() {
     ElMessage.warning('仅支持同一客户的客户订单合并登记回款')
     return
   }
-  directRegisterForm.customer_id = selectedPendingOrders.value[0]?.customer_id ?? null
-  directRegisterForm.items = selectedPendingOrders.value.map((item) => ({
+  directRegisterForm.customer_id = rows[0]?.customer_id ?? null
+  directRegisterForm.items = rows.map((item) => ({
     sales_order_id: item.id,
     order_no: item.order_no,
     customer_id: item.customer_id,
         company_account_id: item.company_account_id,
         counterparty_account_id: item.counterparty_account_id,
         customer_name: item.customer_name,
-    remaining_amount: Number(item.remaining_amount || 0),
-    amount: Number(item.remaining_amount || 0),
+    remaining_amount: Number(item.receivable_amount || 0) - Number(item.received_amount || 0),
+    amount: Number(item.receivable_amount || 0) - Number(item.received_amount || 0),
     items: item.items || []
   }))
   directRegisterForm.payment_stage = 'direct'

@@ -1074,6 +1074,7 @@ def list_plan_users(
 def list_fulfillment_demands(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    status_group: str = Query(default="pending", pattern="^(pending|completed)$"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1101,6 +1102,10 @@ def list_fulfillment_demands(
                 .exists(),
             )
         )
+    if status_group == "completed":
+        query = query.where(FulfillmentDemand.status == "converted")
+    else:
+        query = query.where(FulfillmentDemand.status != "converted")
     total = db.execute(select(func.count()).select_from(query.subquery())).scalar_one()
     rows = db.execute(
         query.offset((page - 1) * page_size).limit(page_size)
@@ -1110,7 +1115,7 @@ def list_fulfillment_demands(
         select(TodoItem)
         .where(TodoItem.business_type == "low_stock_replenishment", TodoItem.status != "completed", TodoItem.module == "production")
         .order_by(TodoItem.created_at.desc(), TodoItem.id.desc())
-    ).scalars().all()
+    ).scalars().all() if status_group == "pending" else []
     finished_warehouse = _finished_warehouse(db)
     product_ids = [row.product_id for row in rows if row.product_id]
     inventory_map = {

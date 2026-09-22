@@ -36,7 +36,7 @@ from models import (
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderDraftPayload, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.customer_activity import register_customer_order
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, assignable_finance_user_ids, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity, product_expected_available_quantity
@@ -314,8 +314,7 @@ def submit_order(
 ):
     """草稿/已驳回订单提交财务审批。提交后不可编辑、不可删除。
 
-    可指定处理该单的财务人员;不指定时由系统按待办量轮询分配,
-    避免所有单据都堆到同一个财务头上。
+    可指定处理该单的财务人员；不指定时向所有财务开放处理。
     """
     order = _load_order(db, order_id)
     if order is None:
@@ -338,11 +337,15 @@ def submit_order(
     _notify_sales_order_shortage(db, order=order, current_user=current_user)
     order.status = "pending_confirmation"
     order.rejection_reason = None
-    order.assigned_finance_user_id = resolve_assigned_finance_user_id(db, assigned_finance_user_id)
+    order.assigned_finance_user_id = (
+        resolve_assigned_finance_user_id(db, assigned_finance_user_id)
+        if assigned_finance_user_id is not None
+        else None
+    )
     _create_dispatch_queue(db, order.id)
 
-    # 待办派给指定财务;董事长始终可见以保留监管与代审能力
-    assignee_ids = [order.assigned_finance_user_id] if order.assigned_finance_user_id else _role_user_ids(db, "finance")
+    # 指定时仅该财务处理；未指定则向全体财务（含超级财务）开放。
+    assignee_ids = [order.assigned_finance_user_id] if order.assigned_finance_user_id else assignable_finance_user_ids(db)
     approver_user_ids = list(dict.fromkeys([*assignee_ids, *_role_user_ids(db, "chairman")]))
     finance_name = None
     if order.assigned_finance_user_id:
@@ -501,7 +504,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         queue = InventoryDispatchQueue(sales_order_id=order.id)
         db.add(queue)
     # 订单一旦指定处理财务，后续审批结果通知也只发给该人；不能又广播给全体财务。
-    finance_recipient_ids = [order.assigned_finance_user_id] if order.assigned_finance_user_id else _finance_user_ids(db)
+    finance_recipient_ids = [order.assigned_finance_user_id] if order.assigned_finance_user_id else assignable_finance_user_ids(db)
 
     if payload.decision == "approved":
         order.status = "pending_shipment"

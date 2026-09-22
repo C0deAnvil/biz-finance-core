@@ -142,9 +142,9 @@ class SalesSettlementCollectRequest(BaseModel):
 
 
 class SalesOrderSubmitRequest(BaseModel):
-    """提交客户订单审批。可指定处理该单的财务人员,不指定则系统轮询分配。"""
+    """提交客户订单审批。可指定处理该单的财务人员，不指定则向全体财务开放。"""
 
-    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
+    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则通知全部财务)")
     update_customer_address: bool = False
     customer_address_before: str | None = Field(default=None, max_length=255)
 

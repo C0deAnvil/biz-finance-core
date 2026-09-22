@@ -51,7 +51,7 @@ from schemas.purchases import (
     PurchaseReturnCreate,
 )
 from schemas.finance import FinanceMergedPurchasePaymentRequestRegisterRequest
-from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, assignable_finance_user_ids, complete_todos, create_cash_flow, create_notification, create_todo, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
@@ -69,7 +69,7 @@ REPLENISHMENT_SOURCE_TYPES = {
 
 
 
-from services.purchase_service._common import _chairman_user_ids, _create_purchase_payment_request_row, _ensure_order_owner, _finance_user_ids, _latest_fund_record, _load_order, _manager_user_ids, _purchase_approval_amount_threshold, _purchase_arrival_display_label, _purchase_contract_attachments, _purchase_order_business_completed, _purchase_paid_order_amount, _round_robin_finance_user_id, _validate_merged_orders_same_supplier, _validate_order_payment_requestable, _validate_payment_amounts
+from services.purchase_service._common import _chairman_user_ids, _create_purchase_payment_request_row, _ensure_order_owner, _finance_user_ids, _latest_fund_record, _load_order, _manager_user_ids, _purchase_approval_amount_threshold, _purchase_arrival_display_label, _purchase_contract_attachments, _purchase_order_business_completed, _purchase_paid_order_amount, _validate_merged_orders_same_supplier, _validate_order_payment_requestable, _validate_payment_amounts
 
 def request_purchase_fund(payload: PurchaseFundRequestCreate, current_user: User, db: Session):
     order = _load_order(db, payload.purchase_order_id)
@@ -138,12 +138,11 @@ def submit_purchase_payment_request(payload: PurchasePaymentRequestCreate, curre
         raise HTTPException(status_code=409, detail="申请总金额必须等于订单金额加其他费用")
     _validate_payment_amounts(db, order, Decimal(payload.order_amount or 0), Decimal(payload.other_fee_amount or 0))
 
-    # 显式指定的财务必须校验(改造前直接采信入参,可把付款申请指派给销售等非财务角色);
-    # 未指定时沿用采购域按"待处理付款申请数"的轮询,比按待办总数更贴合该场景。
+    # 指定时只由该财务处理；未指定则保持开放，由全部财务接收待办。
     assigned_finance_user_id = (
         resolve_assigned_finance_user_id(db, payload.assigned_finance_user_id)
         if payload.assigned_finance_user_id is not None
-        else _round_robin_finance_user_id(db)
+        else None
     )
     # 只有付款金额达到阈值才需要董事长审批;未达阈值直接进入财务出账环节。
     # 原先所有付款申请一律先派给董事长,小额付款也要等审批,流程无谓变长。
@@ -165,7 +164,7 @@ def submit_purchase_payment_request(payload: PurchasePaymentRequestCreate, curre
 
     request.counterparty_account_id = validate_supplier_account(db, payload.counterparty_account_id, order.supplier_id)
     chairman_user_ids = _chairman_user_ids(db)
-    finance_user_ids = _finance_user_ids(db)
+    finance_user_ids = [assigned_finance_user_id] if assigned_finance_user_id else (assignable_finance_user_ids(db) or _finance_user_ids(db))
     if needs_chairman_approval:
         for user_id in chairman_user_ids:
             create_todo(
@@ -247,20 +246,17 @@ def submit_merged_purchase_payment_request(payload: PurchaseMergedPaymentRequest
     payload_map = {item.purchase_order_id: item for item in payload.items}
     merge_no = next_business_no(db, "HFK")
     chairman_user_ids = _chairman_user_ids(db)
-    finance_user_ids = _finance_user_ids(db)
     created_rows: list[PurchasePaymentRequest] = []
     requested_total = Decimal("0")
 
     first_request_id: int | None = None
-    # 整批合并付款派给同一个财务(在循环外解析一次,避免同批被拆给不同人)。
-    # 改造前合并路径完全不写该字段,导致合并付款申请恒为"未分配"。
-    # 显式指定的财务必须校验(改造前直接采信入参,可把付款申请指派给销售等非财务角色);
-    # 未指定时沿用采购域按"待处理付款申请数"的轮询,比按待办总数更贴合该场景。
+    # 整批合并付款指定时派给同一个财务；未指定时开放给全部财务。
     assigned_finance_user_id = (
         resolve_assigned_finance_user_id(db, payload.assigned_finance_user_id)
         if payload.assigned_finance_user_id is not None
-        else _round_robin_finance_user_id(db)
+        else None
     )
+    finance_user_ids = [assigned_finance_user_id] if assigned_finance_user_id else (assignable_finance_user_ids(db) or _finance_user_ids(db))
     # 与单笔口径一致:按阈值决定是否需要董事长审批。
     # 合并付款是一次性出账,风险敞口是**批次总额**,所以用总额和阈值比,
     # 而不是逐单比(否则拆成多张小单就能绕过审批)。
@@ -536,7 +532,7 @@ def approve_purchase_payment_request(request_id: int, payload: PurchasePaymentAp
         request.status = "pending_finance_payment"
         complete_todos(db, business_type="purchase_payment_request", business_id=request.id)
 
-        finance_user_ids = _finance_user_ids(db)
+        finance_user_ids = [request.assigned_finance_user_id] if request.assigned_finance_user_id else (assignable_finance_user_ids(db) or _finance_user_ids(db))
         for user_id in finance_user_ids:
             create_todo(
                 db,

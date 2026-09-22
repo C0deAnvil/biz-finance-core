@@ -96,7 +96,7 @@ class PurchasePaymentRequestCreate(BaseModel):
     order_amount: Decimal = Field(..., ge=0)
     other_fee_amount: Decimal = Field(default=0, ge=0)
     payment_detail_remark: str | None = None
-    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
+    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则通知全部财务)")
 
 
 class PurchaseMergedPaymentItem(BaseModel):
@@ -110,7 +110,7 @@ class PurchaseMergedPaymentRequestCreate(BaseModel):
     supplier_id: int | None = None
     items: list[PurchaseMergedPaymentItem]
     payment_detail_remark: str | None = None
-    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则轮询分配)")
+    assigned_finance_user_id: int | None = Field(default=None, description="指定财务处理人(不指定则通知全部财务)")
 
 
 class PurchasePaymentApprovalRequest(SettlementAccountInput):

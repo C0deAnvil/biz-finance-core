@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
@@ -614,17 +614,24 @@ def list_receivable_records(
         .group_by(ReceivableRecord.sales_order_id)
         .subquery()
     )
+    open_receivable_plan_exists = exists(
+        select(ReceivablePlan.id).where(
+            ReceivablePlan.sales_order_id == SalesOrder.id,
+            ReceivablePlan.status != "completed",
+        )
+    )
+    receivable_plan_exists = exists(
+        select(ReceivablePlan.id).where(ReceivablePlan.sales_order_id == SalesOrder.id)
+    )
     pending_order_filter = (
         SalesOrder.status != "cancelled",
-        # 只有财务审批后明确生成的应收计划，才属于应收管理。
-        # 不能因为一张订单尚未收到全款，就把刚提交、仍待审批的单据提前放进来。
-        exists(
-            select(ReceivablePlan.id).where(
-                ReceivablePlan.sales_order_id == SalesOrder.id,
-                ReceivablePlan.status != "completed",
-            )
-        ),
-        func.coalesce(received_totals.c.received_amount, 0) < SalesOrder.total_amount,
+        # 只有财务审批后明确生成的未完成应收计划，才属于待回款列表。
+        open_receivable_plan_exists,
+    )
+    completed_order_filter = (
+        SalesOrder.status != "cancelled",
+        receivable_plan_exists,
+        ~open_receivable_plan_exists,
     )
     stage_started_at = perf_counter()
     pending_order_summary = db.execute(
@@ -639,7 +646,14 @@ def list_receivable_records(
         .where(*pending_order_filter)
     ).one()
     pending_order_count = int(pending_order_summary[0] or 0)
-    pending_amount_total = Decimal(pending_order_summary[1] or 0)
+    pending_amount_total = Decimal(
+        db.execute(
+            select(func.coalesce(func.sum(ReceivablePlan.planned_amount - ReceivablePlan.received_amount), 0))
+            .join(SalesOrder, SalesOrder.id == ReceivablePlan.sales_order_id)
+            .where(SalesOrder.status != "cancelled", ReceivablePlan.status != "completed")
+        ).scalar_one()
+        or 0
+    )
     trace_stage(
         "receivables_count_orders",
         stage_started_at,
@@ -667,12 +681,24 @@ def list_receivable_records(
     )
     trace_stage("receivables_load_orders", stage_started_at, order_count=len(orders))
     received_amount_map = _sales_received_amount_map(orders, db)
+    plan_rows = (
+        db.execute(select(ReceivablePlan).where(ReceivablePlan.sales_order_id.in_([row.id for row in orders] or [-1])))
+        .scalars()
+        .all()
+    )
+    plan_amount_map: dict[int, Decimal] = {}
+    plan_received_map: dict[int, Decimal] = {}
+    for plan in plan_rows:
+        plan_amount_map[plan.sales_order_id] = plan_amount_map.get(plan.sales_order_id, Decimal("0")) + Decimal(plan.planned_amount or 0)
+        plan_received_map[plan.sales_order_id] = plan_received_map.get(plan.sales_order_id, Decimal("0")) + Decimal(plan.received_amount or 0)
     pending_orders = []
     for row in orders:
         total_amount = Decimal(row.total_amount or 0)
-        received_amount = received_amount_map.get(row.id, Decimal("0"))
-        remaining_amount = max(total_amount - received_amount, Decimal("0"))
-        settlement_status = _settlement_status(total_amount, received_amount)
+        receivable_amount = plan_amount_map.get(row.id, Decimal("0"))
+        # 只统计绑定应收计划的回款；审批时确认的定金不属于尾款/应收回款。
+        received_amount = plan_received_map.get(row.id, Decimal("0"))
+        remaining_amount = max(receivable_amount - received_amount, Decimal("0"))
+        settlement_status = _settlement_status(receivable_amount, received_amount)
         pending_orders.append(
             {
                 "id": row.id,
@@ -686,7 +712,7 @@ def list_receivable_records(
                 "total_amount": float(total_amount),
                 "deposit_amount": float(row.deposit_amount or 0),
                 "received_amount": float(received_amount),
-                "remaining_amount": float(remaining_amount),
+                "receivable_amount": float(receivable_amount),
                 "settlement_status": settlement_status,
                 "settlement_status_label": status_label(settlement_status),
                 "item_summary": "、".join(dict.fromkeys(item.product.name for item in row.items if item.product and item.product.name)),
@@ -695,6 +721,28 @@ def list_receivable_records(
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
         )
+
+    completed_orders = (
+        db.execute(
+            select(SalesOrder)
+            .options(joinedload(SalesOrder.customer))
+            .where(*completed_order_filter)
+            .order_by(SalesOrder.updated_at.desc(), SalesOrder.id.desc())
+        )
+        .scalars()
+        .all()
+    )
+    completed_order_ids = [row.id for row in completed_orders]
+    completed_plans = (
+        db.execute(select(ReceivablePlan).where(ReceivablePlan.sales_order_id.in_(completed_order_ids or [-1])))
+        .scalars()
+        .all()
+    )
+    completed_plan_amounts: dict[int, Decimal] = {}
+    completed_plan_received: dict[int, Decimal] = {}
+    for plan in completed_plans:
+        completed_plan_amounts[plan.sales_order_id] = completed_plan_amounts.get(plan.sales_order_id, Decimal("0")) + Decimal(plan.planned_amount or 0)
+        completed_plan_received[plan.sales_order_id] = completed_plan_received.get(plan.sales_order_id, Decimal("0")) + Decimal(plan.received_amount or 0)
 
     stage_started_at = perf_counter()
     attachment_map = _serialize_attachment_map(
@@ -718,6 +766,7 @@ def list_receivable_records(
                 "pending_amount_total": float(pending_amount_total),
                 "record_count": len(records),
                 "receipt_request_count": len(receipt_requests),
+                "completed_order_count": len(completed_orders),
             },
             "pending_orders_pagination": {
                 "page": pending_page,
@@ -725,6 +774,18 @@ def list_receivable_records(
                 "total": pending_order_count,
             },
             "pending_orders": pending_orders,
+            "completed_orders": [
+                {
+                    "id": row.id,
+                    "order_no": row.order_no,
+                    "customer_name": row.customer.name if row.customer else None,
+                    "total_amount": float(row.total_amount or 0),
+                    "receivable_amount": float(completed_plan_amounts.get(row.id, Decimal("0"))),
+                    "received_amount": float(completed_plan_received.get(row.id, Decimal("0"))),
+                    "completed_at": row.updated_at.isoformat() if row.updated_at else None,
+                }
+                for row in completed_orders
+            ],
             "receipt_requests": [
                 {
                     "id": row.id,
@@ -769,7 +830,9 @@ def list_receivable_records(
                 {
                     "id": row.id,
                     "sales_order_id": row.sales_order_id,
+                    "receivable_plan_id": row.receivable_plan_id,
                     "sales_order_no": order_map[row.sales_order_id].order_no if row.sales_order_id in order_map else None,
+                    "customer_name": order_map[row.sales_order_id].customer.name if row.sales_order_id in order_map and order_map[row.sales_order_id].customer else None,
                     "amount": float(row.amount),
                     "received_at": row.received_at.isoformat() if row.received_at else None,
                     "receipt_method": row.receipt_method,
@@ -864,6 +927,24 @@ def list_payables(
     requests_query = select(PurchasePaymentRequest).order_by(
         PurchasePaymentRequest.created_at.desc(), PurchasePaymentRequest.id.desc()
     )
+    # 指定了财务的付款申请只应出现在该财务的应付协同台账中；未指定的申请仍向全体财务开放。
+    role_code = current_user.role.code if current_user.role else ""
+    if role_code in FINANCE_ROLE_CODES:
+        visible_request_filter = or_(
+            PurchasePaymentRequest.assigned_finance_user_id == current_user.id,
+            PurchasePaymentRequest.assigned_finance_user_id.is_(None),
+        )
+        requests_query = requests_query.where(visible_request_filter)
+        hidden_request_ids = select(PurchasePaymentRequest.id).where(
+            PurchasePaymentRequest.assigned_finance_user_id.is_not(None),
+            PurchasePaymentRequest.assigned_finance_user_id != current_user.id,
+        )
+        records_query = records_query.where(
+            or_(
+                PayableRecord.purchase_payment_request_id.is_(None),
+                PayableRecord.purchase_payment_request_id.notin_(hidden_request_ids),
+            )
+        )
     if date_from is not None:
         start_at = datetime.combine(date_from, datetime.min.time())
         records_query = records_query.where(PayableRecord.paid_at >= start_at)
@@ -1127,6 +1208,21 @@ def direct_register_receivables(
     if len(orders) != len(order_ids):
         raise HTTPException(status_code=404, detail="存在不存在的客户订单")
     order_map = {row.id: row for row in orders}
+    open_plans = (
+        db.execute(
+            select(ReceivablePlan)
+            .where(ReceivablePlan.sales_order_id.in_(order_ids), ReceivablePlan.status != "completed")
+            .order_by(ReceivablePlan.id.asc())
+        )
+        .scalars()
+        .all()
+    )
+    plan_map = {}
+    for plan in open_plans:
+        plan_map.setdefault(plan.sales_order_id, plan)
+    missing_plan_orders = [order_map[order_id].order_no for order_id in order_ids if order_id not in plan_map]
+    if missing_plan_orders:
+        raise HTTPException(status_code=409, detail=f"客户订单 {', '.join(missing_plan_orders)} 尚未转为应收或已完成")
     customer_ids = {row.customer_id for row in orders}
     if payload.customer_id is not None:
         customer_ids.add(payload.customer_id)
@@ -1144,18 +1240,20 @@ def direct_register_receivables(
         amount = amount_map[order_id]
         if amount <= 0:
             raise HTTPException(status_code=409, detail="回款金额必须大于 0")
-        already_received = _sales_received_amount_map([order], db).get(order.id, Decimal("0"))
-        remaining_amount = max(Decimal(order.total_amount or 0) - already_received, Decimal("0"))
+        plan = plan_map[order_id]
+        remaining_amount = max(Decimal(plan.planned_amount or 0) - Decimal(plan.received_amount or 0), Decimal("0"))
         if amount > remaining_amount:
-            raise HTTPException(status_code=409, detail=f"客户订单 {order.order_no} 本次回款金额不能超过待收金额")
+            raise HTTPException(status_code=409, detail=f"客户订单 {order.order_no} 本次回款金额不能超过应收余额")
 
     for order_id in order_ids:
         order = order_map[order_id]
         amount = amount_map[order_id]
-        received_before = _sales_received_amount_map([order], db).get(order.id, Decimal("0"))
+        plan = plan_map[order_id]
+        received_before = Decimal(plan.received_amount or 0)
         record = ReceivableRecord(
             **validate_settlement_accounts(db, payload.company_account_id, payload.counterparty_account_id, customer_id=order.customer_id),
             sales_order_id=order.id,
+            receivable_plan_id=plan.id,
             amount=amount,
             payment_stage=payload.payment_stage,
             received_at=now,
@@ -1166,6 +1264,9 @@ def direct_register_receivables(
         )
         db.add(record)
         db.flush()
+        plan.received_amount = received_before + amount
+        if Decimal(plan.received_amount or 0) >= Decimal(plan.planned_amount or 0):
+            plan.status = "completed"
         created_record_ids.append(record.id)
         total_amount += amount
         create_cash_flow(

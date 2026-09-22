@@ -155,7 +155,7 @@
           <el-input v-model="requestForm.payment_detail_remark" type="textarea" :rows="3" />
         </el-form-item>
         <el-form-item label="指定财务">
-          <el-select v-model="requestForm.assigned_finance_user_id" clearable placeholder="不指定则系统轮询分配" style="width: 100%">
+          <el-select v-model="requestForm.assigned_finance_user_id" clearable placeholder="不指定则通知全部财务" style="width: 100%">
             <el-option v-for="u in financeUsers" :key="u.id" :label="u.full_name" :value="u.id" />
           </el-select>
         </el-form-item>
@@ -223,7 +223,7 @@
           <el-input v-model="mergedRequestForm.payment_detail_remark" type="textarea" :rows="3" />
         </el-form-item>
         <el-form-item label="指定财务">
-          <el-select v-model="mergedRequestForm.assigned_finance_user_id" clearable placeholder="不指定则系统轮询分配" style="width: 100%">
+          <el-select v-model="mergedRequestForm.assigned_finance_user_id" clearable placeholder="不指定则通知全部财务" style="width: 100%">
             <el-option v-for="u in financeUsers" :key="u.id" :label="u.full_name" :value="u.id" />
           </el-select>
         </el-form-item>

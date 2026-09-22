@@ -96,7 +96,7 @@ def _approval_id(todo: TodoItem) -> str | None:
 
 def _todo_route(todo: TodoItem) -> tuple[str, dict]:
     if todo.business_type == "sales_order_approval" and todo.business_id is not None:
-        return "/finance/receivables", {"focusId": str(todo.business_id), "focusType": "sales_order_approval", "mode": "register"}
+        return "/sales/approvals", {"focusId": str(todo.business_id), "focusType": "sales_order_approval", "mode": "approve"}
     if todo.business_type == "purchase_payment_request" and todo.business_id is not None:
         if todo.module == "finance":
             return "/finance/payables", {"focusId": str(todo.business_id), "focusType": todo.business_type, "mode": "register"}

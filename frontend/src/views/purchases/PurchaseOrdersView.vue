@@ -49,12 +49,16 @@
     />
 
     <PageSection v-if="canManageOrders" title="待采购补货需求" description="贸易型产品库存不足、生产领料原料库存不足时，会在此生成待采购需求。">
+      <el-tabs v-model="demandStatusTab" class="status-tabs">
+        <el-tab-pane :label="`待完成 (${pendingFulfillmentDemands.length})`" name="pending" />
+        <el-tab-pane :label="`已完成 (${completedFulfillmentDemands.length})`" name="completed" />
+      </el-tabs>
       <div class="demand-toolbar">
         <span class="demand-toolbar-tip">勾选多条需求可合并生成一个采购订单（相同原料/产品数量自动汇总）</span>
-        <el-button size="small" type="primary" :disabled="!selectedDemands.length" @click="mergeDemands">合并转建采购单({{ selectedDemands.length }})</el-button>
+        <el-button v-if="demandStatusTab === 'pending'" size="small" type="primary" :disabled="!selectedDemands.length" @click="mergeDemands">合并转建采购单({{ selectedDemands.length }})</el-button>
       </div>
-      <el-table :data="fulfillmentDemands" stripe @selection-change="selectedDemands = $event">
-        <el-table-column type="selection" width="45" />
+      <el-table :data="visibleFulfillmentDemands" stripe @selection-change="selectedDemands = $event">
+        <el-table-column v-if="demandStatusTab === 'pending'" type="selection" width="45" />
         <el-table-column prop="demand_no" label="需求号" width="150">
           <template #default="scope">
             <span :style="scope.row.order_type_color ? { color: scope.row.order_type_color, fontWeight: 600 } : {}">{{ scope.row.demand_no }}</span>
@@ -111,7 +115,7 @@
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="info" @click="viewDemand(scope.row)">详情</el-button>
-            <el-button size="small" text type="primary" @click="prefillDemand(scope.row)">转建采购单</el-button>
+            <el-button v-if="demandStatusTab === 'pending'" size="small" text type="primary" @click="prefillDemand(scope.row)">转建采购单</el-button>
             <el-button v-if="scope.row.status === 'pending' && scope.row.demand_type !== 'raw_material' && scope.row.source_type !== 'production_material_replenishment'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
           </template>
         </el-table-column>
@@ -395,6 +399,7 @@ const router = useRouter()
 const { route, focusedId: focusedOrderId, applyFocus: applyRouteFocus } = useRouteFocus()
 const rows = ref([])
 const fulfillmentDemands = ref([])
+const demandStatusTab = ref('pending')
 const suppliers = ref([])
 const userOptions = ref([])
 const products = ref([])
@@ -426,9 +431,16 @@ const purchaseUsers = computed(() => {
 })
 const purchaseApprovalThreshold = ref(0)
 const activeStatusTab = ref('active')
+const pendingFulfillmentDemands = computed(() => fulfillmentDemands.value.filter((item) => item.status !== 'converted'))
+const completedFulfillmentDemands = computed(() => fulfillmentDemands.value.filter((item) => item.status === 'converted'))
+const visibleFulfillmentDemands = computed(() => demandStatusTab.value === 'completed' ? completedFulfillmentDemands.value : pendingFulfillmentDemands.value)
 const activeOrderRows = computed(() => activeStatusTab.value === 'active' ? rows.value : [])
 const completedOrderRows = computed(() => activeStatusTab.value === 'completed' ? rows.value : [])
 const visibleRows = computed(() => rows.value)
+
+watch(demandStatusTab, () => {
+  selectedDemands.value = []
+})
 const supplierAiTip = computed(() => {
   if (supplierAiLoading.value) {
     return { type: 'info', title: '正在读取供应商智能评价结果...' }
@@ -451,7 +463,7 @@ const pagedRows = rows
 const emptyForm = () => ({
   supplier_id: null,
   operator_user_id: auth.user?.id || null,
-  payment_type: '先到货后付款',
+  payment_type: '先付款后到货',
   fulfillment_demand_id: null,
   items: [{ type: 'material', target_id: null, quantity: 1, unit_price: 0 }]
 })

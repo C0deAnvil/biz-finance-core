@@ -520,7 +520,7 @@
       </p>
       <el-form label-width="90px">
         <el-form-item label="指定财务">
-          <el-select v-model="submitForm.assigned_finance_user_id" clearable placeholder="不指定则系统自动分配" style="width: 100%">
+          <el-select v-model="submitForm.assigned_finance_user_id" clearable placeholder="不指定则通知全部财务" style="width: 100%">
             <el-option v-for="u in financeAssignees" :key="u.id" :label="u.is_super ? `${u.full_name}（超级财务）` : u.full_name" :value="u.id" />
           </el-select>
         </el-form-item>
@@ -1319,15 +1319,19 @@ async function confirmSubmitOrder() {
         if (action !== 'cancel') throw action
       }
     }
-    await post(`/api/sales/orders/${row.id}/submit`, {
-      assigned_finance_user_id: submitForm.assigned_finance_user_id,
-      update_customer_address: updateCustomerAddress,
-      customer_address_before: customerAddress
-    })
-    ElMessage.success('订单已提交财务审批')
-    submitVisible.value = false
-    submitTarget.value = null
-    await load()
+    try {
+      await post(`/api/sales/orders/${row.id}/submit`, {
+        assigned_finance_user_id: submitForm.assigned_finance_user_id,
+        update_customer_address: updateCustomerAddress,
+        customer_address_before: customerAddress
+      })
+      ElMessage.success('订单已提交财务审批')
+      submitVisible.value = false
+      submitTarget.value = null
+      await load()
+    } catch (error) {
+      ElMessage.error(error.message || '订单提交失败，请检查必填项后重试')
+    }
   } finally {
     submitting.value = false
   }

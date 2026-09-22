@@ -252,37 +252,48 @@ async function submitDecision() {
       await ElMessageBox.confirm(`将生成 ${formatNumber(activeRow.value.receivable_amount)} 元应收，是否确认通过？`, '确认转应收', { type: 'warning', confirmButtonText: '确认通过', cancelButtonText: '取消' })
     } catch { return }
   }
-  await post(`/api/sales/orders/${activeRow.value.id}/approve`, {
-    decision: decisionForm.decision,
-    note: decisionForm.note
-  })
-  ElMessage.success(texts.messages.success)
-  decisionVisible.value = false
-  await load()
+  try {
+    await post(`/api/sales/orders/${activeRow.value.id}/approve`, {
+      decision: decisionForm.decision,
+      note: decisionForm.note
+    })
+    ElMessage.success(texts.messages.success)
+    decisionVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || '审批失败，请确认该订单是否已指定其他财务处理')
+  }
 }
 
 async function convertToReceivable(row) {
   try {
     await ElMessageBox.confirm(`将订单全额 ${formatNumber(row.total_amount)} 元转为应收并放行后续置货/发货，是否继续？`, '转为应收', { type: 'warning', confirmButtonText: '确认转应收', cancelButtonText: '取消' })
   } catch { return }
-  await post(`/api/sales/orders/${row.id}/convert-to-receivable`, {})
-  ElMessage.success('订单已转为应收并放行')
-  await load()
+  try {
+    await post(`/api/sales/orders/${row.id}/convert-to-receivable`, {})
+    ElMessage.success('订单已转为应收并放行')
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || '转为应收失败，请确认该订单是否已指定其他财务处理')
+  }
 }
 
 async function batchApprove() {
   // 原先按"有无定金"拆两组并跳过有定金的单(因为那时要手填到账金额)。
   // 现在审批不再登记金额,这个区分已无意义,选中的单可一次批完。
-  for (const row of selection.value) {
-    await post(`/api/sales/orders/${row.id}/approve`, {
-      decision: 'approved',
-      note: '批量审批通过'
-    })
+  try {
+    for (const row of selection.value) {
+      await post(`/api/sales/orders/${row.id}/approve`, {
+        decision: 'approved',
+        note: '批量审批通过'
+      })
+    }
+    if (selection.value.length) ElMessage.success(texts.messages.batchSuccess)
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || '批量审批失败，请检查订单指派状态')
+    await load()
   }
-  if (selection.value.length) {
-    ElMessage.success(texts.messages.batchSuccess)
-  }
-  await load()
 }
 
 onMounted(load)
