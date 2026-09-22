@@ -967,8 +967,18 @@ def pending_approvals(
                 "customer_name": row.customer.name if row.customer else None,
                 "sales_user": row.sales_user.full_name if row.sales_user else None,
                 "payment_type_label": payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales"),
+                "receipt_account_label": account_label(row.receipt_account),
                 "total_amount": float(row.total_amount or 0),
                 "deposit_amount": float(row.deposit_amount or 0),
+                "receipt_amount": float(
+                    row.deposit_amount if payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales") == "先收定金后收尾款"
+                    else (0 if payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales") == "先发货后收款" else row.total_amount or 0)
+                ),
+                "receivable_amount": float(
+                    max(Decimal(row.total_amount or 0) - Decimal(row.deposit_amount or 0), Decimal("0"))
+                    if payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales") == "先收定金后收尾款"
+                    else (Decimal(row.total_amount or 0) if payment_type_label(row.payment_type, deposit_amount=row.deposit_amount, module="sales") == "先发货后收款" else Decimal("0"))
+                ),
                 "expected_delivery_date": row.expected_delivery_date.isoformat() if row.expected_delivery_date else None,
                 "order_type": row.order_type,
                 "order_type_label": order_type_style(row.order_type).get("label"),
@@ -991,6 +1001,21 @@ def approve_order(
     db: Session = Depends(get_db),
 ):
     return approve_order_service(order_id, payload, current_user, db)
+
+
+@router.post("/orders/{order_id}/convert-to-receivable")
+def convert_order_to_receivable(
+    order_id: int,
+    current_user: User = Depends(require_roles("finance", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """财务将待审批订单转为应收并放行后续置货/发货流程。"""
+    return approve_order_service(
+        order_id,
+        SalesApprovalRequest(decision="approved", convert_to_receivable=True, note="转为应收放行"),
+        current_user,
+        db,
+    )
 
 
 @router.post("/orders/{order_id}/price-approval")

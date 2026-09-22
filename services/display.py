@@ -104,10 +104,13 @@ STATUS_LABELS = {
 }
 
 PAYMENT_TYPE_LABELS = {
-    "advance": "先付定金后付尾款",
+    "advance": "先收定金后收尾款",
+    "先付定金后付尾款": "先收定金后收尾款",
     "cash": "全款发货",
     "full_payment": "全款发货",
-    "installment": "货到付款/分期付款",
+    "installment": "先发货后收款",
+    "货到付款/分期付款": "先发货后收款",
+    "应收发货": "先发货后收款",
     "bank_transfer": "银行转账",
     "deposit": "先付定金后付尾款",
     "deposit_then_balance": "先付定金后付尾款",
@@ -248,7 +251,7 @@ def payment_type_label(
     if _needs_text_repair(value):
         deposit_value = Decimal(str(deposit_amount or 0))
         if module == "sales":
-            return "先付定金后付尾款" if deposit_value > 0 else "全款发货"
+            return "先收定金后收尾款" if deposit_value > 0 else "全款发货"
         return "银行转账"
     return value or "-"
 

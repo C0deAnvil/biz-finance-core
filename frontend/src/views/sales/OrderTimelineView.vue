@@ -43,9 +43,6 @@
                 <div v-for="tick in ticks" :key="tick.label" class="tick-label" :style="{ left: tick.pct + '%' }">
                   {{ tick.label }}
                 </div>
-                <div v-if="nowPct > 0 && nowPct < 100" class="now-mark" :style="{ left: nowPct + '%' }">
-                  <span class="now-label">现在</span>
-                </div>
               </div>
             </div>
 
@@ -226,17 +223,39 @@ function laneColorOf(key) {
 }
 
 // ===== 时间计算 =====
-const startMs = computed(() => {
-  const raw = timeline.value?.time_start
-  const t = raw ? new Date(raw).getTime() : Date.now()
-  return Number.isFinite(t) ? t : Date.now()
+// 横轴只围绕真实的状态流转节点计算，不能把“现在”作为终点；否则历史订单的节点会被压成一条线。
+const eventTimes = computed(() => {
+  const times = []
+  for (const lane of timeline.value?.lanes || []) {
+    for (const event of lane.events || []) {
+      const timestamp = new Date(event.created_at).getTime()
+      if (Number.isFinite(timestamp)) times.push(timestamp)
+    }
+  }
+  return times
 })
-const endMs = computed(() => {
-  const raw = timeline.value?.time_end || timeline.value?.order?.updated_at
-  const t = raw ? new Date(raw).getTime() : Date.now()
-  return Number.isFinite(t) ? t : Date.now()
+
+const timeRange = computed(() => {
+  const times = eventTimes.value
+  if (!times.length) {
+    const fallback = new Date(timeline.value?.order?.created_at).getTime()
+    const center = Number.isFinite(fallback) ? fallback : Date.now()
+    return { start: center - 15 * 60 * 1000, end: center + 15 * 60 * 1000 }
+  }
+
+  const first = Math.min(...times)
+  const last = Math.max(...times)
+  const eventSpan = last - first
+  // 单个或非常密集的节点仍保留可读的最小时间窗；长周期订单只留少量边距。
+  const padding = Math.min(24 * 60 * 60 * 1000, Math.max(5 * 60 * 1000, eventSpan * 0.08))
+  const minimumSpan = 30 * 60 * 1000
+  const spanWithPadding = Math.max(eventSpan + padding * 2, minimumSpan)
+  const center = (first + last) / 2
+  return { start: center - spanWithPadding / 2, end: center + spanWithPadding / 2 }
 })
-const nowMs = computed(() => Date.now())
+
+const startMs = computed(() => timeRange.value.start)
+const endMs = computed(() => timeRange.value.end)
 
 function xPct(timeStr) {
   if (!timeStr) return 2
@@ -247,8 +266,6 @@ function xPct(timeStr) {
   return Math.min(98, Math.max(2, pct))
 }
 
-const nowPct = computed(() => Math.min(98, Math.max(2, ((nowMs.value - startMs.value) / Math.max(endMs.value - startMs.value, 1)) * 100)))
-
 const ticks = computed(() => {
   const span = Math.max(endMs.value - startMs.value, 1)
   return [0, 0.2, 0.4, 0.6, 0.8, 1].map((f) => ({
@@ -258,12 +275,12 @@ const ticks = computed(() => {
 })
 
 const swimlaneDesc = computed(() => {
-  if (!timeline.value?.time_start) return ''
+  if (!eventTimes.value.length) return '暂无状态流转节点'
   const spanMs = endMs.value - startMs.value
   if (spanMs <= 0) return ''
   const days = spanMs / 86400000
   const spanText = days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(1, Math.round(spanMs / 60000))} 分钟`
-  return `自 ${formatDateTime(timeline.value.time_start)} 起,当前历时约 ${spanText},按业务泳道展示每一次状态流转`
+  return `按 ${eventTimes.value.length} 个实际状态节点的时间跨度展示（约 ${spanText}）`
 })
 
 // ===== 泳道状态 =====
@@ -397,8 +414,6 @@ onMounted(load)
 .lane-track { position: relative; min-height: 54px; background: repeating-linear-gradient(90deg, #eef1f5 0, #eef1f5 1px, transparent 1px, transparent 20%); }
 .lane-head .lane-track { min-height: 40px; }
 .tick-label { position: absolute; top: 4px; transform: translateX(-50%); font-size: 10px; color: #a8b2bd; white-space: nowrap; }
-.now-mark { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed #d3dce6; z-index: 1; }
-.now-label { position: absolute; top: 2px; left: 4px; font-size: 10px; color: #1c7ce0; background: #fff; padding: 0 3px; border-radius: 4px; }
 .lane-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; color: #c0c4cc; }
 
 .ev { position: absolute; top: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 2; cursor: default; }

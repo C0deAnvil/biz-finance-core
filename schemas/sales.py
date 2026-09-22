@@ -28,6 +28,7 @@ class SalesOrderDraftPayload(BaseModel):
     update_customer_address: bool = False
     customer_address_before: str | None = Field(default=None, max_length=255)
     customer_id: int | None = None
+    receipt_account_id: int | None = None
     operator_user_id: int | None = None
     consignee: str | None = Field(default=None, max_length=100)
     consignee_phone: str | None = Field(default=None, max_length=30)
@@ -45,6 +46,7 @@ class SalesOrderCreate(BaseModel):
     update_customer_address: bool = False
     customer_address_before: str | None = Field(default=None, max_length=255)
     customer_id: int
+    receipt_account_id: int | None = None
     operator_user_id: int | None = None
     consignee: str = Field(..., max_length=100)
     consignee_phone: str = Field(..., max_length=30)
@@ -62,6 +64,7 @@ class SalesOrderUpdate(BaseModel):
     update_customer_address: bool = False
     customer_address_before: str | None = Field(default=None, max_length=255)
     customer_id: int
+    receipt_account_id: int | None = None
     operator_user_id: int | None = None
     consignee: str = Field(..., max_length=100)
     consignee_phone: str = Field(..., max_length=30)
@@ -83,6 +86,7 @@ class SalesApprovalRequest(BaseModel):
     decision: str = Field(..., pattern="^(approved|rejected)$")
     voucher_amount: Decimal = 0
     actual_amount: Decimal = 0
+    convert_to_receivable: bool = False
     note: str | None = None
 
 

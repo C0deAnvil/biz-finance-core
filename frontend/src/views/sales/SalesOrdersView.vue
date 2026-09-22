@@ -42,7 +42,7 @@
       <el-table-column prop="customer_name" label="客户" min-width="160" />
       <el-table-column prop="sales_user" label="销售员" width="120" />
       <el-table-column prop="operator_name" label="经办人" width="120" />
-      <el-table-column prop="payment_type_label" label="付款方式" min-width="180" />
+      <el-table-column prop="payment_type_label" label="收款方式" min-width="180" />
       <el-table-column prop="receipt_account_label" label="收款账户" min-width="240" show-overflow-tooltip>
         <template #default="scope">{{ scope.row.receipt_account_label || '尚未选择' }}</template>
       </el-table-column>
@@ -115,13 +115,23 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="付款方式">
+            <el-form-item label="收款方式">
               <el-select v-model="form.payment_type" style="width: 100%">
-                <el-option label="先付定金后付尾款" value="先付定金后付尾款" />
+                <el-option label="先收定金后收尾款" value="先收定金后收尾款" />
                 <el-option label="全款发货" value="全款发货" />
-                <el-option label="货到付款/分期付款" value="货到付款/分期付款" />
+                <el-option label="先发货后收款" value="先发货后收款" />
               </el-select>
             </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <SettlementAccounts
+              :company-account-id="form.receipt_account_id"
+              :party-id="form.customer_id"
+              direction="receipt"
+              :show-company="true"
+              :counterparty-required="false"
+              @update:company-account-id="form.receipt_account_id = $event"
+            />
           </el-col>
           <el-col :span="12">
             <el-form-item label="单据类型">
@@ -309,7 +319,7 @@
       <el-descriptions v-if="detail?.finance_edit_snapshot" :column="2" border>
         <el-descriptions-item label="客户">{{ detail.finance_edit_snapshot.before_data?.customer_name || detail.customer?.name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="经办人">{{ detail.finance_edit_snapshot.before_data?.operator_name || detail.operator_name || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="付款方式">{{ detail.finance_edit_snapshot.before_data?.payment_type || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
+        <el-descriptions-item label="收款方式">{{ detail.finance_edit_snapshot.before_data?.payment_type || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
         <el-descriptions-item label="收货人">{{ detail.finance_edit_snapshot.before_data?.consignee || '-' }}</el-descriptions-item>
         <el-descriptions-item label="联系电话">{{ detail.finance_edit_snapshot.before_data?.consignee_phone || '-' }}</el-descriptions-item>
         <el-descriptions-item label="收货地址" :span="2">{{ detail.finance_edit_snapshot.before_data?.delivery_address || '-' }}</el-descriptions-item>
@@ -353,7 +363,7 @@
         <el-descriptions-item label="批次">{{ `第${detail.split_phase || 1}批` }}</el-descriptions-item>
         <el-descriptions-item label="客户">{{ detail.customer?.name }}</el-descriptions-item>
         <el-descriptions-item label="经办人">{{ detail.operator_name || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="付款方式">{{ detail.payment_type_label || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
+        <el-descriptions-item label="收款方式">{{ detail.payment_type_label || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
         <el-descriptions-item label="单据类型">
           <el-tag :type="orderTypeStyle(detail.order_type).tagType" effect="light" size="small">{{ detail.order_type_label || orderTypeStyle(detail.order_type).label }}</el-tag>
         </el-descriptions-item>
@@ -575,6 +585,7 @@ import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import PhotoAttachments from '../../components/PhotoAttachments.vue'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import SettlementAccounts from '../../components/SettlementAccounts.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
 import { exportRowsToCsv } from '../../utils/export'
@@ -641,7 +652,8 @@ const emptyForm = () => ({
   consignee: '',
   consignee_phone: '',
   delivery_address: '',
-  payment_type: '先付定金后付尾款',
+  receipt_account_id: null,
+  payment_type: '全款发货',
   order_type: 'normal',
   expected_delivery_date: null,
   deposit_amount: 0,
@@ -1121,6 +1133,7 @@ function validateOrderPayload() {
     consignee: String(form.consignee || '').trim(),
     consignee_phone: String(form.consignee_phone || '').trim(),
     delivery_address: String(form.delivery_address || '').trim(),
+    receipt_account_id: form.receipt_account_id || null,
     payment_type: form.payment_type,
     order_type: form.order_type || 'normal',
     expected_delivery_date: form.expected_delivery_date || null,
@@ -1140,6 +1153,7 @@ async function submit() {
     consignee: String(form.consignee || '').trim() || null,
     consignee_phone: String(form.consignee_phone || '').trim() || null,
     delivery_address: String(form.delivery_address || '').trim() || null,
+    receipt_account_id: form.receipt_account_id || null,
     payment_type: form.payment_type || null,
     order_type: form.order_type || 'normal',
     expected_delivery_date: form.expected_delivery_date || null,
@@ -1245,7 +1259,8 @@ async function editOrder(row) {
     consignee: draft.consignee ?? order.consignee ?? '',
     consignee_phone: draft.consignee_phone ?? order.consignee_phone ?? '',
     delivery_address: draft.delivery_address ?? order.delivery_address ?? '',
-    payment_type: draft.payment_type ?? order.payment_type ?? '先付定金后付尾款',
+    receipt_account_id: draft.receipt_account_id ?? order.receipt_account_id ?? null,
+    payment_type: draft.payment_type ?? order.payment_type ?? '全款发货',
     order_type: draft.order_type ?? order.order_type ?? 'normal',
     expected_delivery_date: draft.expected_delivery_date ?? order.expected_delivery_date ?? null,
     deposit_amount: draft.deposit_amount ?? order.deposit_amount ?? 0,
@@ -1349,7 +1364,7 @@ async function exportExcel() {
       { key: 'customer_name', title: '客户' },
       { key: 'order_type_label', title: '类型' },
       { key: 'total_amount', title: '金额' },
-      { key: 'payment_type_label', title: '付款方式' },
+      { key: 'payment_type_label', title: '收款方式' },
       { key: 'status_label', title: '状态' },
       { key: 'created_at', title: '创建时间' },
       { key: 'expected_delivery_date', title: '期望发货' },

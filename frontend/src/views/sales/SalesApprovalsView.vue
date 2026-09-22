@@ -9,17 +9,20 @@
       <el-table-column v-if="canApproveOrders" type="selection" width="55" />
       <el-table-column prop="order_no" :label="texts.columns.orderNo" width="150" />
       <el-table-column prop="customer_name" :label="texts.columns.customer" min-width="150" />
-      <el-table-column prop="payment_type" :label="texts.columns.paymentType" min-width="160" />
+      <el-table-column prop="receipt_account_label" :label="texts.columns.receiptAccount" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="payment_type_label" :label="texts.columns.paymentType" min-width="160" />
+      <el-table-column prop="sales_user" :label="texts.columns.salesUser" width="130" />
+      <el-table-column prop="receipt_amount" :label="texts.columns.receiptAmount" width="120">
+        <template #default="scope">{{ formatNumber(scope.row.receipt_amount) }}</template>
+      </el-table-column>
       <el-table-column prop="total_amount" :label="texts.columns.totalAmount" width="120">
         <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
       </el-table-column>
-      <el-table-column prop="deposit_amount" :label="texts.columns.depositAmount" width="120">
-        <template #default="scope">{{ formatNumber(scope.row.deposit_amount) }}</template>
-      </el-table-column>
-      <el-table-column :label="texts.columns.actions" width="240" fixed="right">
+      <el-table-column :label="texts.columns.actions" width="320" fixed="right">
         <template #default="scope">
           <el-button size="small" @click="showDetail(scope.row.id)">{{ texts.actions.detail }}</el-button>
           <el-button v-if="canApproveOrders" size="small" type="success" @click="openApprove(scope.row)">{{ texts.actions.approve }}</el-button>
+          <el-button v-if="canApproveOrders" size="small" type="warning" plain @click="convertToReceivable(scope.row)">转为应收</el-button>
           <el-button v-if="canApproveOrders" size="small" type="danger" @click="openReject(scope.row)">{{ texts.actions.reject }}</el-button>
         </template>
       </el-table-column>
@@ -63,16 +66,12 @@
         <el-form-item :label="texts.dialog.depositAmount">
           <span>{{ formatNumber(activeRow?.deposit_amount || 0) }}</span>
         </el-form-item>
-        <!-- 已移除"到账金额"输入框:审批只判断这单能不能做,不代表钱已到账。
-             原先此处预填定金/全款并提交为 actual_amount,后端见 actual_amount>0
-             就写一笔应收+资金流水,导致财务点一次"通过"就凭空记一笔客户回款。
-             实际收款走"收款确认申请 → 财务登记"这条独立流程。 -->
         <el-alert
           type="info"
           :closable="false"
           show-icon
           class="mb-12"
-          title="审批仅确认单据是否可执行，不登记到账金额；实际收款请走收款确认流程。"
+          :title="approvalHint"
         />
         <el-form-item :label="texts.dialog.note" :required="decisionForm.decision === 'rejected'">
           <el-input
@@ -96,6 +95,7 @@
 <script setup>
 import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/descriptions/style/css'
 import 'element-plus/es/components/dialog/style/css'
@@ -105,6 +105,7 @@ import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/table/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
@@ -131,11 +132,14 @@ const auth = useAuthStore()
 const pagePermission = usePagePermission()
 const texts = {
   title: '销售订单审批',
-  description: '财务/董事长审批客户订单（仅判断可否执行，不登记到账）；审批通过后占用库存并流转至库管置货。',
+  description: '财务审批确认收款或应收放行；通过后订单直接进入库管置货，无需销售再次提交收款确认。',
   columns: {
     orderNo: '订单号',
     customer: '客户',
-    paymentType: '付款方式',
+    paymentType: '收款方式',
+    receiptAccount: '收款账户',
+    salesUser: '提交人',
+    receiptAmount: '收款金额',
     totalAmount: '订单金额',
     depositAmount: '定金',
     actions: '操作'
@@ -145,7 +149,7 @@ const texts = {
     orderNo: '订单号',
     status: '状态',
     customer: '客户',
-    paymentType: '付款方式',
+    paymentType: '收款方式',
     consignee: '收货人',
     phone: '电话',
     product: '产品',
@@ -187,6 +191,12 @@ const activeRow = ref(null)
 const decisionForm = reactive({ decision: 'approved', note: '' })
 const canApproveOrders = computed(() => ['finance', 'chairman', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('approve'))
 const { pagination, total, pageSizes, pagedItems: pagedRows, ensureVisible } = useLocalPagination(rows)
+const approvalHint = computed(() => {
+  const amount = Number(activeRow.value?.receivable_amount || 0)
+  return amount > 0
+    ? `本次通过将确认收款 ${formatNumber(activeRow.value?.receipt_amount || 0)} 元，并生成 ${formatNumber(amount)} 元应收；确认后订单将进入置货流程。`
+    : `本次通过将确认收款 ${formatNumber(activeRow.value?.receipt_amount || 0)} 元，订单将进入置货流程。`
+})
 
 function rowClassName({ row }) {
   return focusedOrderId.value === row.id ? 'is-focused-row' : ''
@@ -237,13 +247,26 @@ async function submitDecision() {
     ElMessage.warning('请填写驳回原因')
     return
   }
-  // 不再提交 voucher_amount / actual_amount:审批不等于到账
+  if (decisionForm.decision === 'approved' && Number(activeRow.value?.receivable_amount || 0) > 0) {
+    try {
+      await ElMessageBox.confirm(`将生成 ${formatNumber(activeRow.value.receivable_amount)} 元应收，是否确认通过？`, '确认转应收', { type: 'warning', confirmButtonText: '确认通过', cancelButtonText: '取消' })
+    } catch { return }
+  }
   await post(`/api/sales/orders/${activeRow.value.id}/approve`, {
     decision: decisionForm.decision,
     note: decisionForm.note
   })
   ElMessage.success(texts.messages.success)
   decisionVisible.value = false
+  await load()
+}
+
+async function convertToReceivable(row) {
+  try {
+    await ElMessageBox.confirm(`将订单全额 ${formatNumber(row.total_amount)} 元转为应收并放行后续置货/发货，是否继续？`, '转为应收', { type: 'warning', confirmButtonText: '确认转应收', cancelButtonText: '取消' })
+  } catch { return }
+  await post(`/api/sales/orders/${row.id}/convert-to-receivable`, {})
+  ElMessage.success('订单已转为应收并放行')
   await load()
 }
 

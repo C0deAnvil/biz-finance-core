@@ -403,24 +403,9 @@
     "name": "sales-settlements",
     "title": "销售结算协同",
     "group": "销售管理",
-    "menu_roles": [
-      "sales",
-      "manager",
-      "chairman",
-      "system_admin"
-    ],
-    "preload_roles": [
-      "sales",
-      "manager",
-      "chairman",
-      "system_admin"
-    ],
-    "warmers": [
-      {
-        "url": "/api/sales/settlements",
-        "ttl_ms": 45000
-      }
-    ]
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
   },
   {
     "path": "/sales/returns",

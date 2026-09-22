@@ -18,6 +18,7 @@ from models import (
     FulfillmentDemand,
     PackagingConfig,
     Product,
+    ReceivablePlan,
     ReceivableRecord,
     RefundRecord,
     Role,
@@ -35,7 +36,7 @@ from models import (
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderDraftPayload, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.customer_activity import register_customer_order
-from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
+from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_assigned_finance_user_id, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity, product_expected_available_quantity
@@ -140,6 +141,7 @@ def _store_draft_payload(order: SalesOrder, payload: SalesOrderDraftPayload) -> 
     ext_json["draft_payload"] = payload.model_dump(mode="json")
     order.ext_json = ext_json
     order.customer_id = payload.customer_id
+    order.receipt_account_id = payload.receipt_account_id
     order.consignee = (payload.consignee or "").strip()
     order.consignee_phone = (payload.consignee_phone or "").strip()
     order.delivery_address = (payload.delivery_address or "").strip()
@@ -191,11 +193,13 @@ def _draft_payload_for_submit(order: SalesOrder) -> SalesOrderCreate:
         "收货人": payload.consignee,
         "联系电话": payload.consignee_phone,
         "收货地址": payload.delivery_address,
-        "付款方式": payload.payment_type,
+        "收款方式": payload.payment_type,
     }
     missing_field = next((label for label, value in required_text_fields.items() if not str(value or "").strip()), None)
     if missing_field:
         raise HTTPException(status_code=422, detail=f"请完善草稿后再提交：{missing_field}不能为空")
+    if payload.receipt_account_id is None:
+        raise HTTPException(status_code=422, detail="请完善草稿后再提交：收款账户不能为空")
     if not payload.items:
         raise HTTPException(status_code=422, detail="请完善草稿后再提交：至少需要一条商品明细")
     if any(item.packaging_config_id is None for item in payload.items):
@@ -411,6 +415,51 @@ def update_order(order_id: int, payload: SalesOrderDraftPayload, current_user: U
     return api_response(data={"id": order.id, "order_no": order.order_no})
 
 
+def _approval_receivable_amount(order: SalesOrder, *, convert_to_receivable: bool) -> Decimal:
+    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    if convert_to_receivable or payment_type == "先发货后收款":
+        return max(Decimal(order.total_amount or 0), Decimal("0"))
+    if payment_type == "先收定金后收尾款":
+        return max(Decimal(order.total_amount or 0) - Decimal(order.deposit_amount or 0), Decimal("0"))
+    return Decimal("0")
+
+
+def _record_approval_payment_and_receivable(
+    db: Session, *, order: SalesOrder, current_user: User, convert_to_receivable: bool
+) -> tuple[Decimal, Decimal]:
+    """财务通过即确认已收款；尚未到账部分建立应收计划，而非销售再次发起收款确认。"""
+    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    received_amount = Decimal(order.total_amount or 0) if payment_type == "全款发货" else (
+        min(Decimal(order.deposit_amount or 0), Decimal(order.total_amount or 0))
+        if payment_type == "先收定金后收尾款" else Decimal("0")
+    )
+    if received_amount > 0:
+        stage = "deposit" if payment_type == "先收定金后收尾款" else "pre_shipment_full"
+        db.add(ReceivableRecord(
+            sales_order_id=order.id,
+            company_account_id=order.receipt_account_id,
+            amount=received_amount,
+            payment_stage=stage,
+            received_at=now_local(),
+            received_by_id=current_user.id,
+            remark="财务审批确认收款",
+        ))
+        create_cash_flow(
+            db, flow_type="incoming", business_type="sales_order", business_id=order.id,
+            related_no=order.order_no, amount=received_amount, happened_at=now_local(),
+            remark="财务审批确认收款",
+        )
+    receivable_amount = _approval_receivable_amount(order, convert_to_receivable=convert_to_receivable)
+    if receivable_amount > 0:
+        db.add(ReceivablePlan(
+            sales_order_id=order.id,
+            due_date=now_local().date(),
+            planned_amount=receivable_amount,
+            created_by_id=current_user.id,
+        ))
+    return received_amount, receivable_amount
+
+
 def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: User, db: Session):
     order = _load_order(db, order_id)
     if order is None:
@@ -421,13 +470,12 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         raise HTTPException(status_code=409, detail="当前订单存在待审批改价，需财务审批通过后再推进")
 
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
-    # 财务审批与收款确认是两个独立操作:审批只判断"这单能不能做",不要求钱已到账。
     # 改造前这里要求定金/全款必须先到账才允许审批,把两件事强行绑在一起,
     # 导致"未收款就无法审批、不审批就不能置货"的死锁。
     # 审批通过后订单财务状态自然为"待收定金/待收货款"(由 received_amount 实时推导),
     # 实际收款走独立的收款确认流程(submit_sales_receipt_request → 财务登记)。
     # 若财务在审批时顺带登记了已到账金额,则如实记账(不丢数据),但不作为审批前置条件。
-    actual_amount = Decimal(payload.actual_amount or payload.voucher_amount or 0)
+    actual_amount = Decimal("0")
 
     db.add(
         SalesOrderApproval(
@@ -459,11 +507,15 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
             complete_todos(db, business_type="sales_order", business_id=order.id)
             _create_inventory_placement_todos(db, order=order)
 
-        # 审批**不再**写应收与资金流水。
+        received_amount, receivable_amount = _record_approval_payment_and_receivable(
+            db, order=order, current_user=current_user, convert_to_receivable=payload.convert_to_receivable
+        )
+        actual_amount = received_amount
+        # 审批确认收款或应收放行，不再创建销售收款确认协同单。
         # 原先只要入参带了 actual_amount>0 就记一笔客户回款,而前端(销售审批页与
         # 审批中心)都会自动预填定金/全款金额,结果财务点一次"通过"就凭空虚增一笔
         # 回款——定金单尤其严重,审批时定金根本还没收到。
-        # 审批只表示"这单可以执行";钱到账走独立的收款确认流程
+        # 历史收款确认单仍可查询，但新订单不再走该协同流程。
         # (submit_sales_receipt_request → 财务登记),由那里唯一负责记账。
         # 入参里的金额仅作为审批凭证留痕(见上方 SalesOrderApproval.voucher_amount),
         # 不产生任何账务影响,这样即便有第三方调用方仍传金额也不会造成错账。
@@ -529,6 +581,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         after_data={
             "decision": payload.decision,
             "actual_amount": float(actual_amount),
+            "receivable_amount": float(receivable_amount) if payload.decision == "approved" else 0,
             "status": order.status,
             "note": payload.note,
         },
@@ -572,7 +625,7 @@ def approve_sales_price_change(order_id: int, payload, current_user: User, db: S
             created_by_id=current_user.id,
             category="success",
         )
-        if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "货到付款/分期付款":
+        if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "先发货后收款":
             _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
     else:
         order.price_approval_status = "rejected"
@@ -718,7 +771,7 @@ def finance_edit_order(order_id: int, payload, current_user: User, db: Session):
         occupy_inventory_for_order(db, order=order)
     updated_operator = db.execute(select(User).where(User.id == order.operator_user_id)).scalar_one_or_none()
     if order.status == "pending_price_approval":
-        if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "货到付款/分期付款":
+        if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "先发货后收款":
             _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
         else:
             order.status = "pending_confirmation"

@@ -187,7 +187,7 @@ const auth = useAuthStore()
 const WORKBENCH_BY_ROLE = {
   sales: [
     { path: '/sales/orders', icon: '📝', label: '销售订单', desc: '录入/编辑/提交客户订单', color: '#67c23a' },
-    { path: '/sales/settlements', icon: '💰', label: '销售结算', desc: '收款登记与结算', color: '#b88230' },
+    // 销售结算协同已并入客户订单财务审批；历史页面保留但不再作为工作台入口。
     { path: '/sales/returns', icon: '↩️', label: '销售退货', desc: '退货申请与审批', color: '#e6a23c' },
     { path: '/flow-board', icon: '📊', label: '客户订单看板', desc: '财务/生产/质检全维度', color: '#409eff' },
   ],
