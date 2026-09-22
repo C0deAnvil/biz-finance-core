@@ -776,6 +776,9 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
         for user in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all():
             user_names[user.id] = user.full_name or user.username
 
+    # 时间轴从“提交”开始，而不是草稿保存时间。没有任何流程快照的草稿不进入业务生命周期。
+    submitted_at = next((row.created_at for row in history_asc if row.created_at), None)
+    fallback_operator_name = (order.operator_user.full_name or order.operator_user.username) if order.operator_user else None
     events_by_dimension: dict[str, list[dict]] = defaultdict(list)
     for row in history_asc:
         events_by_dimension[row.status_dimension].append(
@@ -786,7 +789,8 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
                 "to_stage": row.to_stage,
                 "to_stage_label": status_label(row.to_stage),
                 "reason_text": row.reason_text,
-                "operator_name": user_names.get(row.operator_user_id) or "系统",
+                # 自动同步的状态沿用发起销售的姓名，避免列表中只出现“系统”而无法追责。
+                "operator_name": user_names.get(row.operator_user_id) or fallback_operator_name or "系统自动",
                 "related_document_type": row.related_document_type,
                 "related_document_id": row.related_document_id,
                 "related_document_no": _related_document_no(
@@ -813,6 +817,7 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
         )
 
     fulfillment = snapshots.get("fulfillment")
+    timeline_end = max((row.created_at for row in history_asc if row.created_at), default=submitted_at)
     return api_response(
         data={
             "order": {
@@ -831,6 +836,7 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
                 "total_amount": float(order.total_amount or 0),
                 "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
                 "created_at": order.created_at.isoformat() if order.created_at else None,
+                "submitted_at": submitted_at.isoformat() if submitted_at else None,
                 "updated_at": order.updated_at.isoformat() if order.updated_at else None,
             },
             "overall_stage": fulfillment.current_stage if fulfillment else order.status,
@@ -838,8 +844,8 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
             "overall_blocked_reason": fulfillment.blocked_reason if fulfillment else None,
             "lanes": lanes,
             "relations": _order_related_documents(db, order.id),
-            "time_start": order.created_at.isoformat() if order.created_at else None,
-            "time_end": now_local().isoformat(),
+            "time_start": submitted_at.isoformat() if submitted_at else None,
+            "time_end": timeline_end.isoformat() if timeline_end else None,
         }
     )
 

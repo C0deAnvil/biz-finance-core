@@ -43,10 +43,12 @@ APPROVAL_TODO_TYPES = {
     "production_special_request": "production_special_request",
     "business_matter": "business_matter",
     "reimbursement": "reimbursement",
+    "inventory_exception": "inventory_exception",
 }
 
 TODO_ROUTE_BY_BUSINESS_TYPE = {
     "inventory_operation_request": "/inventory/stocks",
+    "inventory_exception": "/inventory/exceptions",
     "fulfillment_demand": "/sales/orders",
     "purchase_payment_request": "/finance/payables",
     "purchase_order_confirm": "/purchases/orders",
@@ -114,6 +116,8 @@ def _todo_route(todo: TodoItem) -> tuple[str, dict]:
         return "/production/tasks", {"focusId": str(todo.business_id), "focusType": "quality_task"}
     if todo.business_type == "inventory_operation_request":
         return "/inventory/stocks", {"focusId": str(todo.business_id), "focusType": todo.business_type, "mode": "execute"}
+    if todo.business_type == "inventory_exception" and todo.business_id is not None:
+        return "/inventory/exceptions", {"focusId": str(todo.business_id), "focusType": todo.business_type, "mode": "approve"}
     if todo.business_type == "reimbursement_payment" and todo.business_id is not None:
         return "/finance/reimbursements", {"focusId": str(todo.business_id), "focusType": todo.business_type, "mode": "pay"}
     if todo.module == "inventory" and todo.business_type in {"sales_order", "sales_order_placement"}:
@@ -153,6 +157,7 @@ def _serialize_todo(todo: TodoItem) -> dict:
         "sales_order_approval",
         "sales_receipt_request",
         "inventory_operation_request",
+        "inventory_exception",
         "purchase_order_confirm",
         "sales_order_price_approval",
         "sales_order_finance_edit_sales_confirm",

@@ -11,6 +11,7 @@ from database import get_db
 from dependencies import get_current_user
 from models import (
     Attachment,
+    InventoryExceptionRecord,
     BusinessMatter,
     PurchasePaymentRequest,
     Reimbursement,
@@ -42,6 +43,7 @@ from services.display import clean_display_text, payment_type_label, return_type
 from services.production_service import approve_special_request as approve_special_request_service
 from services.purchase_service import approve_purchase_order as approve_purchase_order_service, approve_purchase_payment_request as approve_purchase_payment_request_service
 from services.sales_service import approve_order as approve_sales_order_service, approve_sales_price_change as approve_sales_price_change_service, approve_return as approve_sales_return_service, approve_sales_receipt_request as approve_sales_receipt_request_service
+from services.inventory_exception_service import approve_inventory_exception, reject_inventory_exception, serialize_inventory_exception
 from services.workflow import purchase_arrival_status
 from services.workflow_repair import repair_sales_receipt_workflows
 from api.routers.reimbursements import audit_business_matter as audit_business_matter_service, audit_reimbursement as audit_reimbursement_service
@@ -61,6 +63,7 @@ APPROVAL_TYPE_LABELS = {
     "production_special_request": "特殊领用审批",
     "business_matter": "事务申请审批",
     "reimbursement": "报销审批",
+    "inventory_exception": "库存异常审批",
 }
 
 TODO_APPROVAL_TYPE_MAP = {
@@ -86,6 +89,7 @@ APPROVAL_VIEW_ROLES = {
     "production_special_request": {"production", "inventory", "manager", "chairman", "system_admin"},
     "business_matter": {"manager", "finance", "chairman", "system_admin"},
     "reimbursement": {"finance", "chairman", "system_admin"},
+    "inventory_exception": {"manager", "chairman", "system_admin"},
 }
 
 APPROVAL_ACTION_ROLES = {
@@ -99,6 +103,7 @@ APPROVAL_ACTION_ROLES = {
     "production_special_request": {"inventory", "manager", "system_admin"},
     "business_matter": {"manager", "system_admin"},
     "reimbursement": {"chairman", "system_admin"},
+    "inventory_exception": {"manager", "chairman", "system_admin"},
 }
 
 
@@ -222,6 +227,38 @@ def _pending_sales_orders(current_user: User, db: Session) -> list[dict]:
     return []
 
 
+def _pending_inventory_exceptions(current_user: User, db: Session) -> list[dict]:
+    if not _can_act_on_approval_type(current_user, "inventory_exception"):
+        return []
+    rows = db.execute(
+        select(InventoryExceptionRecord)
+        .where(InventoryExceptionRecord.status == "pending_approval")
+        .order_by(InventoryExceptionRecord.created_at.desc(), InventoryExceptionRecord.id.desc())
+    ).scalars().all()
+    data = []
+    for row in rows:
+        detail = serialize_inventory_exception(row)
+        data.append(_base_item(
+            approval_type="inventory_exception",
+            business_id=row.id,
+            module="inventory",
+            title=f"待审批库存异常 {row.exception_no}",
+            status=row.status,
+            created_at=row.created_at,
+            can_approve=True,
+            can_reject=True,
+            summary={
+                "exception_no": row.exception_no,
+                "exception_type_label": detail["exception_type_label"],
+                "warehouse_name": detail["warehouse_name"],
+                "sales_order_no": detail["sales_order_no"],
+                "created_by_name": detail["created_by_name"],
+                "remark": row.remark,
+            },
+        ))
+    return data
+
+
 def _pending_sales_price_changes(current_user: User, db: Session) -> list[dict]:
     """直接从订单改价状态构造待审批项，避免旧待办缺失时改价审批无入口。"""
     if not _can_act_on_approval_type(current_user, "sales_price_change"):
@@ -230,6 +267,8 @@ def _pending_sales_price_changes(current_user: User, db: Session) -> list[dict]:
         select(SalesOrder)
         .options(joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user))
         .where(
+            # 仅已提交的订单才可进入审批。草稿即使残留了历史改价状态，也不能生成审批项。
+            SalesOrder.status.in_(["pending_confirmation", "pending_price_approval"]),
             (SalesOrder.price_approval_status == "pending") | (SalesOrder.status == "pending_price_approval")
         )
         .order_by(SalesOrder.updated_at.desc(), SalesOrder.id.desc())
@@ -947,6 +986,10 @@ def _pending_todo_approvals(current_user: User, db: Session) -> list[dict]:
             ).unique().scalar_one_or_none()
             if order is None:
                 continue
+            # 待办可能因历史数据或异常中断而残留在草稿上；草稿不应显示在审批中心，
+            # 也绝不能进入财务审批、置货或其他后续流程。
+            if order.status not in {"pending_confirmation", "pending_price_approval"}:
+                continue
             price_logs = db.execute(
                 select(SalesOrderPriceChangeLog)
                 .options(joinedload(SalesOrderPriceChangeLog.product))
@@ -1423,6 +1466,7 @@ def list_pending_approvals(current_user: User = Depends(get_current_user), db: S
     data = _dedupe_approval_rows(
         [
             *_pending_sales_orders(current_user, db),
+            *_pending_inventory_exceptions(current_user, db),
             *_pending_sales_price_changes(current_user, db),
             *_pending_purchase_orders(current_user, db),
             *_pending_purchase_payment_requests(current_user, db),
@@ -1493,6 +1537,11 @@ def get_approval_detail(approval_id: str, current_user: User = Depends(get_curre
         detail = _business_matter_detail(business_id, db)
     elif approval_type == "reimbursement":
         detail = _reimbursement_detail(business_id, db)
+    elif approval_type == "inventory_exception":
+        row = db.get(InventoryExceptionRecord, business_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="库存异常记录不存在")
+        detail = serialize_inventory_exception(row)
     else:
         raise HTTPException(status_code=404, detail="审批类型不存在")
     return api_response(data={"approval_id": approval_id, "approval_type": approval_type, "detail": detail, "readonly": True})
@@ -1580,6 +1629,8 @@ def approve_item(
         return audit_business_matter_service(business_id, BusinessMatterAuditRequest(decision="approved", manager_remark=payload.note or payload.remark), current_user, db)
     if approval_type == "reimbursement":
         return audit_reimbursement_service(business_id, ReimbursementAuditRequest(decision="approved", finance_remark=payload.note or payload.remark), current_user, db)
+    if approval_type == "inventory_exception":
+        return approve_inventory_exception(business_id, payload.note or payload.remark, current_user, db)
     raise HTTPException(status_code=404, detail="审批类型不存在")
 
 
@@ -1663,4 +1714,6 @@ def reject_item(
         return audit_business_matter_service(business_id, BusinessMatterAuditRequest(decision="rejected", manager_remark=payload.note or payload.remark), current_user, db)
     if approval_type == "reimbursement":
         return audit_reimbursement_service(business_id, ReimbursementAuditRequest(decision="rejected", finance_remark=payload.note or payload.remark), current_user, db)
+    if approval_type == "inventory_exception":
+        return reject_inventory_exception(business_id, payload.note or payload.remark, current_user, db)
     raise HTTPException(status_code=404, detail="审批类型不存在")

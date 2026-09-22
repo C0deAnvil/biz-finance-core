@@ -709,7 +709,7 @@ def create_demand_raw_material_demands(
     """为未覆盖的原料缺口追加独立补货需求。"""
     demand = db.execute(
         select(FulfillmentDemand)
-        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
+        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order), joinedload(FulfillmentDemand.created_by))
         .where(FulfillmentDemand.id == demand_id, FulfillmentDemand.fulfillment_mode == "production")
         .with_for_update()
     ).unique().scalar_one_or_none()
@@ -1191,6 +1191,7 @@ def list_fulfillment_demands(
                 "related_no": progress_map.get(row.id, {}).get("related_no"),
                 "related_status_label": progress_map.get(row.id, {}).get("related_status_label"),
                 "assigned_user_id": row.assigned_user_id,
+                "submitted_by_name": row.created_by.full_name if row.created_by else None,
                 "process_note": row.process_note,
                 "cancel_reason": row.cancel_reason,
                 "created_at": row.created_at.isoformat() if row.created_at else None,

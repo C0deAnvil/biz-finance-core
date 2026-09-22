@@ -191,6 +191,7 @@ TRANSACTION_TYPE_LABELS = {
     "quality_inbound": "质检入库",
     "manual_inbound": "手工入库",
     "manual_outbound": "手工出库",
+    "inventory_exception_outbound": "库存异常出库",
     "stock_take_adjustment": "盘点调整",
 }
 

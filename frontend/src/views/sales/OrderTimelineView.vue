@@ -29,12 +29,12 @@
             <span>付款: {{ order.payment_type_label || '-' }}</span>
             <span>金额: ¥{{ formatNumber(order.total_amount) }}</span>
             <span v-if="order.expected_delivery_date">期望发货: {{ order.expected_delivery_date }}</span>
-            <span>创建: {{ formatDateTime(order.created_at) }}</span>
+            <span>提交: {{ formatDateTime(order.submitted_at || order.created_at) }}</span>
           </div>
         </div>
 
         <!-- 泳道图 -->
-        <PageSection title="全链时间轴泳道图" :description="swimlaneDesc">
+        <PageSection title="订单生命周期甘特图" :description="swimlaneDesc">
           <div class="swimlane">
             <!-- 时间轴表头 -->
             <div class="lane lane-head">
@@ -60,18 +60,17 @@
                 <span v-if="lane.blocked_reason" class="lane-blocked" :title="lane.blocked_reason">⚠</span>
               </div>
               <div class="lane-track">
-                <template v-for="ev in lane.events" :key="ev.id">
-                  <div class="ev" :style="{ left: xPct(ev.created_at) + '%' }" :title="evTitle(ev)">
-                    <div class="ev-dot" :class="{ 'is-last': isLastEvent(lane, ev) }"></div>
-                    <div v-if="isFirstEvent(lane, ev) || isLastEvent(lane, ev)" class="ev-name" :class="{ 'is-last': isLastEvent(lane, ev) }">
-                      {{ ev.to_stage_label }}
-                    </div>
-                  </div>
-                </template>
-                <div v-if="!lane.events.length && lane.current_stage && !lane.not_required" class="ev ev-ghost" style="left: 94%">
-                  <div class="ev-dot is-ghost"></div>
-                  <div class="ev-name">{{ lane.current_stage_label }}</div>
+                <div
+                  v-for="segment in ganttSegments(lane)"
+                  :key="segment.id"
+                  class="gantt-bar"
+                  :class="{ 'is-current': segment.isCurrent }"
+                  :style="{ left: segment.left + '%', width: segment.width + '%' }"
+                  :title="evTitle(segment.event)"
+                >
+                  <span>{{ segment.label }}</span>
                 </div>
+                <div v-if="!lane.events.length && lane.current_stage && !lane.not_required" class="lane-current">{{ lane.current_stage_label }}</div>
                 <div v-if="!lane.events.length && !lane.current_stage" class="lane-empty">暂无记录</div>
               </div>
             </div>
@@ -79,8 +78,11 @@
         </PageSection>
 
         <!-- 关联单据 -->
-        <PageSection title="全链关联单据" :description="`上下游单据共 ${relations.length} 张(点击可跳转)`">
-          <div v-if="relations.length" class="rel-grid">
+        <PageSection title="下游流程分支" :description="`采购、生产、质检、入库等关联单据共 ${relations.length} 张`">
+          <template #actions>
+            <el-button size="small" @click="showBranchDetails = !showBranchDetails">{{ showBranchDetails ? '收起流程节点' : '展开流程节点' }}</el-button>
+          </template>
+          <div v-if="showBranchDetails && relations.length" class="rel-grid">
             <div
               v-for="(doc, i) in relations"
               :key="doc.document_type + '_' + doc.document_id + '_' + i"
@@ -103,7 +105,8 @@
               </div>
             </div>
           </div>
-          <el-empty v-else description="暂无关联单据" :image-size="60" />
+          <el-empty v-else-if="showBranchDetails" description="暂无关联单据" :image-size="60" />
+          <div v-else class="branch-tip">销售提交后，财务审批与置货并行；发生缺货时会从这里展开采购或生产分支。点击“展开流程节点”查看和跳转关联单据。</div>
         </PageSection>
 
         <!-- 状态事件明细 -->
@@ -177,6 +180,7 @@ const timeline = ref(null)
 
 const order = computed(() => timeline.value?.order || {})
 const relations = computed(() => timeline.value?.relations || [])
+const showBranchDetails = ref(false)
 
 // ===== 泳道 =====
 const LANE_COLORS = {
@@ -308,13 +312,26 @@ function lanePillClass(lane) {
   return 'is-active'
 }
 
-// ===== 事件 =====
-function isFirstEvent(lane, ev) {
-  return lane.events.length > 0 && lane.events[0].id === ev.id
+// ===== 甘特任务段 =====
+// 每一段代表一个状态开始后，到下一次状态切换前的处理窗口。末段只显示最小可读宽度，
+// 不把“现在”扩展进时间轴，避免历史节点随着时间流逝挤成一条线。
+function ganttSegments(lane) {
+  const events = lane.events || []
+  return events.map((event, index) => {
+    const left = xPct(event.created_at)
+    const next = events[index + 1]
+    const nextLeft = next ? xPct(next.created_at) : left + 10
+    return {
+      id: event.id,
+      event,
+      label: event.to_stage_label || '已处理',
+      left,
+      width: Math.min(96 - left, Math.max(7, nextLeft - left)),
+      isCurrent: !next && lane.key === activeLane.value
+    }
+  })
 }
-function isLastEvent(lane, ev) {
-  return lane.events.length > 0 && lane.events[lane.events.length - 1].id === ev.id
-}
+
 function evTitle(ev) {
   const lines = [formatDateTime(ev.created_at), `${ev.from_stage_label} → ${ev.to_stage_label}`]
   if (ev.operator_name) lines.push(`操作人: ${ev.operator_name}`)
@@ -413,6 +430,9 @@ onMounted(load)
 
 .lane-track { position: relative; min-height: 54px; background: repeating-linear-gradient(90deg, #eef1f5 0, #eef1f5 1px, transparent 1px, transparent 20%); }
 .lane-head .lane-track { min-height: 40px; }
+.gantt-bar { position: absolute; top: 16px; min-width: 38px; height: 22px; padding: 0 8px; border-radius: 5px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #fff; font-size: 11px; font-weight: 700; background: var(--lane-color, #909399); box-shadow: 0 2px 5px color-mix(in srgb, var(--lane-color, #909399) 28%, transparent); cursor: help; }
+.gantt-bar.is-current { outline: 2px solid color-mix(in srgb, var(--lane-color, #909399) 40%, white); outline-offset: 2px; }
+.lane-current { position: absolute; left: 45%; top: 18px; color: #909399; font-size: 12px; }
 .tick-label { position: absolute; top: 4px; transform: translateX(-50%); font-size: 10px; color: #a8b2bd; white-space: nowrap; }
 .lane-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; color: #c0c4cc; }
 
@@ -441,6 +461,7 @@ onMounted(load)
 .rel-type { font-size: 12px; font-weight: 700; color: var(--lane-color, #185f93); }
 .rel-no { font-size: 14px; font-weight: 700; color: #1f2f3d; margin-bottom: 6px; }
 .rel-meta { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #7a8a99; }
+.branch-tip { padding: 10px 12px; border-radius: 8px; background: #f4f8fc; color: #607080; font-size: 13px; }
 .rel-fulfillment_demand { --lane-color: #ff7c4d; }
 .rel-production_task { --lane-color: #7c4dff; }
 .rel-purchase_order { --lane-color: #E6A23C; }

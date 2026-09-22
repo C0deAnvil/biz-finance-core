@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from models import (
     CashFlowRecord,
+    FinancialAccount,
     Inventory,
     InventoryBatch,
     InventoryTransaction,
@@ -794,13 +795,30 @@ def create_cash_flow(
     amount: Decimal,
     happened_at: datetime,
     remark: str | None = None,
+    company_account_id: int | None = None,
 ):
+    # 历史流水允许未关联账户；所有新流水必须落到企业账户。未显式传入时，
+    # 仅可在系统恰好维护一个启用企业账户时自动使用该账户，避免多账户错记。
+    if company_account_id is None:
+        accounts = db.execute(
+            select(FinancialAccount.id).where(
+                FinancialAccount.owner_type == "company",
+                FinancialAccount.is_active.is_(True),
+            ).order_by(FinancialAccount.id)
+        ).scalars().all()
+        if len(accounts) != 1:
+            raise HTTPException(status_code=409, detail="新资金流水必须关联企业账户；请在业务单据中选择账户")
+        company_account_id = accounts[0]
+    account = db.get(FinancialAccount, company_account_id)
+    if account is None or account.owner_type != "company" or not account.is_active:
+        raise HTTPException(status_code=409, detail="资金流水必须关联启用的企业账户")
     record = CashFlowRecord(
         record_no=next_business_no(db, 'ZJ'),
         flow_type=flow_type,
         business_type=business_type,
         business_id=business_id,
         related_no=related_no,
+        company_account_id=company_account_id,
         amount=amount,
         happened_at=happened_at,
         remark=remark,

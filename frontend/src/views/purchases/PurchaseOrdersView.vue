@@ -67,6 +67,9 @@
         <el-table-column prop="source_type" label="来源" width="140">
           <template #default="scope">{{ demandSourceLabel(scope.row) }}</template>
         </el-table-column>
+        <el-table-column prop="submitted_by_name" label="提交人" width="110">
+          <template #default="scope">{{ scope.row.submitted_by_name || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="sales_order_no" label="来源单号" width="160">
           <template #default="scope">{{ scope.row.sales_order_no || scope.row.production_task_no || '-' }}</template>
         </el-table-column>

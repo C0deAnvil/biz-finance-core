@@ -756,6 +756,50 @@ class InventoryOperationRequest(TimestampMixin, Base):
     handled_by = relationship("User", foreign_keys=[handled_by_id])
 
 
+class InventoryExceptionRecord(TimestampMixin, Base):
+    """置货现场的成品/包装报损及包装追加，审批后才正式扣减库存。"""
+    __tablename__ = "inventory_exception_records"
+
+    id = Column(Integer, primary_key=True)
+    exception_no = Column(String(60), nullable=False, unique=True)
+    exception_type = Column(String(40), nullable=False)  # product_damage / packaging_damage / extra_packaging / packaging_adjustment
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True)
+    status = Column(String(30), nullable=False, default="pending_approval")
+    remark = Column(Text, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approval_note = Column(Text, nullable=True)
+    rejected_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rejected_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+
+    warehouse = relationship("Warehouse")
+    sales_order = relationship("SalesOrder")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+    rejected_by = relationship("User", foreign_keys=[rejected_by_id])
+    items = relationship("InventoryExceptionItem", cascade="all, delete-orphan")
+
+
+class InventoryExceptionItem(TimestampMixin, Base):
+    __tablename__ = "inventory_exception_items"
+
+    id = Column(Integer, primary_key=True)
+    exception_id = Column(Integer, ForeignKey("inventory_exception_records.id"), nullable=False, index=True)
+    item_type = Column(String(20), nullable=False)  # product / packaging
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
+    sales_order_item_id = Column(Integer, ForeignKey("sales_order_items.id"), nullable=True)
+    quantity = Column(Numeric(18, 4), nullable=False)
+
+    exception = relationship("InventoryExceptionRecord")
+    product = relationship("Product")
+    packaging_config = relationship("PackagingConfig")
+    sales_order_item = relationship("SalesOrderItem")
+
+
 # ===== 销售 =====
 # ===== 销售单据类型配置(颜色便于修改,后续下游单据同色传播) =====
 ORDER_TYPE_STYLES = {
@@ -1548,9 +1592,12 @@ class CashFlowRecord(TimestampMixin, Base):
     business_type = Column(String(50), nullable=False)
     business_id = Column(Integer, nullable=False)
     related_no = Column(String(60), nullable=True)
+    # 旧流水允许为空；新流水由服务层在落库时必须绑定企业账户。
+    company_account_id = Column(Integer, ForeignKey("financial_accounts.id"), nullable=True, index=True)
     amount = Column(Numeric(18, 2), nullable=False)
     happened_at = Column(DateTime, nullable=False)
     remark = Column(String(255), nullable=True)
+    company_account = relationship("FinancialAccount", foreign_keys=[company_account_id])
 
 
 class LogisticsRecord(TimestampMixin, Base):

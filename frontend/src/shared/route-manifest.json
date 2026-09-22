@@ -518,6 +518,30 @@
     ]
   },
   {
+    "path": "/inventory/exceptions",
+    "name": "inventory-exceptions",
+    "title": "库存异常",
+    "group": "库存管理",
+    "menu_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "preload_roles": [
+      "inventory",
+      "manager",
+      "chairman",
+      "system_admin"
+    ],
+    "warmers": [
+      {
+        "url": "/api/inventory/exceptions?status=pending_approval",
+        "ttl_ms": 45000
+      }
+    ]
+  },
+  {
     "path": "/inventory/stocks",
     "name": "inventory-stocks",
     "title": "库存状态",
@@ -1006,25 +1030,9 @@
     "name": "finance-quality-costs",
     "title": "质量成本台账",
     "group": "财务管理",
-    "menu_roles": [
-      "finance",
-      "manager",
-      "chairman",
-      "system_admin"
-    ],
-    "preload_roles": [
-      "finance",
-      "manager",
-      "chairman",
-      "system_admin",
-      "finance_super"
-    ],
-    "warmers": [
-      {
-        "url": "/api/finance/quality-costs",
-        "ttl_ms": 45000
-      }
-    ]
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
   },
   {
     "path": "/finance/reimbursements",
@@ -1084,40 +1092,9 @@
     "name": "finance-reports",
     "title": "财务报表",
     "group": "财务管理",
-    "menu_roles": [
-      "manager",
-      "chairman",
-      "system_admin"
-    ],
-    "preload_roles": [
-      "finance",
-      "manager",
-      "chairman",
-      "system_admin",
-      "finance_super"
-    ],
-    "warmers": [
-      {
-        "url": "/api/finance/reports/summary",
-        "ttl_ms": 45000
-      },
-      {
-        "url": "/api/finance/receivables",
-        "ttl_ms": 45000
-      },
-      {
-        "url": "/api/finance/payables",
-        "ttl_ms": 45000
-      },
-      {
-        "url": "/api/finance/cash-flows",
-        "ttl_ms": 45000
-      },
-      {
-        "url": "/api/finance/quality-costs",
-        "ttl_ms": 45000
-      }
-    ]
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
   },
   {
     "path": "/admin/org-units",

@@ -24,6 +24,7 @@ const loaderMap = {
   '/supplier-ai': () => import('../views/analytics/SupplierAIView.vue'),
   '/sales/logistics': () => import('../views/logistics/LogisticsView.vue'),
   '/inventory/queues': () => import('../views/inventory/InventoryQueuesView.vue'),
+  '/inventory/exceptions': () => import('../views/inventory/InventoryExceptionsView.vue'),
   '/inventory/transfers': () => import('../views/inventory/StockTransfersView.vue'),
   '/inventory/stocks': () => import('../views/inventory/InventoryStocksView.vue'),
   '/inventory/stock-takes': () => import('../views/inventory/StockTakeView.vue'),

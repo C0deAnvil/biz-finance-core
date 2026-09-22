@@ -60,7 +60,7 @@ from services.sales_service import route_sales_order_to_inventory_shipment
 from schemas.purchases import PurchasePaymentApprovalRequest
 from services.display import format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
 from services.time_utils import now_local
-from services.financial_accounts import validate_settlement_accounts, settlement_account_fields, requested_account_id
+from services.financial_accounts import account_label, validate_settlement_accounts, settlement_account_fields, requested_account_id
 from services.request_trace import trace_stage
 from services.workflow import purchase_arrival_status
 from services.workflow_repair import repair_sales_receipt_workflows
@@ -444,6 +444,7 @@ def _finish_sales_receipt_finance_register(
         amount=amount,
         happened_at=receipt_at,
         remark=remark or request.remark or f"销售收款确认 {request.request_no}",
+        company_account_id=accounts["company_account_id"],
     )
 
     received_after = already_received + amount
@@ -1278,6 +1279,7 @@ def direct_register_receivables(
             amount=amount,
             happened_at=now,
             remark=payload.remark or "应收管理直接登记回款",
+            company_account_id=payload.company_account_id,
         )
         received_after = received_before + amount
         payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
@@ -1423,7 +1425,7 @@ def list_cash_flows(
     current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)),
     db: Session = Depends(get_db),
 ):
-    query = select(CashFlowRecord).order_by(CashFlowRecord.happened_at.desc())
+    query = select(CashFlowRecord).options(joinedload(CashFlowRecord.company_account)).order_by(CashFlowRecord.happened_at.desc())
     if date_from is not None:
         query = query.where(CashFlowRecord.happened_at >= datetime.combine(date_from, datetime.min.time()))
     if date_to is not None:
@@ -1438,6 +1440,8 @@ def list_cash_flows(
                 "business_type": row.business_type,
                 "business_id": row.business_id,
                 "related_no": row.related_no,
+                "company_account_id": row.company_account_id,
+                "company_account_label": account_label(row.company_account),
                 "amount": float(row.amount),
                 "happened_at": row.happened_at.isoformat(),
                 "remark": row.remark,

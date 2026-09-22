@@ -104,7 +104,7 @@
       />
     </PageSection>
 
-    <PageSection v-if="showQualityCosts" title="质量成本提醒" description="财务、经理、董事长首页直接查看最近质量异常成本。">
+    <PageSection v-if="false && showQualityCosts" title="质量成本提醒" description="财务、经理、董事长首页直接查看最近质量异常成本。">
       <el-table :data="dashboard.quality_costs" stripe>
         <el-table-column prop="quality_no" label="质检单号" width="150" />
         <el-table-column prop="task_no" label="生产单号" width="150" />
@@ -195,7 +195,6 @@ const WORKBENCH_BY_ROLE = {
     { path: '/finance/receivables', icon: '💳', label: '应收管理', desc: '回款跟踪与核销', color: '#b88230' },
     { path: '/finance/payables', icon: '🧾', label: '应付管理', desc: '付款申请与审批', color: '#e6a23c' },
     { path: '/finance/cash-flows', icon: '🏦', label: '现金流', desc: '收支流水与余额', color: '#67c23a' },
-    { path: '/finance/reports', icon: '📈', label: '财务报表', desc: '利润/成本分析', color: '#409eff' },
     { path: '/approvals', icon: '✅', label: '审批中心', desc: '待审批单据处理', color: '#f56c6c' },
   ],
   inventory: [
@@ -203,6 +202,7 @@ const WORKBENCH_BY_ROLE = {
     { path: '/inventory/stocks', icon: '🏭', label: '库存查询', desc: '库存余量与预警', color: '#67c23a' },
     { path: '/inventory/transfers', icon: '🔁', label: '移库管理', desc: '仓库间转移与质检', color: '#e6a23c' },
     { path: '/inventory/stock-takes', icon: '🔍', label: '库存盘点', desc: '盘点任务与差异', color: '#f56c6c' },
+    { path: '/inventory/exceptions', icon: '⚠️', label: '库存异常', desc: '报损、包装异常与审批出库', color: '#e6a23c' },
   ],
   production: [
     { path: '/production/tasks', icon: '🏗️', label: '生产任务', desc: '转任务/领料/完工', color: '#f56c6c' },
@@ -223,7 +223,6 @@ const WORKBENCH_BY_ROLE = {
     { path: '/flow-board', icon: '📊', label: '订单全链看板', desc: '全流程状态总览', color: '#409eff' },
     { path: '/approvals', icon: '✅', label: '审批中心', desc: '待审批单据处理', color: '#f56c6c' },
     { path: '/analytics', icon: '📈', label: '统计分析', desc: '经营指标分析', color: '#67c23a' },
-    { path: '/finance/reports', icon: '📑', label: '财务报表', desc: '利润/成本分析', color: '#b88230' },
   ],
   chairman: [
     { path: '/flow-board', icon: '📊', label: '订单全链看板', desc: '全流程状态总览', color: '#409eff' },

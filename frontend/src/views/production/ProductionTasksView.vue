@@ -77,6 +77,9 @@
         <el-table-column prop="source_type" label="来源" width="130">
           <template #default="scope">{{ scope.row.source_type === 'low_stock_replenishment' ? '安全库存补货' : '客户订单缺货' }}</template>
         </el-table-column>
+        <el-table-column prop="submitted_by_name" label="提交人" width="110">
+          <template #default="scope">{{ scope.row.submitted_by_name || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="sales_order_no" label="客户订单号" width="160">
           <template #default="scope">{{ scope.row.sales_order_no || '-' }}</template>
         </el-table-column>

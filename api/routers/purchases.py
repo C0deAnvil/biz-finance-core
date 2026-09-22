@@ -665,7 +665,7 @@ def list_purchase_fulfillment_demands(
     db.commit()
     query = (
         select(FulfillmentDemand)
-        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
+        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order), joinedload(FulfillmentDemand.created_by))
         .where(
             FulfillmentDemand.fulfillment_mode == "trade",
             FulfillmentDemand.status != "cancelled",
@@ -717,6 +717,7 @@ def list_purchase_fulfillment_demands(
         .options(
             joinedload(ProductionMaterialUsage.material),
             joinedload(ProductionMaterialUsage.production_task).joinedload(ProductionTask.product),
+            joinedload(ProductionMaterialUsage.production_task).joinedload(ProductionTask.created_by),
         )
         .where(TodoItem.business_type == "raw_material_replenishment", TodoItem.status != "completed")
         .order_by(TodoItem.created_at.desc(), TodoItem.id.desc())
@@ -832,6 +833,7 @@ def list_purchase_fulfillment_demands(
                 "related_no": None,
                 "related_status_label": None,
                 "assigned_user_id": todo.assigned_user_id,
+                "submitted_by_name": task.created_by.full_name if task and task.created_by else None,
                 "process_note": todo.description,
                 "cancel_reason": None,
                 "created_at": todo.created_at.isoformat() if todo.created_at else None,
@@ -977,6 +979,7 @@ def list_purchase_fulfillment_demands(
                 "related_no": resolve_demand_progress(db, row)["related_no"],
                 "related_status_label": resolve_demand_progress(db, row)["related_status_label"],
                 "assigned_user_id": row.assigned_user_id,
+                "submitted_by_name": row.created_by.full_name if row.created_by else None,
                 "process_note": row.process_note,
                 "cancel_reason": row.cancel_reason,
                 "created_at": row.created_at.isoformat() if row.created_at else None,

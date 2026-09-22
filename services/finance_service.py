@@ -90,6 +90,7 @@ def create_receivable_record(payload: ReceivableRecordCreate, current_user: User
 
     record = ReceivableRecord(
         sales_order_id=payload.sales_order_id,
+        company_account_id=order.receipt_account_id,
         receivable_plan_id=payload.receivable_plan_id,
         amount=payload.amount,
         received_at=payload.received_at,
@@ -117,6 +118,7 @@ def create_receivable_record(payload: ReceivableRecordCreate, current_user: User
         amount=payload.amount,
         happened_at=payload.received_at,
         remark=payload.remark,
+        company_account_id=order.receipt_account_id,
     )
 
     received_after = already_received + Decimal(payload.amount or 0)

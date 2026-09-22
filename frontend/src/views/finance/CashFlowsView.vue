@@ -51,6 +51,9 @@
           </template>
         </el-table-column>
         <el-table-column prop="business_type" label="业务类型" width="150" />
+        <el-table-column label="企业账户" min-width="230">
+          <template #default="scope">{{ scope.row.company_account_label || '历史流水未关联账户' }}</template>
+        </el-table-column>
         <el-table-column prop="related_no" label="关联单号" min-width="180" />
         <el-table-column prop="amount" label="金额" width="120">
           <template #default="scope">{{ formatNumber(scope.row.amount) }}</template>
@@ -146,7 +149,7 @@ const filteredRows = computed(() => {
     if (filters.flowType && item.flow_type !== filters.flowType) return false
     if (filters.businessType && item.business_type !== filters.businessType) return false
     if (!keyword) return true
-    return [item.record_no, item.related_no, item.business_type, item.remark]
+    return [item.record_no, item.related_no, item.business_type, item.company_account_label, item.remark]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(keyword))
   })

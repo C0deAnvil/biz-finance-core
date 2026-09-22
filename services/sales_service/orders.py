@@ -450,7 +450,7 @@ def _record_approval_payment_and_receivable(
         create_cash_flow(
             db, flow_type="incoming", business_type="sales_order", business_id=order.id,
             related_no=order.order_no, amount=received_amount, happened_at=now_local(),
-            remark="财务审批确认收款",
+            remark="财务审批确认收款", company_account_id=order.receipt_account_id,
         )
     receivable_amount = _approval_receivable_amount(order, convert_to_receivable=convert_to_receivable)
     if receivable_amount > 0:

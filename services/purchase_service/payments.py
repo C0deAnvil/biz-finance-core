@@ -444,6 +444,7 @@ def register_merged_purchase_payment(payload, current_user: User, db: Session):
             amount=requested_amount,
             happened_at=now,
             remark=payload.remark or f"采购合并付款 {merge_no}",
+            company_account_id=accounts["company_account_id"],
         )
         create_notification(
             db,
@@ -671,6 +672,7 @@ def register_purchase_payment_request(request_id: int, payload: PurchasePaymentA
         amount=actual_amount,
         happened_at=getattr(payload, "paid_at", None) or now,
         remark=request.payment_detail_remark or f"采购付款申请 {request.request_no}",
+        company_account_id=accounts["company_account_id"],
     )
     create_notification(
         db,
@@ -804,6 +806,7 @@ def register_purchase_payment_requests_batch(
             amount=actual_amount,
             happened_at=getattr(payload, "paid_at", None) or now,
             remark=payload.remark or request.payment_detail_remark or f"采购付款申请 {request.request_no}",
+            company_account_id=accounts["company_account_id"],
         )
         create_notification(
             db,

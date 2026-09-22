@@ -67,3 +67,23 @@ class StockTransferCreateRequest(BaseModel):
 class TransferQualityRequest(BaseModel):
     result: str = Field(..., pattern="^(passed|failed)$")
     reject_reason: str | None = Field(default=None, max_length=500)
+
+
+class InventoryExceptionItemInput(BaseModel):
+    item_type: str = Field(..., pattern="^(product|packaging)$")
+    product_id: int | None = None
+    packaging_config_id: int | None = None
+    sales_order_item_id: int | None = None
+    quantity: Decimal = Field(..., gt=0)
+
+
+class InventoryExceptionCreate(BaseModel):
+    exception_type: str = Field(..., pattern="^(product_damage|packaging_damage|extra_packaging|packaging_adjustment)$")
+    warehouse_id: int
+    sales_order_id: int | None = None
+    remark: str = Field(..., min_length=2, max_length=2000)
+    items: list[InventoryExceptionItemInput] = Field(..., min_length=1)
+
+
+class InventoryExceptionDecision(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
