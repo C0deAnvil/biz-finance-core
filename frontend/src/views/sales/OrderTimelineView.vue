@@ -21,7 +21,7 @@
             </el-tag>
             <el-tag size="small" :type="statusType(order.status)" class="ml-8">{{ order.status_label }}</el-tag>
             <span v-if="orderCompleted()" class="overall-stage is-closed">订单已完成 · 全链闭环</span>
-            <span v-else-if="timeline.overall_stage_label" class="overall-stage">{{ timeline.overall_stage_label }}</span>
+            <span v-else-if="timeline?.overall_stage_label" class="overall-stage">{{ timeline.overall_stage_label }}</span>
           </div>
           <div class="head-meta">
             <span>客户: <b>{{ order.customer_name || '-' }}</b></span>
@@ -33,56 +33,57 @@
           </div>
         </div>
 
-        <!-- 泳道图 -->
+        <!-- 每行对应真实业务任务，子任务按关联单据展开 -->
         <PageSection title="订单生命周期甘特图" :description="swimlaneDesc">
           <div class="swimlane">
-            <!-- 时间轴表头 -->
             <div class="lane lane-head">
-              <div class="lane-label">泳道 / 时间</div>
+              <div class="lane-label">任务 / 时间</div>
               <div class="lane-track">
-                <div v-for="tick in ticks" :key="tick.label" class="tick-label" :style="{ left: tick.pct + '%' }">
+                <div v-for="tick in ticks" :key="tick.pct" class="tick-label" :style="{ left: tick.pct + '%' }">
                   {{ tick.label }}
                 </div>
               </div>
             </div>
-
-            <!-- 各泳道 -->
             <div
-              v-for="(lane, i) in timeline.lanes"
-              :key="lane.key"
+              v-for="task in visibleTasks"
+              :key="task.key"
               class="lane"
-              :class="[`lane-${lane.key}`, { 'is-active': lane.key === activeLane }]"
+              :class="`lane-${task.lane}`"
             >
-              <div class="lane-label">
-                <span class="lane-idx">{{ i + 1 }}</span>
-                <span class="lane-name">{{ lane.label }}</span>
-                <span class="lane-status" :class="lanePillClass(lane)">{{ lanePillText(lane) }}</span>
-                <span v-if="lane.blocked_reason" class="lane-blocked" :title="lane.blocked_reason">⚠</span>
+              <div class="lane-label task-label" :style="{ paddingLeft: `${12 + task.depth * 18}px` }">
+                <button v-if="task.children.length" class="tree-toggle" :aria-label="expandedTasks[task.key] ? '收起子任务' : '展开子任务'" @click="toggleTask(task.key)">
+                  {{ expandedTasks[task.key] ? '▾' : '▸' }}
+                </button>
+                <span v-else class="tree-spacer"></span>
+                <span class="lane-name" :title="task.document_no || task.label">{{ task.label }}</span>
+                <span class="lane-status" :class="task.status === 'completed' ? 'is-done' : 'is-active'">{{ task.milestone ? '节点' : task.status === 'completed' ? '完成' : '进行中' }}</span>
               </div>
               <div class="lane-track">
                 <div
-                  v-for="segment in ganttSegments(lane)"
-                  :key="segment.id"
-                  class="gantt-bar"
-                  :class="{ 'is-current': segment.isCurrent }"
-                  :style="{ left: segment.left + '%', width: segment.width + '%' }"
-                  :title="evTitle(segment.event)"
+                  v-if="task.milestone || !task.end_at"
+                  class="task-point"
+                  :class="{ 'is-open': !task.milestone }"
+                  :style="{ left: xPct(task.start_at) + '%' }"
+                  :title="taskTitle(task)"
+                ></div>
+                <div
+                  v-if="!task.milestone && task.end_at"
+                  class="gantt-bar task-bar"
+                  :style="taskBarStyle(task)"
+                  :title="taskTitle(task)"
                 >
-                  <span>{{ segment.label }}</span>
+                  <span>{{ task.label }}</span>
                 </div>
-                <div v-if="!lane.events.length && lane.current_stage && !lane.not_required" class="lane-current">{{ lane.current_stage_label }}</div>
-                <div v-if="!lane.events.length && !lane.current_stage" class="lane-empty">暂无记录</div>
+                <span v-if="!task.end_at && !task.milestone" class="task-open-label" :style="{ left: Math.min(83, xPct(task.start_at) + 2) + '%' }">待完成</span>
               </div>
             </div>
+            <el-empty v-if="!visibleTasks.length" description="销售单提交后才开始生命周期" :image-size="60" />
           </div>
         </PageSection>
 
         <!-- 关联单据 -->
-        <PageSection title="下游流程分支" :description="`采购、生产、质检、入库等关联单据共 ${relations.length} 张`">
-          <template #actions>
-            <el-button size="small" @click="showBranchDetails = !showBranchDetails">{{ showBranchDetails ? '收起流程节点' : '展开流程节点' }}</el-button>
-          </template>
-          <div v-if="showBranchDetails && relations.length" class="rel-grid">
+        <PageSection title="关联单据" :description="`采购、生产、质检、入库等关联单据共 ${relations.length} 张`">
+          <div v-if="relations.length" class="rel-grid">
             <div
               v-for="(doc, i) in relations"
               :key="doc.document_type + '_' + doc.document_id + '_' + i"
@@ -105,8 +106,7 @@
               </div>
             </div>
           </div>
-          <el-empty v-else-if="showBranchDetails" description="暂无关联单据" :image-size="60" />
-          <div v-else class="branch-tip">销售提交后，财务审批与置货并行；发生缺货时会从这里展开采购或生产分支。点击“展开流程节点”查看和跳转关联单据。</div>
+          <el-empty v-else description="暂无关联单据" :image-size="60" />
         </PageSection>
 
         <!-- 状态事件明细 -->
@@ -180,7 +180,21 @@ const timeline = ref(null)
 
 const order = computed(() => timeline.value?.order || {})
 const relations = computed(() => timeline.value?.relations || [])
-const showBranchDetails = ref(false)
+const expandedTasks = ref({})
+const visibleTasks = computed(() => {
+  const result = []
+  const visit = (tasks, depth) => {
+    for (const task of tasks || []) {
+      result.push({ ...task, depth })
+      if (expandedTasks.value[task.key]) visit(task.children, depth + 1)
+    }
+  }
+  visit(timeline.value?.tasks || [], 0)
+  return result
+})
+function toggleTask(key) {
+  expandedTasks.value = { ...expandedTasks.value, [key]: !expandedTasks.value[key] }
+}
 
 // ===== 泳道 =====
 const LANE_COLORS = {
@@ -192,18 +206,6 @@ const LANE_COLORS = {
   quality: '#00b4a0',
   inbound: '#3db389',
   shipment: '#1c7ce0'
-}
-
-// 各泳道"已完成"的终极状态
-const LANE_DONE = {
-  approval: new Set(['approved', 'not_required', 'completed']),
-  finance: new Set(['paid', 'settled', 'cleared', 'recognized', 'not_required', 'completed']),
-  placement: new Set(['placed', 'completed', 'not_required']),
-  procurement: new Set(['fully_received', 'completed', 'not_required']),
-  production: new Set(['completed', 'reworked', 'not_required']),
-  quality: new Set(['passed', 'completed', 'not_required']),
-  inbound: new Set(['inbound_completed', 'completed', 'not_required']),
-  shipment: new Set(['shipped', 'completed', 'not_required'])
 }
 
 // 订单整体已完成时,所有泳道按已完成展示(兼容历史快照残留的中间状态)
@@ -230,13 +232,37 @@ function laneColorOf(key) {
 // 横轴只围绕真实的状态流转节点计算，不能把“现在”作为终点；否则历史订单的节点会被压成一条线。
 const eventTimes = computed(() => {
   const times = []
-  for (const lane of timeline.value?.lanes || []) {
-    for (const event of lane.events || []) {
-      const timestamp = new Date(event.created_at).getTime()
-      if (Number.isFinite(timestamp)) times.push(timestamp)
+  const visit = (tasks) => {
+    for (const task of tasks || []) {
+      for (const value of [task.start_at, task.end_at]) {
+        if (!value) continue
+        const timestamp = new Date(value).getTime()
+        if (Number.isFinite(timestamp)) times.push(timestamp)
+      }
+      visit(task.children)
     }
   }
+  visit(timeline.value?.tasks)
   return times
+})
+
+// 长期无人操作的空档压缩成短间隔；节点仍按真实时间排序，悬停展示原始时间。
+const compactAxis = computed(() => {
+  const times = [...new Set(eventTimes.value)].sort((a, b) => a - b)
+  if (times.length < 2) return null
+  const gaps = times.slice(1).map((time, i) => time - times[i])
+  const sortedGaps = [...gaps].sort((a, b) => a - b)
+  const typicalGap = sortedGaps[Math.floor((sortedGaps.length - 1) / 2)]
+  const cap = Math.max(30 * 60 * 1000, typicalGap * 4)
+  const weights = gaps.map((gap) => Math.min(gap, cap))
+  const total = weights.reduce((sum, weight) => sum + weight, 0) || 1
+  const positions = [5]
+  let elapsed = 0
+  for (const weight of weights) {
+    elapsed += weight
+    positions.push(5 + 90 * elapsed / total)
+  }
+  return { times, positions, compressed: gaps.some((gap) => gap > cap) }
 })
 
 const timeRange = computed(() => {
@@ -265,12 +291,32 @@ function xPct(timeStr) {
   if (!timeStr) return 2
   const t = new Date(timeStr).getTime()
   if (!Number.isFinite(t)) return 2
+  const axis = compactAxis.value
+  if (axis) {
+    if (t <= axis.times[0]) return axis.positions[0]
+    if (t >= axis.times[axis.times.length - 1]) return axis.positions[axis.positions.length - 1]
+    const index = axis.times.findIndex((time) => time >= t)
+    const before = index - 1
+    const ratio = (t - axis.times[before]) / (axis.times[index] - axis.times[before])
+    return axis.positions[before] + ratio * (axis.positions[index] - axis.positions[before])
+  }
   const span = Math.max(endMs.value - startMs.value, 1)
   const pct = ((t - startMs.value) / span) * 100
   return Math.min(98, Math.max(2, pct))
 }
 
 const ticks = computed(() => {
+  const axis = compactAxis.value
+  if (axis) {
+    const indices = [...new Set([5, 23, 41, 59, 77, 95].map((target) => {
+      let closest = 0
+      for (let i = 1; i < axis.positions.length; i++) {
+        if (Math.abs(axis.positions[i] - target) < Math.abs(axis.positions[closest] - target)) closest = i
+      }
+      return closest
+    }))]
+    return indices.map((index) => ({ pct: axis.positions[index], label: formatDateTime(new Date(axis.times[index])) }))
+  }
   const span = Math.max(endMs.value - startMs.value, 1)
   return [0, 0.2, 0.4, 0.6, 0.8, 1].map((f) => ({
     pct: Math.round(f * 100),
@@ -279,64 +325,24 @@ const ticks = computed(() => {
 })
 
 const swimlaneDesc = computed(() => {
-  if (!eventTimes.value.length) return '暂无状态流转节点'
+  if (!eventTimes.value.length) return '尚未提交的草稿不进入业务流程'
   const spanMs = endMs.value - startMs.value
   if (spanMs <= 0) return ''
   const days = spanMs / 86400000
   const spanText = days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(1, Math.round(spanMs / 60000))} 分钟`
-  return `按 ${eventTimes.value.length} 个实际状态节点的时间跨度展示（约 ${spanText}）`
+  return `每项任务从实际开始到实际结束；圆点表示单次事件或尚未完成的任务（跨度约 ${spanText}${compactAxis.value?.compressed ? '，长时间空档已压缩' : ''}）`
 })
 
-// ===== 泳道状态 =====
-const activeLane = computed(() => {
-  if (orderCompleted()) return ''
-  const lane = (timeline.value?.lanes || []).find((l) => {
-    if (!l.current_stage || l.current_stage === 'not_required') return false
-    return !(LANE_DONE[l.key] || new Set()).has(l.current_stage)
-  })
-  return lane ? lane.key : ''
-})
-
-function lanePillText(lane) {
-  if (lane.not_required) return '无需'
-  if (!lane.current_stage) return '—'
-  if (orderCompleted()) return '✓ 完成'
-  if ((LANE_DONE[lane.key] || new Set()).has(lane.current_stage)) return '✓ 完成'
-  return lane.current_stage_label || '进行中'
-}
-function lanePillClass(lane) {
-  if (lane.not_required) return 'is-na'
-  if (!lane.current_stage) return 'is-none'
-  if (orderCompleted()) return 'is-done'
-  if ((LANE_DONE[lane.key] || new Set()).has(lane.current_stage)) return 'is-done'
-  return 'is-active'
+function taskBarStyle(task) {
+  const left = xPct(task.start_at)
+  const right = xPct(task.end_at)
+  return { left: `${left}%`, width: `${Math.max(0.6, right - left)}%` }
 }
 
-// ===== 甘特任务段 =====
-// 每一段代表一个状态开始后，到下一次状态切换前的处理窗口。末段只显示最小可读宽度，
-// 不把“现在”扩展进时间轴，避免历史节点随着时间流逝挤成一条线。
-function ganttSegments(lane) {
-  const events = lane.events || []
-  return events.map((event, index) => {
-    const left = xPct(event.created_at)
-    const next = events[index + 1]
-    const nextLeft = next ? xPct(next.created_at) : left + 10
-    return {
-      id: event.id,
-      event,
-      label: event.to_stage_label || '已处理',
-      left,
-      width: Math.min(96 - left, Math.max(7, nextLeft - left)),
-      isCurrent: !next && lane.key === activeLane.value
-    }
-  })
-}
-
-function evTitle(ev) {
-  const lines = [formatDateTime(ev.created_at), `${ev.from_stage_label} → ${ev.to_stage_label}`]
-  if (ev.operator_name) lines.push(`操作人: ${ev.operator_name}`)
-  if (ev.related_document_no) lines.push(`关联单据: ${ev.related_document_no}`)
-  if (ev.reason_text) lines.push(`说明: ${ev.reason_text}`)
+function taskTitle(task) {
+  const lines = [task.label, `开始：${formatDateTime(task.start_at)}`]
+  lines.push(task.end_at ? `结束：${formatDateTime(task.end_at)}` : task.milestone ? '单次事件' : '尚未完成')
+  if (task.document_no) lines.push(`关联单据：${task.document_no}`)
   return lines.join('\n')
 }
 
@@ -379,6 +385,7 @@ async function load() {
   loading.value = true
   try {
     timeline.value = await get(`/api/sales/orders/${orderId}/timeline`)
+    expandedTasks.value = Object.fromEntries((timeline.value?.tasks || []).filter((task) => task.children?.length).map((task) => [task.key, true]))
   } catch (error) {
     timeline.value = null
   } finally {
@@ -412,10 +419,15 @@ onMounted(load)
 
 /* ===== 泳道图 ===== */
 .swimlane { border: 1px solid #e4edf6; border-radius: 12px; overflow: hidden; background: #fff; }
-.lane { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: stretch; border-bottom: 1px dashed #eff2f6; min-height: 54px; }
+.lane { display: grid; grid-template-columns: minmax(260px, 32%) minmax(0, 1fr); align-items: stretch; border-bottom: 1px dashed #eff2f6; min-height: 54px; }
 .lane:last-child { border-bottom: none; }
 .lane-head { min-height: 40px; }
 .lane-label { padding: 8px 12px; border-right: 1px solid #eff2f6; background: #fafbfc; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; position: relative; }
+.task-label { flex-direction: row; align-items: center; justify-content: flex-start; gap: 6px; min-width: 0; }
+.task-label .lane-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-label .lane-status { flex: none; margin-left: auto; }
+.tree-toggle { flex: none; width: 18px; height: 20px; border: 0; background: transparent; color: #64748b; cursor: pointer; padding: 0; font-size: 15px; }
+.tree-spacer { flex: none; width: 18px; }
 .lane-name { font-size: 13px; font-weight: 700; color: #303133; }
 .lane-idx { position: absolute; top: 4px; right: 8px; font-size: 10px; color: #c0c4cc; font-weight: 700; }
 .lane-status { font-size: 11px; padding: 1px 8px; border-radius: 10px; font-weight: 600; }
@@ -432,6 +444,10 @@ onMounted(load)
 .lane-head .lane-track { min-height: 40px; }
 .gantt-bar { position: absolute; top: 16px; min-width: 38px; height: 22px; padding: 0 8px; border-radius: 5px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #fff; font-size: 11px; font-weight: 700; background: var(--lane-color, #909399); box-shadow: 0 2px 5px color-mix(in srgb, var(--lane-color, #909399) 28%, transparent); cursor: help; }
 .gantt-bar.is-current { outline: 2px solid color-mix(in srgb, var(--lane-color, #909399) 40%, white); outline-offset: 2px; }
+.task-bar { min-width: 2px; padding: 0 5px; }
+.task-point { position: absolute; z-index: 2; top: 20px; transform: translateX(-50%); width: 14px; height: 14px; border: 3px solid var(--lane-color, #909399); border-radius: 50%; background: #fff; cursor: help; }
+.task-point.is-open { border-style: dashed; }
+.task-open-label { position: absolute; top: 17px; font-size: 11px; color: #7a8a99; white-space: nowrap; }
 .lane-current { position: absolute; left: 45%; top: 18px; color: #909399; font-size: 12px; }
 .tick-label { position: absolute; top: 4px; transform: translateX(-50%); font-size: 10px; color: #a8b2bd; white-space: nowrap; }
 .lane-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; color: #c0c4cc; }

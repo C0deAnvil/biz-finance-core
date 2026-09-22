@@ -20,6 +20,7 @@ from services.document_status import (
     sync_sales_order_process_status,
 )
 from services.time_utils import now_local
+from services.sales_order_timeline import build_sales_order_tasks
 from services.sales_service import (
     approve_order as approve_order_service,
     approve_sales_price_change as approve_sales_price_change_service,
@@ -752,7 +753,7 @@ def _related_document_no(db: Session, document_type: str | None, document_id: in
 
 @router.get("/orders/{order_id}/timeline")
 def get_order_timeline(order_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """订单全链时间轴:按泳道(审批/财务/置货/采购/生产/质检/入库/发货)输出状态演进事件序列。"""
+    """订单全链时间轴:真实业务任务树 + 状态事件明细。"""
     order = db.execute(
         select(SalesOrder)
         .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.operator_user))
@@ -776,8 +777,7 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
         for user in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all():
             user_names[user.id] = user.full_name or user.username
 
-    # 时间轴从“提交”开始，而不是草稿保存时间。没有任何流程快照的草稿不进入业务生命周期。
-    submitted_at = next((row.created_at for row in history_asc if row.created_at), None)
+    tasks, submitted_at = build_sales_order_tasks(db, order, history_asc)
     fallback_operator_name = (order.operator_user.full_name or order.operator_user.username) if order.operator_user else None
     events_by_dimension: dict[str, list[dict]] = defaultdict(list)
     for row in history_asc:
@@ -817,7 +817,14 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
         )
 
     fulfillment = snapshots.get("fulfillment")
-    timeline_end = max((row.created_at for row in history_asc if row.created_at), default=submitted_at)
+    def task_times(nodes):
+        for node in nodes:
+            yield node["start_at"]
+            if node["end_at"]:
+                yield node["end_at"]
+            yield from task_times(node["children"])
+
+    timeline_end = max(task_times(tasks), default=None)
     return api_response(
         data={
             "order": {
@@ -843,9 +850,10 @@ def get_order_timeline(order_id: int, current_user: User = Depends(get_current_u
             "overall_stage_label": status_label(fulfillment.current_stage) if fulfillment else status_label(order.status),
             "overall_blocked_reason": fulfillment.blocked_reason if fulfillment else None,
             "lanes": lanes,
+            "tasks": tasks,
             "relations": _order_related_documents(db, order.id),
             "time_start": submitted_at.isoformat() if submitted_at else None,
-            "time_end": timeline_end.isoformat() if timeline_end else None,
+            "time_end": timeline_end,
         }
     )
 
