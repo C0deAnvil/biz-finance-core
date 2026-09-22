@@ -501,9 +501,8 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
     # 改造前这里要求定金/全款必须先到账才允许审批,把两件事强行绑在一起,
     # 导致"未收款就无法审批、不审批就不能置货"的死锁。
-    # 审批通过后订单财务状态自然为"待收定金/待收货款"(由 received_amount 实时推导),
-    # 实际收款走独立的收款确认流程(submit_sales_receipt_request → 财务登记)。
-    # 若财务在审批时顺带登记了已到账金额,则如实记账(不丢数据),但不作为审批前置条件。
+    # 财务审批通过即代表本次应收款已获确认：全款单登记全款、定金单登记定金，
+    # 未到账的尾款或应收发货金额则建立应收计划。收款不再作为审批前置条件。
     actual_amount = Decimal("0")
 
     db.add(
@@ -543,13 +542,8 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         )
         actual_amount = received_amount
         # 审批确认收款或应收放行，不再创建销售收款确认协同单。
-        # 原先只要入参带了 actual_amount>0 就记一笔客户回款,而前端(销售审批页与
-        # 审批中心)都会自动预填定金/全款金额,结果财务点一次"通过"就凭空虚增一笔
-        # 回款——定金单尤其严重,审批时定金根本还没收到。
-        # 历史收款确认单仍可查询，但新订单不再走该协同流程。
-        # (submit_sales_receipt_request → 财务登记),由那里唯一负责记账。
-        # 入参里的金额仅作为审批凭证留痕(见上方 SalesOrderApproval.voucher_amount),
-        # 不产生任何账务影响,这样即便有第三方调用方仍传金额也不会造成错账。
+        # 本次实收由 _record_approval_payment_and_receivable 按收款方式统一登记，
+        # 同时将尚未收到的部分建立应收计划；调用方传入的凭证金额不参与入账计算。
 
         inventory_user_ids = _role_user_ids(db, "inventory")
         if queue.placement_status == "hidden":
