@@ -222,6 +222,51 @@ def _pending_sales_orders(current_user: User, db: Session) -> list[dict]:
     return []
 
 
+def _pending_sales_price_changes(current_user: User, db: Session) -> list[dict]:
+    """直接从订单改价状态构造待审批项，避免旧待办缺失时改价审批无入口。"""
+    if not _can_act_on_approval_type(current_user, "sales_price_change"):
+        return []
+    rows = db.execute(
+        select(SalesOrder)
+        .options(joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user))
+        .where(
+            (SalesOrder.price_approval_status == "pending") | (SalesOrder.status == "pending_price_approval")
+        )
+        .order_by(SalesOrder.updated_at.desc(), SalesOrder.id.desc())
+    ).unique().scalars().all()
+    data = []
+    for row in rows:
+        price_logs = db.execute(
+            select(SalesOrderPriceChangeLog)
+            .options(joinedload(SalesOrderPriceChangeLog.product))
+            .where(SalesOrderPriceChangeLog.sales_order_id == row.id, SalesOrderPriceChangeLog.status == "pending")
+        ).scalars().all()
+        if not price_logs:
+            continue
+        data.append(
+            _base_item(
+                approval_type="sales_price_change",
+                business_id=row.id,
+                module="sales",
+                title=f"待审批销售改价 {row.order_no}",
+                status="pending_price_approval",
+                created_at=row.updated_at or row.created_at,
+                can_approve=True,
+                can_reject=True,
+                summary={
+                    "order_no": row.order_no,
+                    "responsible_name": (row.operator_user.full_name if row.operator_user else None) or (row.sales_user.full_name if row.sales_user else None),
+                    "approval_reason": "订单销售价与标准价不一致，需审批改价",
+                    "price_change_remark": "；".join(
+                        f"{item.product.name if item.product else '-'}：标准价 {float(item.standard_price or 0)}，销售价 {float(item.actual_price or 0)}，备注：{item.remark or '-'}"
+                        for item in price_logs
+                    ),
+                },
+            )
+        )
+    return data
+
+
 def _history_sales_orders(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     if not _can_view_approval_type(current_user, "sales_order"):
         return []
@@ -1349,6 +1394,7 @@ def list_pending_approvals(current_user: User = Depends(get_current_user), db: S
     data = _dedupe_approval_rows(
         [
             *_pending_sales_orders(current_user, db),
+            *_pending_sales_price_changes(current_user, db),
             *_pending_purchase_orders(current_user, db),
             *_pending_purchase_payment_requests(current_user, db),
             *_pending_sales_receipt_requests(current_user, db),

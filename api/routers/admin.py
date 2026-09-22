@@ -25,7 +25,7 @@ from responses import api_response
 from schemas.admin import OrgUnitCreate, OrgUnitUpdate, PasswordResetRequest, UserCreate, UserModulePermissionUpdate, UserToggleRequest, UserUpdate
 from security import hash_password
 from services.display import action_label, status_label
-from services.navigation import flatten_menu_paths, manageable_route_items
+from services.navigation import build_role_menus, flatten_menu_paths, manageable_route_items
 from services.organization import build_department_tree, can_manage_user_modules, get_department_path_names, get_scoped_user_ids, is_system_admin
 
 
@@ -104,7 +104,9 @@ def _transfer_user_data(db: Session, source_user_id: int, target_user_id: int) -
 def _allowed_routes_for_user(user: User) -> set[str]:
     if not user.role:
         return set()
-    return flatten_menu_paths(user.role.navigation_json or []) - {"/dashboard", "/approvals"}
+    # 使用当前路由清单而非用户上次登录时写入的导航快照，新增可授权模块可立即出现在权限分配页。
+    role_navigation = build_role_menus().get(user.role.code, user.role.navigation_json or [])
+    return flatten_menu_paths(role_navigation) - {"/dashboard", "/approvals"}
 
 
 def _assigned_routes_for_user(db: Session, user_id: int) -> set[str]:

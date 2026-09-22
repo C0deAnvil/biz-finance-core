@@ -104,7 +104,7 @@ const activeRow = ref(null)
 const historyRows = ref([])
 const historyTitle = ref('标准价格历史')
 const editForm = reactive({ price: 0, remark: '' })
-const canEdit = computed(() => ['sales', 'manager', 'chairman', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
+const canEdit = computed(() => ['sales', 'finance', 'finance_super', 'manager', 'chairman', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
 
 const filteredRows = computed(() => {
   const value = keyword.value.trim().toLowerCase()

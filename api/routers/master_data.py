@@ -1165,7 +1165,7 @@ def get_standard_price_history(product_id: int, current_user: User = Depends(get
 def update_standard_price(
     product_id: int,
     payload: StandardPriceUpdate,
-    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     product = db.execute(select(Product).where(Product.id == product_id)).scalar_one_or_none()

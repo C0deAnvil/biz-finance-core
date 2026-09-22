@@ -479,7 +479,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
     ):
         raise HTTPException(status_code=403, detail="该客户订单已指定由其他财务人员处理")
     if order.price_approval_status == "pending":
-        raise HTTPException(status_code=409, detail="当前订单存在待审批改价，需财务审批通过后再推进")
+        raise HTTPException(status_code=409, detail="当前订单存在待审批改价，请先在审批中心完成“销售改价审批”后再推进")
 
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
     # 改造前这里要求定金/全款必须先到账才允许审批,把两件事强行绑在一起,

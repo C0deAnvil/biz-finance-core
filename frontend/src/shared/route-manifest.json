@@ -130,19 +130,19 @@
     "group": "经营分析",
     "menu_roles": [
       "purchase",
+      "finance",
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin",
-      "finance"
+      "master_data_admin"
     ],
     "preload_roles": [
       "purchase",
+      "finance",
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin",
-      "finance"
+      "master_data_admin"
     ],
     "warmers": [
       {
@@ -243,6 +243,8 @@
     "menu_roles": [
       "sales",
       "purchase",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -251,6 +253,8 @@
     "preload_roles": [
       "sales",
       "purchase",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
