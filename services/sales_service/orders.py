@@ -467,6 +467,23 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
     order = _load_order(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
+    # 兼容旧逻辑：以前“高于标准价”也会误建改价审批。发现所有待审改价均非降价时，
+    # 自动解除该错误前置并恢复到客户订单审批，避免历史订单永久卡住。
+    pending_price_logs = db.execute(
+        select(SalesOrderPriceChangeLog).where(
+            SalesOrderPriceChangeLog.sales_order_id == order.id,
+            SalesOrderPriceChangeLog.status == "pending",
+        )
+    ).scalars().all()
+    requires_price_approval = any(
+        Decimal(item.actual_price or 0) < Decimal(item.standard_price or 0)
+        for item in pending_price_logs
+    )
+    if order.price_approval_status == "pending" and not requires_price_approval:
+        order.price_approval_status = "not_required"
+        if order.status == "pending_price_approval":
+            order.status = "pending_confirmation"
+        complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
     if order.status != "pending_confirmation":
         raise HTTPException(status_code=409, detail="当前订单状态不允许审批")
     role_code = current_user.role.code if current_user.role else ""
@@ -478,7 +495,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         and order.assigned_finance_user_id != current_user.id
     ):
         raise HTTPException(status_code=403, detail="该客户订单已指定由其他财务人员处理")
-    if order.price_approval_status == "pending":
+    if order.price_approval_status == "pending" and requires_price_approval:
         raise HTTPException(status_code=409, detail="当前订单存在待审批改价，请先在审批中心完成“销售改价审批”后再推进")
 
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")

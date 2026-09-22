@@ -239,9 +239,33 @@ def _pending_sales_price_changes(current_user: User, db: Session) -> list[dict]:
         price_logs = db.execute(
             select(SalesOrderPriceChangeLog)
             .options(joinedload(SalesOrderPriceChangeLog.product))
-            .where(SalesOrderPriceChangeLog.sales_order_id == row.id, SalesOrderPriceChangeLog.status == "pending")
+            .where(
+                SalesOrderPriceChangeLog.sales_order_id == row.id,
+                SalesOrderPriceChangeLog.status == "pending",
+                SalesOrderPriceChangeLog.actual_price < SalesOrderPriceChangeLog.standard_price,
+            )
         ).scalars().all()
         if not price_logs:
+            # 历史数据可能把高于标准价也置为待改价；仍给财务一个正常订单审批入口，
+            # 点击通过时服务层会自动清除这项错误前置。
+            data.append(
+                _base_item(
+                    approval_type="sales_order",
+                    business_id=row.id,
+                    module="sales",
+                    title=f"待审批客户订单 {row.order_no}",
+                    status="pending_confirmation",
+                    created_at=row.updated_at or row.created_at,
+                    can_approve=True,
+                    can_reject=True,
+                    summary={
+                        "order_no": row.order_no,
+                        "responsible_name": (row.operator_user.full_name if row.operator_user else None) or (row.sales_user.full_name if row.sales_user else None),
+                        "approval_reason": "客户订单已提交，待确认收款与放行",
+                        "total_amount": float(row.total_amount or 0),
+                    },
+                )
+            )
             continue
         data.append(
             _base_item(
@@ -256,7 +280,7 @@ def _pending_sales_price_changes(current_user: User, db: Session) -> list[dict]:
                 summary={
                     "order_no": row.order_no,
                     "responsible_name": (row.operator_user.full_name if row.operator_user else None) or (row.sales_user.full_name if row.sales_user else None),
-                    "approval_reason": "订单销售价与标准价不一致，需审批改价",
+                    "approval_reason": "订单销售价低于标准价，需审批改价",
                     "price_change_remark": "；".join(
                         f"{item.product.name if item.product else '-'}：标准价 {float(item.standard_price or 0)}，销售价 {float(item.actual_price or 0)}，备注：{item.remark or '-'}"
                         for item in price_logs
@@ -923,25 +947,30 @@ def _pending_todo_approvals(current_user: User, db: Session) -> list[dict]:
             ).unique().scalar_one_or_none()
             if order is None:
                 continue
-            is_price_change = approval_type == "sales_price_change" or order.price_approval_status == "pending" or order.status == "pending_price_approval"
+            price_logs = db.execute(
+                select(SalesOrderPriceChangeLog)
+                .options(joinedload(SalesOrderPriceChangeLog.product))
+                .where(SalesOrderPriceChangeLog.sales_order_id == order.id, SalesOrderPriceChangeLog.status == "pending")
+            ).scalars().all()
+            is_price_change = any(
+                Decimal(item.actual_price or 0) < Decimal(item.standard_price or 0)
+                for item in price_logs
+            )
             if is_price_change:
                 approval_type = "sales_price_change"
                 title = f"待审批销售改价 {order.order_no}"
-                price_logs = db.execute(
-                    select(SalesOrderPriceChangeLog)
-                    .options(joinedload(SalesOrderPriceChangeLog.product))
-                    .where(SalesOrderPriceChangeLog.sales_order_id == order.id, SalesOrderPriceChangeLog.status == "pending")
-                ).scalars().all()
                 summary = {
                     "order_no": order.order_no,
                     "responsible_name": (order.operator_user.full_name if order.operator_user else None) or (order.sales_user.full_name if order.sales_user else None),
-                    "approval_reason": "订单销售价与标准价不一致，需审批改价",
+                    "approval_reason": "订单销售价低于标准价，需审批改价",
                     "price_change_remark": "；".join(
                         f"{item.product.name if item.product else '-'}：标准价 {float(item.standard_price or 0)}，销售价 {float(item.actual_price or 0)}，备注：{item.remark or '-'}"
                         for item in price_logs
                     ) or "-",
                 }
             else:
+                approval_type = "sales_order"
+                title = f"待审批客户订单 {order.order_no}"
                 summary = {
                     "order_no": order.order_no,
                     "responsible_name": (order.operator_user.full_name if order.operator_user else None) or (order.sales_user.full_name if order.sales_user else None),

@@ -301,7 +301,8 @@ def _build_order_items(
         )
         db.add(order_item)
         db.flush()
-        if create_price_approval and unit_price != standard_price:
+        # 仅低于标准价的让利销售才需改价审批；高于标准价属于增收，不阻塞订单流程。
+        if create_price_approval and unit_price < standard_price:
             if operator_user_id is None:
                 raise HTTPException(status_code=500, detail="无法记录销售改价人员")
             db.add(
