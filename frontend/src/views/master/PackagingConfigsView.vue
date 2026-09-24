@@ -1,5 +1,5 @@
 <template>
-  <PageSection title="包装主数据" description="维护全局可选包装类型、每袋含量和包装单价，供销售、BOM、采购等模块统一调用。">
+  <PageSection title="包装基本信息" description="维护全局可选包装类型、每袋含量和包装单价，供销售、BOM、采购等模块统一调用。">
     <template #actions>
       <el-button @click="load">刷新</el-button>
       <el-button @click="exportTable">导出</el-button>
@@ -130,7 +130,7 @@ import { exportRowsToCsv } from '../../utils/export'
 import { formatDateTime, formatNumber } from '../../utils/format'
 
 const auth = useAuthStore()
-const canManage = computed(() => ['sales', 'purchase', 'production', 'inventory', 'manager', 'chairman', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
+const canManage = computed(() => ['sales', 'purchase', 'production', 'inventory', 'finance', 'finance_super', 'manager', 'chairman', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
 
 const rows = ref([])
 const keyword = ref('')

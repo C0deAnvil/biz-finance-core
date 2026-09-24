@@ -126,6 +126,55 @@
       </div>
     </PageSection>
 
+    <PageSection title="库存出入库记录" description="按当前账号的仓库权限展示库存流水；财务人员可查看全部仓库。">
+      <template #actions>
+        <el-select v-model="transactionFilters.warehouseId" clearable placeholder="仓库" class="w-180">
+          <el-option v-for="item in warehouses" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
+        <el-select v-model="transactionFilters.direction" clearable placeholder="出入库方向" class="w-140">
+          <el-option label="入库" value="inbound" />
+          <el-option label="出库" value="outbound" />
+        </el-select>
+        <el-select v-model="transactionFilters.itemType" clearable placeholder="物料类型" class="w-140">
+          <el-option label="产品" value="product" />
+          <el-option label="原料" value="material" />
+          <el-option label="包装" value="packaging" />
+        </el-select>
+        <el-date-picker v-model="transactionFilters.dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" class="transaction-date-range" />
+        <el-input v-model="transactionFilters.keyword" clearable placeholder="搜索流水号 / 物料 / 原因 / 操作人" class="w-280" @keyup.enter="searchTransactions" />
+        <el-button type="primary" @click="searchTransactions">搜索</el-button>
+        <el-button @click="resetTransactionFilters">重置</el-button>
+        <el-button @click="exportTransactionLedger">导出</el-button>
+      </template>
+
+      <div class="inventory-table-scroll inventory-transaction-table-scroll">
+        <el-table class="inventory-transaction-table" :data="transactionLedgerRows" stripe :fit="false">
+          <el-table-column prop="transaction_no" label="流水号" width="160" />
+          <el-table-column prop="created_at" label="出入库时间" width="180"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
+          <el-table-column prop="direction" label="方向" width="90">
+            <template #default="scope"><el-tag :type="scope.row.direction === 'inbound' ? 'success' : 'warning'">{{ scope.row.direction === 'inbound' ? '入库' : '出库' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="transaction_type_label" label="出入库类型" width="180" />
+          <el-table-column prop="warehouse_name" label="仓库" width="160" />
+          <el-table-column prop="item_type" label="物料类型" width="100"><template #default="scope">{{ itemTypeLabel(scope.row.item_type) }}</template></el-table-column>
+          <el-table-column prop="item_code" label="编码" width="150" />
+          <el-table-column prop="item_name" label="名称" min-width="180" />
+          <el-table-column prop="batch_no" label="批次号" width="150" />
+          <el-table-column prop="quantity" label="变动数量" width="120"><template #default="scope">{{ formatNumber(scope.row.quantity) }}</template></el-table-column>
+          <el-table-column prop="related_no" label="关联单号" width="160"><template #default="scope">{{ scope.row.related_no || '-' }}</template></el-table-column>
+          <el-table-column prop="reason" label="原因 / 说明" min-width="240" show-overflow-tooltip />
+          <el-table-column prop="created_by_name" label="操作人" width="120"><template #default="scope">{{ scope.row.created_by_name || '-' }}</template></el-table-column>
+        </el-table>
+      </div>
+      <AppPagination
+        v-model:page="transactionPagination.page"
+        v-model:page-size="transactionPagination.pageSize"
+        :total="transactionTotal"
+        :page-sizes="pageSizes"
+        @change="handleTransactionPaginationChange"
+      />
+    </PageSection>
+
     <el-drawer v-model="drawerVisible" size="56%" title="库存流水">
       <div v-if="activeStock" class="drawer-head">
         <div>
@@ -134,7 +183,7 @@
         </div>
         <el-tag :type="activeStock.item_type === 'product' ? 'success' : activeStock.item_type === 'material' ? 'warning' : 'info'">{{ itemTypeLabel(activeStock.item_type) }}</el-tag>
       </div>
-      <el-table :data="transactionRows" stripe>
+      <el-table :data="activeStockTransactionRows" stripe>
         <el-table-column prop="transaction_no" label="流水号" width="150" />
         <el-table-column prop="transaction_type" label="事务类型" width="190">
           <template #default="scope">{{ scope.row.transaction_type_label || transactionTypeLabel(scope.row.transaction_type) }}</template>
@@ -241,8 +290,8 @@
             </el-form-item>
           </el-col>
         </el-row>
-        <el-form-item label="处理说明">
-          <el-input v-model="manualForm.remark" type="textarea" :rows="3" placeholder="请输入本次手工出入库说明" />
+        <el-form-item label="出入库原因" required>
+          <el-input v-model="manualForm.remark" type="textarea" :rows="3" placeholder="请说明盘盈、盘亏、破损、临时领用等具体原因" />
         </el-form-item>
         <div class="detail-toolbar">
           <span>明细</span>
@@ -305,6 +354,7 @@ import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/card/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/descriptions/style/css'
+import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/dialog/style/css'
 import 'element-plus/es/components/drawer/style/css'
 import 'element-plus/es/components/form/style/css'
@@ -323,6 +373,7 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
+import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
@@ -355,6 +406,8 @@ const products = ref([])
 const materials = ref([])
 const packagingConfigs = ref([])
 const transactions = ref([])
+const transactionLedgerRows = ref([])
+const transactionTotal = ref(0)
 const operationRequests = ref([])
 const drawerVisible = ref(false)
 const operationDialogVisible = ref(false)
@@ -366,6 +419,7 @@ const activeOperation = ref(null)
 const rejectOperation = ref(null)
 const operationReadOnly = ref(true)
 const filters = reactive({ warehouseId: null, itemType: '', keyword: '', alertOnly: false })
+const transactionFilters = reactive({ warehouseId: null, direction: '', itemType: '', dateRange: [], keyword: '' })
 const operationForm = reactive({ items: [], handled_remark: '', adjust_reason: '', quantity_difference_remark: '' })
 const manualForm = reactive({ warehouse_id: null, source_no: '', remark: '', items: [] })
 const rejectForm = reactive({ reject_reason: '' })
@@ -379,6 +433,7 @@ const canExecuteInventoryOperation = (row) => Boolean(
 const approvalActionLabel = '\u5ba1\u6279'
 
 const pagination = reactive({ page: 1, pageSize: 20 })
+const transactionPagination = reactive({ page: 1, pageSize: 20 })
 const total = ref(0)
 const pageSizes = [10, 20, 50, 100]
 const filteredRows = computed(() => rows.value)
@@ -390,7 +445,7 @@ const summary = computed(() => ({
   availableQuantity: filteredRows.value.reduce((sum, item) => sum + Number(item.available_quantity || 0), 0)
 }))
 
-const transactionRows = computed(() => {
+const activeStockTransactionRows = computed(() => {
   if (!activeStock.value) return []
   return transactions.value.filter((item) => item.warehouse_id === activeStock.value.warehouse_id && item.item_type === activeStock.value.item_type && item.item_id === activeStock.value.item_id)
 })
@@ -465,7 +520,11 @@ async function load({ skipRouteFocus = false } = {}) {
   rows.value = stocks.items || stocks
   total.value = Number(stocks.pagination?.total || rows.value.length)
   warehouses.value = warehouseRows
-  operationRequests.value = await get('/api/inventory/operation-requests')
+  const [operationRows] = await Promise.all([
+    get('/api/inventory/operation-requests'),
+    loadTransactionLedger()
+  ])
+  operationRequests.value = operationRows
   if (route.query.focusType === 'low_stock_alert') {
     filters.alertOnly = true
   }
@@ -530,6 +589,43 @@ async function openTransactions(row) {
   const data = await get(`/api/inventory/transactions?${params.toString()}`)
   transactions.value = data.items || data
   drawerVisible.value = true
+}
+
+async function loadTransactionLedger() {
+  const params = new URLSearchParams({
+    page: String(transactionPagination.page),
+    page_size: String(transactionPagination.pageSize)
+  })
+  if (transactionFilters.warehouseId) params.set('warehouse_id', String(transactionFilters.warehouseId))
+  if (transactionFilters.direction) params.set('direction', transactionFilters.direction)
+  if (transactionFilters.itemType) params.set('item_type', transactionFilters.itemType)
+  if (transactionFilters.keyword.trim()) params.set('keyword', transactionFilters.keyword.trim())
+  if (transactionFilters.dateRange?.[0]) params.set('start_date', transactionFilters.dateRange[0])
+  if (transactionFilters.dateRange?.[1]) params.set('end_date', transactionFilters.dateRange[1])
+  const data = await get(`/api/inventory/transactions?${params.toString()}`, { force: true })
+  transactionLedgerRows.value = data.items || data
+  transactionTotal.value = Number(data.pagination?.total || transactionLedgerRows.value.length)
+}
+
+async function searchTransactions() {
+  transactionPagination.page = 1
+  await loadTransactionLedger()
+}
+
+async function resetTransactionFilters() {
+  Object.assign(transactionFilters, { warehouseId: null, direction: '', itemType: '', dateRange: [], keyword: '' })
+  transactionPagination.page = 1
+  await loadTransactionLedger()
+}
+
+async function handleTransactionPaginationChange({ page, pageSize }) {
+  transactionPagination.page = page
+  transactionPagination.pageSize = pageSize
+  await loadTransactionLedger()
+}
+
+function exportTransactionLedger() {
+  exportRowsToCsv('inventory_transactions', transactionLedgerRows.value)
 }
 
 async function handleStockPaginationChange({ page, pageSize }) {
@@ -665,6 +761,10 @@ async function submitManualOperation() {
     ElMessage.warning('请至少填写一条有效明细')
     return
   }
+  if (manualForm.remark.trim().length < 2) {
+    ElMessage.warning('请填写具体的出入库原因')
+    return
+  }
 
   try {
     await post('/api/inventory/manual-operations', {
@@ -716,6 +816,8 @@ watch(
 .w-140 { width: 140px; }
 .w-180 { width: 180px; }
 .w-240 { width: 240px; }
+.w-280 { width: 280px; }
+.transaction-date-range { width: 260px; }
 .inventory-table-scroll {
   width: 100%;
   min-width: 0;
@@ -728,6 +830,7 @@ watch(
 }
 .inventory-status-table { min-width: 1760px; }
 .inventory-operation-table { min-width: 1340px; }
+.inventory-transaction-table { min-width: 2050px; }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .drawer-title { font-size: 18px; font-weight: 700; color: #303133; }
 .drawer-subtitle { font-size: 13px; color: #909399; margin-top: 4px; }
@@ -741,7 +844,8 @@ watch(
   }
 
   .inventory-status-table,
-  .inventory-operation-table {
+  .inventory-operation-table,
+  .inventory-transaction-table {
     width: max-content !important;
     max-width: none !important;
   }
@@ -752,6 +856,10 @@ watch(
 
   .inventory-operation-table {
     min-width: 1340px !important;
+  }
+
+  .inventory-transaction-table {
+    min-width: 2050px !important;
   }
 }
 </style>

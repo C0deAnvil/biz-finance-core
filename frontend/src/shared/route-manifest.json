@@ -154,10 +154,12 @@
   {
     "path": "/customers",
     "name": "customers",
-    "title": "客户管理",
+    "title": "客户基本信息",
     "group": "主数据",
     "menu_roles": [
       "sales",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -165,6 +167,8 @@
     ],
     "preload_roles": [
       "sales",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -180,10 +184,12 @@
   {
     "path": "/suppliers",
     "name": "suppliers",
-    "title": "供应商管理",
+    "title": "供应商基本信息",
     "group": "主数据",
     "menu_roles": [
       "purchase",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -191,6 +197,8 @@
     ],
     "preload_roles": [
       "purchase",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -206,13 +214,15 @@
   {
     "path": "/products",
     "name": "products",
-    "title": "产品主数据",
+    "title": "产品基本信息",
     "group": "主数据",
     "menu_roles": [
       "sales",
       "purchase",
       "inventory",
       "production",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -223,6 +233,8 @@
       "purchase",
       "inventory",
       "production",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -270,12 +282,14 @@
   {
     "path": "/materials",
     "name": "materials",
-    "title": "原料主数据",
+    "title": "原料基本信息",
     "group": "主数据",
     "menu_roles": [
       "purchase",
       "inventory",
       "production",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -285,6 +299,8 @@
       "purchase",
       "inventory",
       "production",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -300,7 +316,7 @@
   {
     "path": "/packaging-configs",
     "name": "packaging-configs",
-    "title": "包装主数据",
+    "title": "包装基本信息",
     "group": "主数据",
     "menu_roles": [
       "sales",
@@ -309,6 +325,7 @@
       "production",
       "quality",
       "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -321,6 +338,7 @@
       "production",
       "quality",
       "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -548,7 +566,10 @@
     "group": "库存管理",
     "menu_roles": [
       "inventory",
+      "inventory_super",
       "purchase",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
@@ -556,12 +577,14 @@
     ],
     "preload_roles": [
       "inventory",
+      "inventory_super",
       "purchase",
+      "finance",
+      "finance_super",
       "manager",
       "chairman",
       "system_admin",
-      "master_data_admin",
-      "inventory_super"
+      "master_data_admin"
     ],
     "warmers": [
       {
@@ -673,7 +696,7 @@
   {
     "path": "/purchases/settlements",
     "name": "purchase-settlements",
-    "title": "采购结算协同",
+    "title": "采购付款申请",
     "group": "采购管理",
     "menu_roles": [
       "purchase",

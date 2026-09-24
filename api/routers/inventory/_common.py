@@ -136,17 +136,44 @@ def _serialize_stock(
     }
 
 
-def _serialize_transaction(row: InventoryTransaction, warehouse_map: dict, product_map: dict, material_map: dict, packaging_map: dict | None = None) -> dict:
+def _serialize_transaction(
+    row: InventoryTransaction,
+    warehouse_map: dict,
+    product_map: dict,
+    material_map: dict,
+    packaging_map: dict | None = None,
+    *,
+    user_map: dict | None = None,
+    operation_request_map: dict | None = None,
+) -> dict:
     product = product_map.get(row.product_id)
     material = material_map.get(row.material_id)
     packaging = (packaging_map or {}).get(row.packaging_config_id)
     warehouse = warehouse_map.get(row.warehouse_id)
+    operator = (user_map or {}).get(row.created_by_id)
+    operation_request = (
+        (operation_request_map or {}).get(row.related_id)
+        if row.related_type == "inventory_operation_request"
+        else None
+    )
+    reason_parts = []
+    if operation_request:
+        for value in (
+            operation_request.remark,
+            operation_request.handled_remark,
+            operation_request.adjust_reason,
+            operation_request.quantity_difference_remark,
+        ):
+            cleaned = (value or "").strip()
+            if cleaned and cleaned not in reason_parts:
+                reason_parts.append(cleaned)
     item_type = "product" if row.product_id else ("material" if row.material_id else "packaging")
     return {
         "id": row.id,
         "transaction_no": row.transaction_no,
         "transaction_type": row.transaction_type,
         "transaction_type_label": transaction_type_label(row.transaction_type),
+        "direction": "inbound" if row.quantity > 0 else "outbound",
         "warehouse_id": row.warehouse_id,
         "warehouse_name": warehouse.name if warehouse else None,
         "item_id": row.product_id or row.material_id or row.packaging_config_id,
@@ -159,7 +186,10 @@ def _serialize_transaction(row: InventoryTransaction, warehouse_map: dict, produ
         "total_cost": float(row.total_cost),
         "related_type": row.related_type,
         "related_id": row.related_id,
+        "related_no": (operation_request.source_no or operation_request.request_no) if operation_request else None,
+        "reason": "；".join(reason_parts) or transaction_type_label(row.transaction_type),
         "created_by_id": row.created_by_id,
+        "created_by_name": (operator.full_name or operator.username) if operator else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 

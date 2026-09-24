@@ -6,7 +6,7 @@
       <el-col :span="8"><el-card shadow="hover"><div class="summary-label">已有订单客户</div><div class="summary-value">{{ activeOrderCustomerCount }}</div></el-card></el-col>
     </el-row>
 
-    <PageSection title="客户管理">
+    <PageSection title="客户基本信息">
       <template #actions>
         <el-button @click="filterDialogVisible = true">筛选</el-button>
         <el-button @click="resetFilters">重置筛选</el-button>
@@ -478,7 +478,7 @@ const complaintForm = reactive({
   complaint_reason: '',
   complaint_detail: ''
 })
-const canManage = computed(() => ['sales', 'manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
+const canManage = computed(() => ['sales', 'finance', 'finance_super', 'manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const canManageAccounts = computed(() => ['sales', 'manager', 'chairman', 'master_data_admin', 'finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
 const canTransfer = computed(() => ['manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
 // 销售自建客户默认归属本人，归属与建档来源由经理及以上维护

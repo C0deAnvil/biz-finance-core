@@ -540,7 +540,7 @@ def list_customers(
 @router.post("/customers")
 def create_customer(
     payload: CustomerCreate,
-    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     existing = db.execute(select(Customer).where(Customer.name == payload.name)).scalar_one_or_none()
@@ -587,7 +587,7 @@ def create_customer(
 def update_customer(
     customer_id: int,
     payload: CustomerCreate,
-    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     customer = db.execute(select(Customer).where(Customer.id == customer_id)).scalar_one_or_none()
@@ -679,7 +679,7 @@ def _customer_has_relations(db: Session, customer_id: int) -> bool:
 @router.delete("/customers/{customer_id}")
 def delete_customer(
     customer_id: int,
-    current_user: User = Depends(require_roles("sales", "master_data_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     customer = db.execute(select(Customer).where(Customer.id == customer_id)).scalar_one_or_none()
@@ -706,7 +706,7 @@ def list_customer_complaints(current_user: User = Depends(get_current_user), db:
 @router.post("/customer-complaints")
 def create_customer_complaint(
     payload: CustomerComplaintCreate,
-    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     customer = db.execute(select(Customer).where(Customer.id == payload.customer_id)).scalar_one_or_none()
@@ -763,7 +763,7 @@ def create_customer_complaint(
 def update_customer_complaint(
     complaint_id: int,
     payload: CustomerComplaintUpdate,
-    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     complaint = db.execute(select(CustomerComplaint).where(CustomerComplaint.id == complaint_id)).scalar_one_or_none()
@@ -816,7 +816,7 @@ def list_suppliers(current_user: User = Depends(get_current_user), db: Session =
 @router.post("/suppliers")
 def create_supplier(
     payload: SupplierCreate,
-    current_user: User = Depends(require_roles("purchase", "master_data_admin")),
+    current_user: User = Depends(require_roles("purchase", "finance", "finance_super", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     existing = db.execute(select(Supplier).where(Supplier.name == payload.name)).scalar_one_or_none()
@@ -864,7 +864,7 @@ def create_supplier(
 def update_supplier(
     supplier_id: int,
     payload: SupplierCreate,
-    current_user: User = Depends(require_roles("purchase", "master_data_admin")),
+    current_user: User = Depends(require_roles("purchase", "finance", "finance_super", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     supplier = db.execute(select(Supplier).where(Supplier.id == supplier_id)).scalar_one_or_none()
@@ -976,7 +976,7 @@ def get_supplier_catalog_price_history(
 def replace_supplier_catalog(
     supplier_id: int,
     payload: list[SupplierCatalogItemInput],
-    current_user: User = Depends(require_roles("purchase", "master_data_admin")),
+    current_user: User = Depends(require_roles("purchase", "finance", "finance_super", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     supplier = db.execute(select(Supplier).where(Supplier.id == supplier_id)).scalar_one_or_none()
@@ -1029,7 +1029,7 @@ def _supplier_has_relations(db: Session, supplier_id: int) -> bool:
 @router.delete("/suppliers/{supplier_id}")
 def delete_supplier(
     supplier_id: int,
-    current_user: User = Depends(require_roles("purchase", "master_data_admin")),
+    current_user: User = Depends(require_roles("purchase", "finance", "finance_super", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     supplier = db.execute(select(Supplier).where(Supplier.id == supplier_id)).scalar_one_or_none()
@@ -1211,7 +1211,7 @@ def update_standard_price(
 @router.post("/products")
 def create_product(
     payload: ProductCreate,
-    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "finance", "finance_super", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     product_code = (payload.product_code or "").strip() or _next_available_master_data_code(
@@ -1232,7 +1232,7 @@ def create_product(
 def update_product(
     product_id: int,
     payload: ProductCreate,
-    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "finance", "finance_super", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     product = db.execute(select(Product).where(Product.id == product_id)).scalar_one_or_none()
@@ -1267,7 +1267,7 @@ def _product_has_relations(db: Session, product_id: int) -> bool:
 @router.delete("/products/{product_id}")
 def delete_product(
     product_id: int,
-    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "finance", "finance_super", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     product = db.execute(select(Product).where(Product.id == product_id)).scalar_one_or_none()
@@ -1337,7 +1337,7 @@ def list_materials(
 @router.post("/materials")
 def create_material(
     payload: MaterialCreate,
-    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "finance", "finance_super", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     material_code = (payload.material_code or "").strip() or _next_available_master_data_code(
@@ -1358,7 +1358,7 @@ def create_material(
 def update_material(
     material_id: int,
     payload: MaterialCreate,
-    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "finance", "finance_super", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     material = db.execute(select(Material).where(Material.id == material_id)).scalar_one_or_none()
@@ -1392,7 +1392,7 @@ def _material_has_relations(db: Session, material_id: int) -> bool:
 @router.delete("/materials/{material_id}")
 def delete_material(
     material_id: int,
-    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "master_data_admin")),
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "finance", "finance_super", "manager", "master_data_admin")),
     db: Session = Depends(get_db),
 ):
     material = db.execute(select(Material).where(Material.id == material_id)).scalar_one_or_none()
@@ -1446,7 +1446,7 @@ def _ensure_packaging_entity(payload: PackagingConfigCreate, db: Session):
 @router.post("/packaging-configs")
 def upsert_packaging_config(
     payload: PackagingConfigCreate,
-    current_user: User = Depends(require_roles("sales", "purchase", "production", "inventory", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "purchase", "production", "inventory", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     entity = _ensure_packaging_entity(payload, db)
@@ -1498,7 +1498,7 @@ def upsert_packaging_config(
 def update_packaging_config(
     packaging_id: int,
     payload: PackagingConfigCreate,
-    current_user: User = Depends(require_roles("sales", "purchase", "production", "inventory", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "purchase", "production", "inventory", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     row = db.execute(select(PackagingConfig).where(PackagingConfig.id == packaging_id)).scalar_one_or_none()
@@ -1534,7 +1534,7 @@ def update_packaging_config(
 @router.delete("/packaging-configs/{packaging_id}")
 def delete_packaging_config(
     packaging_id: int,
-    current_user: User = Depends(require_roles("sales", "purchase", "production", "inventory", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "purchase", "production", "inventory", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     row = db.execute(select(PackagingConfig).where(PackagingConfig.id == packaging_id)).scalar_one_or_none()

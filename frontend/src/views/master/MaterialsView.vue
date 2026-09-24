@@ -1,5 +1,5 @@
 <template>
-  <PageSection title="原料主数据" description="维护采购、生产、库存共用的原料档案和默认包装配置。">
+  <PageSection title="原料基本信息" description="维护采购、生产、库存共用的原料档案和默认包装配置。">
     <template #actions>
       <el-button @click="load">刷新</el-button>
       <el-button @click="exportTable">导出</el-button>
@@ -133,7 +133,7 @@ const appliedKeyword = ref('')
 const packagingOptions = ref([])
 const dialogVisible = ref(false)
 const editingId = ref(null)
-const canManage = computed(() => ['production', 'inventory', 'purchase', 'manager', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
+const canManage = computed(() => ['production', 'inventory', 'purchase', 'finance', 'finance_super', 'manager', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
 const pagination = reactive({ page: 1, pageSize: 10 })
 const total = ref(0)
 const pageSizes = [10, 20, 50, 100]

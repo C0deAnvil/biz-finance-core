@@ -48,6 +48,30 @@ def test_transactions_list(client, login):
     assert payload.get("code") == 200
 
 
+def test_transactions_support_search_and_record_fields(client, login):
+    login("inventory01")
+    resp = client.get(
+        "/api/inventory/transactions",
+        params={"page": 1, "page_size": 20, "direction": "inbound", "keyword": "入库"},
+    )
+    assert resp.status_code == 200
+    data = resp.json().get("data") or {}
+    assert isinstance(data.get("items"), list)
+    assert "pagination" in data
+    for row in data["items"]:
+        assert row.get("direction") == "inbound"
+        assert "reason" in row
+        assert "created_by_name" in row
+
+
+def test_finance_can_view_all_inventory_data(client, login):
+    login("finance01")
+    stocks = client.get("/api/inventory/stocks", params={"page": 1, "page_size": 20})
+    transactions = client.get("/api/inventory/transactions", params={"page": 1, "page_size": 20})
+    assert stocks.status_code == 200, stocks.text
+    assert transactions.status_code == 200, transactions.text
+
+
 def test_operation_requests_list(client, login):
     login("inventory01")
     resp = client.get("/api/inventory/operation-requests")

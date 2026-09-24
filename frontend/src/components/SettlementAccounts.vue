@@ -10,7 +10,7 @@
     <el-select :model-value="counterpartyAccountId" filterable clearable style="width: 100%" :placeholder="counterpartyRequired ? '请选择供应商收款账户' : '可选，选择已维护的往来账户'" :disabled="!partyId || counterpartyReadonly" @update:model-value="$emit('update:counterpartyAccountId', $event || null)">
       <el-option v-for="item in partyAccounts" :key="item.id" :value="item.id" :label="item.label" />
     </el-select>
-    <span v-if="direction === 'payment' && partyId && !partyAccounts.length" class="hint">请在供应商管理的“账户”中维护该供应商的收款账户</span>
+    <span v-if="direction === 'payment' && partyId && !partyAccounts.length" class="hint">请在供应商基本信息的“账户”中维护该供应商的收款账户</span>
   </el-form-item>
 </template>
 

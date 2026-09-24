@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -187,10 +187,29 @@ def list_stocks(
 @router.get("/transactions")
 def list_transactions(
     warehouse_id: int | None = Query(default=None), product_id: int | None = Query(default=None), material_id: int | None = Query(default=None), packaging_config_id: int | None = Query(default=None),
+    item_type: str | None = Query(default=None, pattern="^(product|material|packaging)$"),
+    direction: str | None = Query(default=None, pattern="^(inbound|outbound)$"),
+    transaction_type: str | None = Query(default=None), keyword: str | None = Query(default=None),
+    start_date: date | None = Query(default=None), end_date: date | None = Query(default=None),
     page: int | None = Query(default=None, ge=1), page_size: int = Query(default=50, ge=1, le=100),
     current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    query = select(InventoryTransaction).order_by(InventoryTransaction.created_at.desc())
+    query = (
+        select(InventoryTransaction)
+        .outerjoin(Warehouse, InventoryTransaction.warehouse_id == Warehouse.id)
+        .outerjoin(Product, InventoryTransaction.product_id == Product.id)
+        .outerjoin(Material, InventoryTransaction.material_id == Material.id)
+        .outerjoin(PackagingConfig, InventoryTransaction.packaging_config_id == PackagingConfig.id)
+        .outerjoin(User, InventoryTransaction.created_by_id == User.id)
+        .outerjoin(
+            InventoryOperationRequest,
+            and_(
+                InventoryTransaction.related_type == "inventory_operation_request",
+                InventoryTransaction.related_id == InventoryOperationRequest.id,
+            ),
+        )
+        .order_by(InventoryTransaction.created_at.desc(), InventoryTransaction.id.desc())
+    )
     warehouse_ids = _scoped_warehouse_ids(db, current_user)
     if warehouse_ids is not None:
         query = query.where(InventoryTransaction.warehouse_id.in_(warehouse_ids or [-1]))
@@ -202,6 +221,46 @@ def list_transactions(
         query = query.where(InventoryTransaction.material_id == material_id)
     if packaging_config_id:
         query = query.where(InventoryTransaction.packaging_config_id == packaging_config_id)
+    if item_type == "product":
+        query = query.where(InventoryTransaction.product_id.is_not(None))
+    elif item_type == "material":
+        query = query.where(InventoryTransaction.material_id.is_not(None))
+    elif item_type == "packaging":
+        query = query.where(InventoryTransaction.packaging_config_id.is_not(None))
+    if direction == "inbound":
+        query = query.where(InventoryTransaction.quantity > 0)
+    elif direction == "outbound":
+        query = query.where(InventoryTransaction.quantity < 0)
+    if transaction_type and transaction_type.strip():
+        query = query.where(InventoryTransaction.transaction_type == transaction_type.strip())
+    if start_date:
+        query = query.where(InventoryTransaction.created_at >= datetime.combine(start_date, datetime.min.time()))
+    if end_date:
+        query = query.where(InventoryTransaction.created_at <= datetime.combine(end_date, datetime.max.time()))
+    if keyword and keyword.strip():
+        term = keyword.strip()
+        query = query.where(
+            or_(
+                InventoryTransaction.transaction_no.contains(term, autoescape=True),
+                InventoryTransaction.transaction_type.contains(term, autoescape=True),
+                InventoryTransaction.batch_no.contains(term, autoescape=True),
+                Warehouse.name.contains(term, autoescape=True),
+                Warehouse.code.contains(term, autoescape=True),
+                Product.name.contains(term, autoescape=True),
+                Product.product_code.contains(term, autoescape=True),
+                Material.name.contains(term, autoescape=True),
+                Material.material_code.contains(term, autoescape=True),
+                PackagingConfig.packaging_name.contains(term, autoescape=True),
+                User.full_name.contains(term, autoescape=True),
+                User.username.contains(term, autoescape=True),
+                InventoryOperationRequest.request_no.contains(term, autoescape=True),
+                InventoryOperationRequest.source_no.contains(term, autoescape=True),
+                InventoryOperationRequest.remark.contains(term, autoescape=True),
+                InventoryOperationRequest.handled_remark.contains(term, autoescape=True),
+                InventoryOperationRequest.adjust_reason.contains(term, autoescape=True),
+                InventoryOperationRequest.quantity_difference_remark.contains(term, autoescape=True),
+            )
+        )
     total = None
     if page is not None:
         total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
@@ -211,6 +270,12 @@ def list_transactions(
     product_ids = {row.product_id for row in rows if row.product_id}
     material_ids = {row.material_id for row in rows if row.material_id}
     packaging_ids = {row.packaging_config_id for row in rows if row.packaging_config_id}
+    user_ids = {row.created_by_id for row in rows if row.created_by_id}
+    operation_request_ids = {
+        row.related_id
+        for row in rows
+        if row.related_type == "inventory_operation_request" and row.related_id
+    }
     warehouse_map = {
         row.id: row for row in db.execute(select(Warehouse).where(Warehouse.id.in_(warehouse_ids))).scalars().all()
     } if warehouse_ids else {}
@@ -223,7 +288,27 @@ def list_transactions(
     packaging_map = {
         row.id: row for row in db.execute(select(PackagingConfig).where(PackagingConfig.id.in_(packaging_ids))).scalars().all()
     } if packaging_ids else {}
-    items = [_serialize_transaction(row, warehouse_map, product_map, material_map, packaging_map) for row in rows]
+    user_map = {
+        row.id: row for row in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()
+    } if user_ids else {}
+    operation_request_map = {
+        row.id: row
+        for row in db.execute(
+            select(InventoryOperationRequest).where(InventoryOperationRequest.id.in_(operation_request_ids))
+        ).scalars().all()
+    } if operation_request_ids else {}
+    items = [
+        _serialize_transaction(
+            row,
+            warehouse_map,
+            product_map,
+            material_map,
+            packaging_map,
+            user_map=user_map,
+            operation_request_map=operation_request_map,
+        )
+        for row in rows
+    ]
     if page is not None:
         return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total or 0}})
     return api_response(data=items)
@@ -425,6 +510,9 @@ def create_manual_operation(
         raise HTTPException(status_code=403, detail="仅可处理本仓库范围内的手工出入库")
     if not payload.items:
         raise HTTPException(status_code=409, detail="请至少填写一条库存明细")
+    operation_reason = payload.remark.strip()
+    if len(operation_reason) < 2:
+        raise HTTPException(status_code=409, detail="请填写具体的出入库原因")
     for item in payload.items:
         if sum(bool(value) for value in (item.product_id, item.material_id, item.packaging_config_id)) != 1:
             raise HTTPException(status_code=409, detail="每条手工出入库明细必须且只能选择一种库存对象")
@@ -452,7 +540,7 @@ def create_manual_operation(
         warehouse_id=payload.warehouse_id,
         requested_by_id=current_user.id,
         status="pending",
-        remark=payload.remark,
+        remark=operation_reason,
         original_items_json=[
             {
                 "product_id": item.product_id,
@@ -475,7 +563,7 @@ def create_manual_operation(
         request.id,
         InventoryOperationHandleRequest(
             items=payload.items,
-            handled_remark=(payload.remark or "").strip() or None,
+            handled_remark=operation_reason,
             adjust_reason=None,
         ),
         current_user,

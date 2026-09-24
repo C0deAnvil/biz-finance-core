@@ -46,7 +46,7 @@ class InventoryManualOperationCreateRequest(BaseModel):
     warehouse_id: int
     operation_type: str = Field(..., pattern="^(inbound|outbound)$")
     source_no: str | None = None
-    remark: str | None = None
+    remark: str = Field(..., min_length=2, max_length=500)
     items: list[InventoryOperationItemInput]
 
 

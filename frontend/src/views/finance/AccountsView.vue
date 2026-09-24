@@ -1,5 +1,5 @@
 <template>
-  <PageSection title="收付款账户" description="参考余额 = 系统内已确认收款 − 已登记付款，允许为负数，不代表银行实际余额，不限制付款。供应商账户也可在供应商管理中维护。">
+  <PageSection title="收付款账户" description="参考余额 = 系统内已确认收款 − 已登记付款，允许为负数，不代表银行实际余额，不限制付款。供应商账户也可在供应商基本信息中维护。">
     <template #actions><el-button @click="load">刷新</el-button><el-button type="primary" plain @click="transferVisible = true">账户转账</el-button><el-button type="primary" @click="openCreate">新增账户</el-button></template>
     <el-form inline>
       <el-form-item label="账户类型"><el-select v-model="ownerType" style="width: 160px"><el-option label="全部" value="" /><el-option v-for="(label, key) in types" :key="key" :label="label" :value="key" /></el-select></el-form-item>

@@ -216,7 +216,7 @@ def list_users(current_user: User = Depends(require_roles("system_admin")), db: 
 
 @router.get("/users/options")
 def list_user_options(
-    current_user: User = Depends(require_roles("system_admin", "sales", "purchase", "inventory", "production", "quality", "finance", "manager", "chairman")),
+    current_user: User = Depends(require_roles("system_admin", "sales", "purchase", "inventory", "production", "quality", "finance", "finance_super", "manager", "chairman")),
     db: Session = Depends(get_db),
 ):
     rows = db.execute(

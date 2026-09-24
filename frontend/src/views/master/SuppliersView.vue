@@ -7,7 +7,7 @@
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">可供货名录数</div><div class="summary-value">{{ catalogCount }}</div></el-card></el-col>
     </el-row>
 
-    <PageSection title="供应商管理" description="维护供应商基础信息，并管理该供应商可提供的产品或原料名录。">
+    <PageSection title="供应商基本信息" description="维护供应商基础信息，并管理该供应商可提供的产品或原料名录。">
       <template #actions>
         <el-input v-model="filters.keyword" clearable placeholder="搜索供应商 / 联系人 / 电话" class="w-260" />
         <el-select v-model="filters.status" clearable placeholder="状态" class="w-140">
@@ -321,8 +321,8 @@ const priceHistoryTitle = ref('历史供价详情')
 const priceHistorySummary = ref(null)
 
 const canManageAccounts = computed(() => ['purchase', 'master_data_admin', 'finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
-const canManage = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
-const canManageCatalog = computed(() => ['purchase', 'master_data_admin'].includes(auth.user?.role_code))
+const canManage = computed(() => ['purchase', 'finance', 'finance_super', 'master_data_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
+const canManageCatalog = computed(() => ['purchase', 'finance', 'finance_super', 'master_data_admin'].includes(auth.user?.role_code))
 
 const allTags = computed(() => {
   const set = new Set(usedTags.value)

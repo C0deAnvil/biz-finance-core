@@ -24,7 +24,7 @@ def account_balance_map(db, account_ids):
 def validate_supplier_account(db, account_id, supplier_id):
     account = db.get(FinancialAccount, account_id) if account_id else None
     if account is None or account.owner_type != "supplier" or account.supplier_id != supplier_id or not account.is_active:
-        raise HTTPException(status_code=409, detail="请选择当前供应商启用的收款账户，请在供应商管理中维护")
+        raise HTTPException(status_code=409, detail="请选择当前供应商启用的收款账户，请在供应商基本信息中维护")
     if account.currency != "CNY":
         raise HTTPException(status_code=409, detail="当前付款以人民币计价，请选择 CNY 账户")
     return account.id
