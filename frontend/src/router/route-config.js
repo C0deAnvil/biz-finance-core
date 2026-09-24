@@ -50,6 +50,7 @@ const loaderMap = {
   '/admin/org-units': () => import('../views/admin/OrgUnitsView.vue'),
   '/admin/users': () => import('../views/admin/UsersView.vue'),
   '/admin/module-permissions': () => import('../views/admin/ModulePermissionsView.vue'),
+  '/admin/print-agents': () => import('../views/admin/PrintAgentsView.vue'),
   '/admin/logs': () => import('../views/admin/LogsView.vue')
 }
 

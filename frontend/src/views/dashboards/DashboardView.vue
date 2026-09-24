@@ -200,7 +200,7 @@ const WORKBENCH_BY_ROLE = {
   inventory: [
     { path: '/inventory/queues', icon: '📦', label: '待置货/发货', desc: '分批次置货与发货', color: '#409eff' },
     { path: '/inventory/stocks', icon: '🏭', label: '库存查询', desc: '库存余量与预警', color: '#67c23a' },
-    { path: '/inventory/transfers', icon: '🔁', label: '移库管理', desc: '仓库间转移与质检', color: '#e6a23c' },
+    { path: '/inventory/transfers', icon: '🔁', label: '库存转移', desc: '仓库间转移与质检', color: '#e6a23c' },
     { path: '/inventory/stock-takes', icon: '🔍', label: '库存盘点', desc: '盘点任务与差异', color: '#f56c6c' },
     { path: '/inventory/exceptions', icon: '⚠️', label: '库存异常', desc: '报损、包装异常与审批出库', color: '#e6a23c' },
   ],

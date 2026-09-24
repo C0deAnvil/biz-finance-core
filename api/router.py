@@ -15,6 +15,7 @@ from api.routers.logistics import router as logistics_router
 from api.routers.master_data import router as master_data_router
 from api.routers.production import router as production_router
 from api.routers.purchases import router as purchases_router
+from api.routers.printing import router as printing_router
 from api.routers.quality import router as quality_router
 from api.routers.realtime import router as realtime_router
 from api.routers.reimbursements import router as reimbursements_router
@@ -35,6 +36,7 @@ for _r in inventory_router_list:
     api_router.include_router(_r)
 api_router.include_router(logistics_router)
 api_router.include_router(purchases_router)
+api_router.include_router(printing_router)
 api_router.include_router(production_router)
 api_router.include_router(quality_router)
 api_router.include_router(realtime_router)

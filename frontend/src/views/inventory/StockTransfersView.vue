@@ -1,6 +1,6 @@
 <template>
   <div class="transfer-page">
-    <PageSection title="移库管理" description="仓库间货物转移：源仓库出库 → 目标仓库质检 → 入库；质检不通过退回源仓库。出库与入库均可上传现场照片。">
+    <PageSection title="库存转移" description="仓库间货物转移：源仓库出库 → 目标仓库质检 → 入库；质检不通过退回源仓库。出库与入库均可上传现场照片。">
       <template #actions>
         <el-select v-model="filters.status" clearable placeholder="状态" class="w-150">
           <el-option v-for="item in statusOptions" :key="item.value" :label="item.label" :value="item.value" />

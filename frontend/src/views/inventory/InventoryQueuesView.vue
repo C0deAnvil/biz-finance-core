@@ -51,8 +51,10 @@
             <el-table-column label="期望发货日期" width="130">
               <template #default="scope">{{ scope.row.expected_delivery_date || '-' }}</template>
             </el-table-column>
-            <el-table-column label="快捷操作" width="230" fixed="right" align="center">
+            <el-table-column label="快捷操作" width="330" fixed="right" align="center">
               <template #default="scope">
+                <el-button class="queue-main-action" size="small" type="primary" plain @click="handlePrintPlacement(scope.row)">打印</el-button>
+                <el-button class="queue-main-action" size="small" plain @click="handleDownloadPlacement(scope.row)">下载</el-button>
                 <el-button v-if="canConfirmFinanceEdit(scope.row)" class="queue-main-action" size="small" type="warning" @click="openOrderDetail(scope.row)">改单详情</el-button>
                 <template v-else>
                   <el-tooltip v-if="scope.row.blocked_reason" :content="scope.row.blocked_reason" placement="top">
@@ -496,6 +498,7 @@
 </template>
 
 <script setup>
+import { downloadOrderPdf, printOrderPdf } from '../../utils/printPdf'
 import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
@@ -545,6 +548,12 @@ import { formatDateTime, formatNumber, statusLabel, statusType } from '../../uti
 
 const route = useRoute()
 const queues = reactive({ placement: [], shipment: [], salesOrders: [] })
+async function handlePrintPlacement(row) {
+  try { await printOrderPdf('placement', row.order_id) } catch (error) { ElMessage.error(error.message || '打印置货单失败') }
+}
+async function handleDownloadPlacement(row) {
+  try { await downloadOrderPdf('placement', row.order_id, row.order_no) } catch (error) { ElMessage.error(error.message || '下载置货单失败') }
+}
 const shipmentDialogVisible = ref(false)
 const activeShipment = ref(null)
 const detailVisible = ref(false)

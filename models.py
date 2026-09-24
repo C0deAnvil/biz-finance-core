@@ -922,6 +922,47 @@ class InventoryDispatchQueue(TimestampMixin, Base):
     sales_order = relationship("SalesOrder")
 
 
+class PlacementPrintAgent(TimestampMixin, Base):
+    __tablename__ = "placement_print_agents"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+
+class PlacementPrintJob(TimestampMixin, Base):
+    __tablename__ = "placement_print_jobs"
+    __table_args__ = (UniqueConstraint("queue_id", name="uq_placement_print_job_queue"),)
+
+    id = Column(Integer, primary_key=True)
+    queue_id = Column(Integer, ForeignKey("inventory_dispatch_queues.id"), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    claimed_by_agent_id = Column(Integer, ForeignKey("placement_print_agents.id"), nullable=True)
+    lease_token_hash = Column(String(64), nullable=True)
+    lease_until = Column(DateTime, nullable=True)
+    printed_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
+
+    queue = relationship("InventoryDispatchQueue")
+
+
+class PlacementPrintAccessLog(Base):
+    __tablename__ = "placement_print_access_logs"
+
+    id = Column(Integer, primary_key=True)
+    agent_id = Column(Integer, ForeignKey("placement_print_agents.id"), nullable=True)
+    token_fingerprint = Column(String(12), nullable=True)
+    ip_address = Column(String(64), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+    method = Column(String(10), nullable=False)
+    path = Column(String(255), nullable=False)
+    result = Column(String(30), nullable=False)
+    created_at = Column(DateTime, default=now_local, nullable=False, index=True)
+
+
 
 class SalesReturn(TimestampMixin, Base):
     __tablename__ = "sales_returns"

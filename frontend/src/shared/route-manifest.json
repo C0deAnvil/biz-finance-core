@@ -1188,6 +1188,15 @@
     ]
   },
   {
+    "path": "/admin/print-agents",
+    "name": "admin-print-agents",
+    "title": "打印设备与记录",
+    "group": "系统管理",
+    "menu_roles": ["system_admin"],
+    "preload_roles": ["system_admin"],
+    "warmers": []
+  },
+  {
     "path": "/admin/logs",
     "name": "admin-logs",
     "title": "系统日志",
@@ -1216,7 +1225,7 @@
   {
     "path": "/inventory/transfers",
     "name": "inventory-transfers",
-    "title": "移库管理",
+    "title": "库存转移",
     "group": "库存管理",
     "menu_roles": [
       "inventory",

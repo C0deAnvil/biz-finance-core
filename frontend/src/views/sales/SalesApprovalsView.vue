@@ -18,9 +18,11 @@
       <el-table-column prop="total_amount" :label="texts.columns.totalAmount" width="120">
         <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
       </el-table-column>
-      <el-table-column :label="texts.columns.actions" width="320" fixed="right">
+      <el-table-column :label="texts.columns.actions" width="400" fixed="right">
         <template #default="scope">
           <el-button size="small" @click="showDetail(scope.row.id)">{{ texts.actions.detail }}</el-button>
+          <el-button size="small" @click="handlePrintSales(scope.row)">打印</el-button>
+          <el-button size="small" @click="handleDownloadSales(scope.row)">下载</el-button>
           <el-button v-if="canApproveOrders" size="small" type="success" @click="openApprove(scope.row)">{{ texts.actions.approve }}</el-button>
           <el-button v-if="canApproveOrders" size="small" type="warning" plain @click="convertToReceivable(scope.row)">转为应收</el-button>
           <el-button v-if="canApproveOrders" size="small" type="danger" @click="openReject(scope.row)">{{ texts.actions.reject }}</el-button>
@@ -93,6 +95,7 @@
 </template>
 
 <script setup>
+import { downloadOrderPdf, printOrderPdf } from '../../utils/printPdf'
 import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
@@ -129,6 +132,12 @@ import { useAuthStore } from '../../stores/auth'
 import { formatNumber } from '../../utils/format'
 
 const auth = useAuthStore()
+async function handlePrintSales(row) {
+  try { await printOrderPdf('sales', row.id) } catch (error) { ElMessage.error(error.message || '打印销售单失败') }
+}
+async function handleDownloadSales(row) {
+  try { await downloadOrderPdf('sales', row.id, row.order_no) } catch (error) { ElMessage.error(error.message || '下载销售单失败') }
+}
 const pagePermission = usePagePermission()
 const texts = {
   title: '销售订单审批',

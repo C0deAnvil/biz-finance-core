@@ -80,9 +80,11 @@
       <el-table-column prop="created_at" label="创建时间" min-width="160">
         <template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="360" fixed="right">
+      <el-table-column label="操作" width="430" fixed="right">
         <template #default="scope">
           <el-button size="small" text @click="viewOrder(scope.row.id)">查看</el-button>
+          <el-button v-if="scope.row.status !== 'draft' && scope.row.status !== 'cancelled'" size="small" text @click="handlePrintSales(scope.row)">打印</el-button>
+          <el-button v-if="scope.row.status !== 'draft' && scope.row.status !== 'cancelled'" size="small" text @click="handleDownloadSales(scope.row)">下载</el-button>
           <el-button size="small" text type="info" @click="openTimeline(scope.row.id)">时间轴</el-button>
           <el-button v-if="canSubmitOrder(scope.row)" size="small" text type="success" @click="submitOrder(scope.row)">提交</el-button>
           <el-button v-if="canManageOrders" size="small" text type="primary" @click="editOrder(scope.row)" :disabled="!canEditOrder(scope.row)">编辑</el-button>
@@ -534,6 +536,7 @@
 </template>
 
 <script setup>
+import { downloadOrderPdf, printOrderPdf } from '../../utils/printPdf'
 import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
@@ -592,6 +595,12 @@ import { exportRowsToCsv } from '../../utils/export'
 import { formatDateTime, formatNumber, paymentTypeLabel, statusLabel, statusType } from '../../utils/format'
 
 const auth = useAuthStore()
+async function handlePrintSales(row) {
+  try { await printOrderPdf('sales', row.id) } catch (error) { ElMessage.error(error.message || '打印销售单失败') }
+}
+async function handleDownloadSales(row) {
+  try { await downloadOrderPdf('sales', row.id, row.order_no) } catch (error) { ElMessage.error(error.message || '下载销售单失败') }
+}
 const router = useRouter()
 
 // 销售单据类型配置(与后端 models.py ORDER_TYPE_STYLES 保持一致,颜色便于修改)
