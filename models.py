@@ -1042,6 +1042,7 @@ class PurchaseOrder(TimestampMixin, Base):
     purchaser_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     payment_type = Column(String(50), nullable=False)
+    expected_arrival_date = Column(Date, nullable=True)
     status = Column(String(30), nullable=False, default="draft")
     total_amount = Column(Numeric(18, 2), nullable=False, default=0)
     threshold_triggered = Column(Boolean, nullable=False, default=False)

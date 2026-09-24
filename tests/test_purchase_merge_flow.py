@@ -56,6 +56,7 @@ def test_merge_multiple_demands_into_one_purchase_order(client, login):
         json={
             "supplier_id": supplier_id,
             "payment_type": "银行转账",
+            "expected_arrival_date": "2099-01-15",
             "items": [
                 {"product_id": p1, "quantity": 5, "unit_price": 10},
                 {"product_id": p2, "quantity": 7, "unit_price": 12},

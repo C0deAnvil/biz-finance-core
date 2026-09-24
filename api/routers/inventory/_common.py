@@ -547,6 +547,8 @@ def _serialize_inventory_order_detail(order: SalesOrder, process_status: dict | 
         "consignee": order.consignee,
         "consignee_phone": order.consignee_phone,
         "delivery_address": order.delivery_address,
+        "order_remark": order.order_remark,
+        "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
         "payment_type": order.payment_type,
         "payment_type_label": payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales"),
         "total_amount": None,

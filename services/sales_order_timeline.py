@@ -24,7 +24,7 @@ def _iso(value):
 
 
 def _task(key, label, start, end=None, *, lane="", children=None, document_no=None,
-          milestone=False, status_text=None, detail=None):
+          milestone=False, planned=False, status_text=None, detail=None):
     if not start:
         return None
     return {
@@ -33,9 +33,10 @@ def _task(key, label, start, end=None, *, lane="", children=None, document_no=No
         "lane": lane,
         "start_at": _iso(start),
         "end_at": _iso(end),
-        "status": "completed" if end or milestone else "active",
-        "status_text": status_text or ("已记录" if milestone else "已完成" if end else "处理中"),
+        "status": "planned" if planned else "completed" if end or milestone else "active",
+        "status_text": status_text or ("预计" if planned else "已记录" if milestone else "已完成" if end else "处理中"),
         "milestone": milestone,
+        "planned": planned,
         "document_no": document_no,
         "detail": detail,
         "children": sorted((child for child in (children or []) if child), key=lambda child: child["start_at"]),
@@ -320,15 +321,26 @@ def build_sales_order_tasks(db: Session, order: SalesOrder, history: list) -> tu
                               detail=f"已付 {paid_amount} / 订单金额 {po.total_amount or 0}"))
         receipt_rows = receipts_by_po[po.id]
         arrival_end = max((r.created_at for r in receipt_rows), default=None)
+        arrival_children = []
+        if po.expected_arrival_date:
+            arrival_children.append(_task(
+                f"arrival-expected-{po.id}", "预计到货日期",
+                f"{po.expected_arrival_date.isoformat()}T12:00:00",
+                lane="procurement", milestone=True, planned=True,
+                document_no=po.order_no, status_text="计划日期",
+                detail=f"采购单 {po.order_no} 预计 {po.expected_arrival_date.isoformat()} 到货",
+            ))
+        arrival_children.extend(
+            _task(f"receipt-{r.id}", f"采购到货登记 {r.receipt_no}",
+                  r.created_at, lane="procurement", milestone=True,
+                  document_no=r.receipt_no,
+                  detail=f"登记的到货日期：{_iso(r.recorded_at)}" if r.recorded_at else None)
+            for r in receipt_rows
+        )
         children.append(_task(f"arrival-{po.id}", "采购到货", po.approved_at or po.created_at,
                               arrival_end if po.status == "fully_received" else None,
-                              lane="procurement", children=[
-                                  _task(f"receipt-{r.id}", f"采购到货登记 {r.receipt_no}",
-                                        r.created_at, lane="procurement",
-                                        milestone=True, document_no=r.receipt_no,
-                                        detail=f"登记的到货日期：{_iso(r.recorded_at)}" if r.recorded_at else None)
-                                  for r in receipt_rows
-                              ], status_text="全部到货" if po.status == "fully_received"
+                              lane="procurement", children=arrival_children,
+                              status_text="全部到货" if po.status == "fully_received"
                               else "部分到货" if receipt_rows else "待到货"))
         for r in receipt_rows:
             shadow_ids = [task_id for task_id, meta in purchase_shadow.items()

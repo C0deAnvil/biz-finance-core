@@ -59,14 +59,14 @@
                 </button>
                 <span v-else class="tree-spacer"></span>
                 <span class="lane-name" :title="task.document_no || task.label">{{ task.label }}</span>
-                <span class="lane-status" :class="task.status === 'completed' ? 'is-done' : 'is-active'">{{ task.milestone ? '节点' : task.status === 'completed' ? '完成' : '进行中' }}</span>
+                <span class="lane-status" :class="task.planned ? 'is-planned' : task.status === 'completed' ? 'is-done' : 'is-active'">{{ task.planned ? '预计' : task.milestone ? '节点' : task.status === 'completed' ? '完成' : '进行中' }}</span>
               </div>
               <div class="lane-track">
                 <div class="task-axis">
                   <div
                     v-if="task.milestone || !task.end_at"
                     class="task-point"
-                    :class="{ 'is-open': !task.milestone }"
+                    :class="{ 'is-open': !task.milestone, 'is-planned': task.planned }"
                     :style="{ left: xPct(task.start_at) + '%' }"
                     :title="taskTitle(task)"
                   ></div>
@@ -79,9 +79,9 @@
                     <span>{{ task.label }}</span>
                   </div>
                 </div>
-                <div class="task-state-right" :class="task.status === 'completed' ? 'is-done' : 'is-active'" :title="taskTitle(task)">
+                <div class="task-state-right" :class="task.planned ? 'is-planned' : task.status === 'completed' ? 'is-done' : 'is-active'" :title="taskTitle(task)">
                   <div class="state-line"><span class="state-dot"></span><span class="state-text">{{ task.status_text || (task.status === 'completed' ? '已完成' : '处理中') }}</span></div>
-                  <div class="state-times">{{ shortDateTime(task.start_at) }}<template v-if="!task.milestone"> → {{ task.end_at ? shortDateTime(task.end_at) : '未结束' }}</template></div>
+                  <div class="state-times">{{ task.planned ? task.start_at.slice(0, 10) : shortDateTime(task.start_at) }}<template v-if="!task.milestone"> → {{ task.end_at ? shortDateTime(task.end_at) : '未结束' }}</template></div>
                 </div>
               </div>
             </div>
@@ -111,6 +111,7 @@
                   {{ doc.document_type === 'purchase_order' ? '金额' : '数量' }}: {{ formatNumber(doc.quantity) }}
                 </span>
                 <span v-if="doc.supplier_name">供应商: {{ doc.supplier_name }}</span>
+                <span v-if="doc.expected_arrival_date">预计到货: {{ doc.expected_arrival_date }}</span>
               </div>
             </div>
           </div>
@@ -360,8 +361,8 @@ function shortDateTime(value) {
 }
 
 function taskTitle(task) {
-  const lines = [task.label, `开始：${formatDateTime(task.start_at)}`]
-  lines.push(task.end_at ? `结束：${formatDateTime(task.end_at)}` : task.milestone ? '单次事件' : '尚未完成')
+  const lines = [task.label, task.planned ? `预计：${task.start_at.slice(0, 10)}` : `开始：${formatDateTime(task.start_at)}`]
+  if (!task.planned) lines.push(task.end_at ? `结束：${formatDateTime(task.end_at)}` : task.milestone ? '单次事件' : '尚未完成')
   if (task.status_text) lines.push(`状态：${task.status_text}`)
   if (task.document_no) lines.push(`关联单据：${task.document_no}`)
   if (task.detail) lines.push(task.detail)
@@ -463,6 +464,7 @@ onMounted(load)
 .lane-idx { position: absolute; top: 4px; right: 8px; font-size: 10px; color: #c0c4cc; font-weight: 700; }
 .lane-status { font-size: 11px; padding: 1px 8px; border-radius: 10px; font-weight: 600; }
 .lane-status.is-done { background: #f0f9eb; color: #67C23A; }
+.lane-status.is-planned { background: #fff3e8; color: #bd7118; }
 .lane-status.is-active { background: #ecf5ff; color: #185f93; }
 .lane-status.is-na { background: #f4f4f5; color: #909399; }
 .lane-status.is-none { background: transparent; color: #c0c4cc; }
@@ -479,6 +481,7 @@ onMounted(load)
 .task-state-right { flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; overflow: hidden; cursor: help; }
 .task-state-right.is-active { color: #bd7118; background: #fffbf4; }
 .task-state-right.is-done { color: #29835c; background: #f4fbf6; }
+.task-state-right.is-planned { color: #bd7118; background: #fff8ed; }
 .state-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .state-line { display: flex; align-items: center; gap: 7px; width: 100%; font-weight: 700; }
 .state-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -488,6 +491,7 @@ onMounted(load)
 .task-bar { min-width: 2px; padding: 0 5px; }
 .task-point { position: absolute; z-index: 2; top: 20px; transform: translateX(-50%); width: 14px; height: 14px; border: 3px solid var(--lane-color, #909399); border-radius: 50%; background: #fff; cursor: help; }
 .task-point.is-open { border-style: dashed; }
+.task-point.is-planned { border-style: dashed; background: #fff3e8; }
 .lane-current { position: absolute; left: 45%; top: 18px; color: #909399; font-size: 12px; }
 .tick-label { position: absolute; top: 4px; transform: translateX(-50%); font-size: 10px; color: #a8b2bd; white-space: nowrap; }
 .lane-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 11px; color: #c0c4cc; }

@@ -22,6 +22,7 @@ class PurchaseOrderCreate(BaseModel):
     supplier_id: int
     operator_user_id: int | None = None
     payment_type: str = Field(..., max_length=50)
+    expected_arrival_date: date
     items: list[PurchaseOrderItemInput]
     replenishment_source_type: str | None = Field(
         default=None,
@@ -36,6 +37,7 @@ class PurchaseOrderUpdate(BaseModel):
     supplier_id: int
     operator_user_id: int | None = None
     payment_type: str = Field(..., max_length=50)
+    expected_arrival_date: date
     items: list[PurchaseOrderItemInput]
 
 

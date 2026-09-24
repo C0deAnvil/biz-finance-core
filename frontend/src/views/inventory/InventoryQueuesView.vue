@@ -18,8 +18,7 @@
             </el-table-column>
             <el-table-column prop="order_type_label" label="类型" width="80">
               <template #default="scope">
-                <el-tag v-if="scope.row.order_type && scope.row.order_type !== 'normal'" :type="orderTypeStyle(scope.row.order_type).tagType" effect="light" size="small">{{ scope.row.order_type_label }}</el-tag>
-                <span v-else class="text-muted">-</span>
+                <el-tag :type="orderTypeStyle(scope.row.order_type).tagType" effect="light" size="small">{{ scope.row.order_type_label || orderTypeStyle(scope.row.order_type).label }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="sales_user_name" label="负责人" width="140" show-overflow-tooltip />
@@ -49,8 +48,8 @@
                 <el-tag :type="stockStatusTag(scope.row.stock_status)" effect="dark" size="small">{{ stockStatusLabel(scope.row.stock_status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="财务修改" width="100">
-              <template #default="scope"><el-tag v-if="scope.row.finance_edit_pending" type="warning">待确认</el-tag><span v-else>-</span></template>
+            <el-table-column label="期望发货日期" width="130">
+              <template #default="scope">{{ scope.row.expected_delivery_date || '-' }}</template>
             </el-table-column>
             <el-table-column label="快捷操作" width="230" fixed="right" align="center">
               <template #default="scope">
@@ -453,6 +452,8 @@
           <el-descriptions-item label="收货人">{{ orderDetail.consignee || '-' }}</el-descriptions-item>
           <el-descriptions-item label="联系电话">{{ orderDetail.consignee_phone || '-' }}</el-descriptions-item>
           <el-descriptions-item label="送货地址" :span="2">{{ orderDetail.delivery_address || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="期望发货日期">{{ orderDetail.expected_delivery_date || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">{{ orderDetail.order_remark || '-' }}</el-descriptions-item>
         </el-descriptions>
         <el-table :data="orderDetail.items || []" border class="mt-16">
           <el-table-column prop="product_name" label="商品" min-width="180" />
@@ -473,7 +474,7 @@
           <el-table-column prop="remaining_shipment_quantity" label="剩余待发" width="110">
             <template #default="scope">{{ formatNumber(scope.row.remaining_shipment_quantity) }}</template>
           </el-table-column>
-          <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="remark" label="明细备注" min-width="180" show-overflow-tooltip />
         </el-table>
         <el-divider content-position="left">发货照片</el-divider>
         <PhotoAttachments

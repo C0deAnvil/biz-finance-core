@@ -212,6 +212,7 @@ def _order_related_documents(db: Session, order_id: int) -> list[dict]:
                     "status_label": status_label(po.status),
                     "quantity": float(po.total_amount or 0),
                     "supplier_name": po.supplier.name if po.supplier else None,
+                    "expected_arrival_date": po.expected_arrival_date.isoformat() if po.expected_arrival_date else None,
                 }
             )
         elif target_type == "quality_task" and target_id in quality_tasks:

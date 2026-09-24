@@ -40,7 +40,7 @@ def submit(client, login, did, mid, qty, expected=200):
 
 def purchase(client, login, sid, mid, batches, qty):
     login("purchase01")
-    payload = {"supplier_id": sid, "payment_type": "货到付款", "items": [{"material_id": mid, "quantity": qty, "unit_price": 1}]}
+    payload = {"supplier_id": sid, "payment_type": "货到付款", "expected_arrival_date": "2099-01-15", "items": [{"material_id": mid, "quantity": qty, "unit_price": 1}]}
     if len(batches) == 1:
         payload.update(replenishment_source_type=SOURCE_TYPE, replenishment_source_id=batches[0]["id"])
     else:
@@ -131,6 +131,7 @@ def test_merged_purchase_allocates_receipts_once_and_reopens_all(client, login):
     # 作为合并单次要来源的 YL 也必须被防重校验保护。
     login("purchase01")
     response = client.post("/api/purchases/orders", json={"supplier_id": sid, "payment_type": "货到付款",
+        "expected_arrival_date": "2099-01-15",
         "items": [{"material_id": mid, "quantity": 40, "unit_price": 1}],
         "replenishment_source_type": SOURCE_TYPE, "replenishment_source_id": b2["id"]})
     assert response.status_code == 409

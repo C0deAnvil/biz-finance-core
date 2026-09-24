@@ -131,6 +131,7 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
         purchaser_user_id=current_user.id,
         operator_user_id=_resolve_purchase_operator_user_id(db, payload.operator_user_id, current_user),
         payment_type=payment_type_label(payload.payment_type, module="purchase"),
+        expected_arrival_date=payload.expected_arrival_date,
         status="draft",
         replenishment_source_type=replenishment_source["source_type"] if replenishment_source else payload.replenishment_source_type,
         replenishment_source_id=replenishment_source["source_id"] if replenishment_source else payload.replenishment_source_id,
@@ -260,6 +261,7 @@ def update_purchase_order(order_id: int, payload: PurchaseOrderUpdate, current_u
 
     order.supplier_id = payload.supplier_id
     order.payment_type = payment_type_label(payload.payment_type, module="purchase")
+    order.expected_arrival_date = payload.expected_arrival_date
     order.operator_user_id = _resolve_purchase_operator_user_id(db, payload.operator_user_id or order.operator_user_id, current_user)
     order.approved_by_id = None if order.status == "rejected" else order.approved_by_id
     order.approved_at = None if order.status == "rejected" else order.approved_at

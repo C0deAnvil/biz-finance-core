@@ -21,6 +21,7 @@
       <el-table-column prop="supplier_name" label="供应商" min-width="180" />
       <el-table-column prop="operator_name" label="经办人" width="120" />
       <el-table-column prop="payment_type_label" label="付款方式" min-width="160" />
+      <el-table-column prop="expected_arrival_date" label="预计到货日期" width="140"><template #default="scope">{{ scope.row.expected_arrival_date || '-' }}</template></el-table-column>
       <el-table-column prop="status_label" label="状态" width="140">
         <template #default="scope">
           <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag>
@@ -157,7 +158,11 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12" />
+          <el-col :span="12">
+            <el-form-item label="预计到货日期" required>
+              <el-date-picker v-model="form.expected_arrival_date" type="date" value-format="YYYY-MM-DD" placeholder="请选择预计到货日期" style="width: 100%" />
+            </el-form-item>
+          </el-col>
         </el-row>
 
         <el-alert
@@ -251,6 +256,7 @@
         <el-descriptions-item label="经办人">{{ detail.operator_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="状态">{{ detail.status_label || statusLabel(detail.status) }}</el-descriptions-item>
         <el-descriptions-item label="付款方式">{{ detail.payment_type_label || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
+        <el-descriptions-item label="预计到货日期">{{ detail.expected_arrival_date || '-' }}</el-descriptions-item>
         <el-descriptions-item label="结算状态">{{ detail.fund_status_label || statusLabel(detail.fund_status) }}</el-descriptions-item>
         <el-descriptions-item label="流程进度" :span="2">
           <div class="flow-steps">
@@ -352,6 +358,7 @@ import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/descriptions/style/css'
+import 'element-plus/es/components/date-picker/style/css'
 import 'element-plus/es/components/dialog/style/css'
 import 'element-plus/es/components/drawer/style/css'
 import 'element-plus/es/components/form/style/css'
@@ -372,6 +379,7 @@ import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDescriptions, { ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
+import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
@@ -467,6 +475,7 @@ const emptyForm = () => ({
   supplier_id: null,
   operator_user_id: auth.user?.id || null,
   payment_type: '先付款后到货',
+  expected_arrival_date: '',
   fulfillment_demand_id: null,
   items: [{ type: 'material', target_id: null, quantity: 1, unit_price: 0 }]
 })
@@ -952,6 +961,10 @@ async function cancelDemand(row) {
 }
 
 async function submit() {
+  if (!form.expected_arrival_date) {
+    ElMessage.warning('请选择预计到货日期')
+    return
+  }
   if (activeDemand.value && !demandSupplierOptions.value.length) {
     ElMessage.warning('当前补货商品未维护可供货供应商名录，不能直接从补货需求转建采购单')
     return
@@ -971,6 +984,7 @@ async function submit() {
     supplier_id: form.supplier_id,
     operator_user_id: form.operator_user_id || auth.user?.id,
     payment_type: form.payment_type,
+    expected_arrival_date: form.expected_arrival_date,
     items: form.items.map((item) => ({
       product_id: item.type === 'product' ? item.target_id : null,
       material_id: item.type === 'material' ? item.target_id : null,
@@ -1058,6 +1072,7 @@ async function editOrder(row) {
   await loadSupplierCatalog(order.supplier_id)
   await loadSupplierAi(order.supplier_id)
   form.payment_type = order.payment_type
+  form.expected_arrival_date = order.expected_arrival_date || ''
   form.items = (order.items || []).map((item) => ({
     type: item.product_id ? 'product' : item.material_id ? 'material' : 'packaging',
     target_id: item.product_id || item.material_id || item.packaging_config_id,

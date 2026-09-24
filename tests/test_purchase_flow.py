@@ -253,6 +253,7 @@ def test_purchase_order_validation(client, login):
         json={
             "supplier_id": supplier_id,
             "payment_type": "银行转账",
+            "expected_arrival_date": "2099-01-15",
             "items": [{"product_id": product_id, "quantity": 1, "unit_price": 10}],
         },
     )

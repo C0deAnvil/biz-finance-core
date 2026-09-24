@@ -195,6 +195,7 @@ def create_purchase_order(client, login, *, supplier_id: int, product_id: int, q
         json={
             "supplier_id": supplier_id,
             "payment_type": "银行转账",
+            "expected_arrival_date": "2099-01-15",
             "items": [{"product_id": product_id, "quantity": quantity, "unit_price": unit_price}],
         },
     )

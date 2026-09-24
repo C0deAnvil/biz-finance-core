@@ -118,6 +118,7 @@ def test_packaging_purchase_receipt_creates_packaging_inbound_request(client, lo
         json={
             "supplier_id": supplier_id,
             "payment_type": "先到货后付款",
+            "expected_arrival_date": "2099-01-15",
             "items": [{"packaging_config_id": packaging_id, "quantity": 20, "unit_price": 5}],
         },
     )
