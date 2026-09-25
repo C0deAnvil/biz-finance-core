@@ -51,29 +51,34 @@
             <el-table-column label="期望发货日期" width="130">
               <template #default="scope">{{ scope.row.expected_delivery_date || '-' }}</template>
             </el-table-column>
-            <el-table-column label="快捷操作" width="330" fixed="right" align="center">
+            <el-table-column label="快捷操作" width="240" fixed="right" align="center">
               <template #default="scope">
-                <el-button class="queue-main-action" size="small" type="primary" plain @click="handlePrintPlacement(scope.row)">打印</el-button>
-                <el-button class="queue-main-action" size="small" plain @click="handleDownloadPlacement(scope.row)">下载</el-button>
-                <el-button v-if="canConfirmFinanceEdit(scope.row)" class="queue-main-action" size="small" type="warning" @click="openOrderDetail(scope.row)">改单详情</el-button>
-                <template v-else>
-                  <el-tooltip v-if="scope.row.blocked_reason" :content="scope.row.blocked_reason" placement="top">
-                    <span>
-                      <el-button class="queue-main-action" size="small" type="info" disabled>已置货</el-button>
-                    </span>
-                  </el-tooltip>
-                  <el-button v-else class="queue-main-action" size="small" type="success" @click="openPlacementDialog(scope.row)">已置货</el-button>
-                  <!-- 缺货时的补货入口必须独立于"已置货"按钮:
-                       库存不足正是"已置货"被禁用的原因,而提补货需求的弹窗原先只能
-                       从置货弹窗内打开 —— 越缺货越点不开,补不了货(死锁)。 -->
-                  <el-button
-                    v-if="rowShortages(scope.row).length"
-                    size="small"
-                    type="warning"
-                    plain
-                    @click="openRowDemand(scope.row)"
-                  >提补货需求</el-button>
-                </template>
+                <div class="queue-action-stack">
+                  <div class="queue-action-line">
+                    <el-button v-if="canConfirmFinanceEdit(scope.row)" class="queue-main-action" size="small" type="warning" @click="openOrderDetail(scope.row)">改单详情</el-button>
+                    <template v-else>
+                      <el-tooltip v-if="scope.row.blocked_reason" :content="scope.row.blocked_reason" placement="top">
+                        <span>
+                          <el-button class="queue-main-action" size="small" type="info" disabled>已置货</el-button>
+                        </span>
+                      </el-tooltip>
+                      <el-button v-else class="queue-main-action" size="small" type="success" @click="openPlacementDialog(scope.row)">已置货</el-button>
+                      <!-- 缺货时即使置货按钮被禁用，也保留独立的补货入口。 -->
+                      <el-button
+                        v-if="rowShortages(scope.row).length"
+                        class="queue-demand-action"
+                        size="small"
+                        type="warning"
+                        plain
+                        @click="openRowDemand(scope.row)"
+                      >提补货需求</el-button>
+                    </template>
+                  </div>
+                  <div class="queue-action-line">
+                    <el-button class="queue-print-action" size="small" type="primary" plain @click="handlePrintPlacement(scope.row)">打印</el-button>
+                    <el-button class="queue-print-action" size="small" plain @click="handleDownloadPlacement(scope.row)">下载</el-button>
+                  </div>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -1091,6 +1096,10 @@ watch(() => [route.query.focusId, route.query.focusType], () => {
 <style scoped>
 .queue-page :deep(.el-table .cell) { white-space: nowrap; }
 .queue-main-action { min-width: 84px; font-weight: 600; }
+.queue-action-stack { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.queue-action-line { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.queue-action-line :deep(.el-button + .el-button) { margin-left: 0; }
+.queue-print-action { min-width: 0; padding: 4px 8px; font-weight: 400; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
 .shipment-head { margin-bottom: 16px; color: #303133; }
 
