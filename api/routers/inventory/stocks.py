@@ -327,6 +327,7 @@ def list_operation_requests(current_user: User = Depends(get_current_user), db: 
             )
         )
     rows = db.execute(query).scalars().all()
+    rows = [row for row in rows if _can_access_operation_request(db, current_user, row)]
     normalized_any = False
     for row in rows:
         normalized_any = normalize_inventory_operation_request_approval(row, db) or normalized_any

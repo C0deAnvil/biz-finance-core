@@ -1111,6 +1111,7 @@ class PurchaseOrder(TimestampMixin, Base):
     operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     payment_type = Column(String(50), nullable=False)
     expected_arrival_date = Column(Date, nullable=True)
+    target_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
     status = Column(String(30), nullable=False, default="draft")
     total_amount = Column(Numeric(20, 4), nullable=False, default=0)
     threshold_triggered = Column(Boolean, nullable=False, default=False)
@@ -1123,6 +1124,7 @@ class PurchaseOrder(TimestampMixin, Base):
     ext_json = Column(JSON, nullable=True)
 
     supplier = relationship("Supplier")
+    target_warehouse = relationship("Warehouse")
     purchaser = relationship("User", foreign_keys=[purchaser_user_id])
     operator_user = relationship("User", foreign_keys=[operator_user_id])
     items = relationship("PurchaseOrderItem", back_populates="purchase_order", cascade="all, delete-orphan")

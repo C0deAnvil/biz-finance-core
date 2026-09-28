@@ -57,6 +57,7 @@ from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
 from models import MaterialReplenishmentDemand
 from services.purchase_service._common import _validate_material_batches_items
+from services.warehouse_lookup import get_factory_warehouse, get_finished_warehouse
 
 
 REPLENISHMENT_SOURCE_TYPES = {
@@ -71,6 +72,15 @@ REPLENISHMENT_SOURCE_TYPES = {
 
 
 from services.purchase_service._common import _build_order_items, _complete_purchase_replenishment_source, _ensure_order_owner, _filter_purchase_items_for_source, _load_order, _load_purchase_replenishment_source, _manager_user_ids, _order_has_inventory_flow, _reopen_purchase_replenishment_source, _resolve_purchase_operator_user_id, _validate_purchase_order_replenishment_items, _validate_supplier_catalog
+
+
+def _purchase_target_warehouse_id(db: Session, warehouse_id: int | None, items) -> int:
+    if warehouse_id is None:
+        return (get_factory_warehouse(db) if any(item.material_id for item in items) else get_finished_warehouse(db)).id
+    warehouse = db.get(Warehouse, warehouse_id)
+    if warehouse is None or warehouse.warehouse_type not in {"raw", "finished"}:
+        raise HTTPException(status_code=422, detail="请选择有效的采购目标仓库")
+    return warehouse.id
 
 def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: Session):
     supplier = db.execute(select(Supplier).where(Supplier.id == payload.supplier_id, Supplier.status == "enabled")).scalar_one_or_none()
@@ -132,6 +142,7 @@ def create_purchase_order(payload: PurchaseOrderCreate, current_user: User, db: 
         operator_user_id=_resolve_purchase_operator_user_id(db, payload.operator_user_id, current_user),
         payment_type=payment_type_label(payload.payment_type, module="purchase"),
         expected_arrival_date=payload.expected_arrival_date,
+        target_warehouse_id=_purchase_target_warehouse_id(db, payload.target_warehouse_id, payload.items),
         status="draft",
         replenishment_source_type=replenishment_source["source_type"] if replenishment_source else payload.replenishment_source_type,
         replenishment_source_id=replenishment_source["source_id"] if replenishment_source else payload.replenishment_source_id,
@@ -262,6 +273,7 @@ def update_purchase_order(order_id: int, payload: PurchaseOrderUpdate, current_u
     order.supplier_id = payload.supplier_id
     order.payment_type = payment_type_label(payload.payment_type, module="purchase")
     order.expected_arrival_date = payload.expected_arrival_date
+    order.target_warehouse_id = _purchase_target_warehouse_id(db, payload.target_warehouse_id or order.target_warehouse_id, payload.items)
     order.operator_user_id = _resolve_purchase_operator_user_id(db, payload.operator_user_id or order.operator_user_id, current_user)
     order.approved_by_id = None if order.status == "rejected" else order.approved_by_id
     order.approved_at = None if order.status == "rejected" else order.approved_at

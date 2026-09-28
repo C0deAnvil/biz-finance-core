@@ -66,9 +66,10 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="入库仓库">
-              <el-select v-model="form.warehouse_id" style="width: 100%" @change="handleWarehouseChange">
+              <el-select v-model="form.warehouse_id" :disabled="Boolean(selectedOrderTargetId)" style="width: 100%" @change="handleWarehouseChange">
                 <el-option v-for="item in warehouses" :key="item.id" :label="item.name" :value="item.id" />
               </el-select>
+              <div v-if="selectedOrderTargetId" class="form-tip">由采购单目标仓库确定；要变更请先修改采购单。</div>
             </el-form-item>
           </el-col>
         </el-row>
@@ -231,6 +232,7 @@ const selectedOrderId = ref(null)
 const activeTab = ref('quality_pending')
 const submitting = ref(false)
 const form = reactive({ warehouse_id: null, requires_quality: false, remark: '', preliminary_acceptance_note: '', recorded_at: '', items: [] })
+const selectedOrderTargetId = ref(null)
 const canCreate = computed(() => ['purchase', 'inventory'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const selectedWarehouse = computed(() => warehouses.value.find((item) => item.id === form.warehouse_id) || null)
 const isInspectionWarehouse = computed(() => isInspectionWarehouseOption(selectedWarehouse.value))
@@ -248,6 +250,7 @@ const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPaginati
 
 function resetForm() {
   selectedOrderId.value = null
+  selectedOrderTargetId.value = null
   form.warehouse_id = null
   form.requires_quality = false
   form.remark = ''
@@ -349,6 +352,7 @@ function goInventoryExecute(row) {
 
 async function loadOrderDetail(id) {
   if (!id) {
+    selectedOrderTargetId.value = null
     form.items = []
     return
   }
@@ -360,6 +364,11 @@ async function loadOrderDetail(id) {
     return
   }
   const detailData = await get(`/api/purchases/orders/${id}`)
+  selectedOrderTargetId.value = detailData.target_warehouse_id || null
+  if (selectedOrderTargetId.value) {
+    form.warehouse_id = selectedOrderTargetId.value
+    handleWarehouseChange()
+  }
   if (detailData.arrival_status === 'arrived' || detailData.items.every((item) => Number(item.received_quantity || 0) >= Number(item.quantity || 0))) {
     ElMessage.warning('该采购单已全部到货，不能重复登记')
     selectedOrderId.value = null
@@ -442,4 +451,5 @@ onMounted(async () => {
 .detail-actions { display: flex; gap: 12px; justify-content: flex-end; }
 .receipt-photos { width: 100%; }
 .photo-placeholder { color: #909399; font-size: 13px; }
+.form-tip { color: #909399; font-size: 12px; margin-top: 4px; }
 </style>

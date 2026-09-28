@@ -46,7 +46,7 @@ from services.organization import get_inventory_scope_warehouse_ids, is_system_a
 from services.quality_workflow import create_production_quality_task, resolve_quality_recipients_for_warehouse
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request
-from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
+from services.warehouse_lookup import get_factory_warehouse, get_raw_warehouse
 
 
 def repair_material_request_states(db: Session) -> int:
@@ -98,13 +98,15 @@ _PRODUCTION_TASK_NON_RESERVING_STATUSES = {
 
 
 def _inventory_user_ids_for_warehouse(db: Session, warehouse_id: int) -> list[int]:
+    warehouse = db.get(Warehouse, warehouse_id)
     users = db.execute(
         select(User).join(Role, User.role_id == Role.id).where(Role.code == "inventory", User.is_active.is_(True))
     ).scalars().all()
     return [
         user.id
         for user in users
-        if get_inventory_scope_warehouse_ids(db, user) is None or warehouse_id in (get_inventory_scope_warehouse_ids(db, user) or [])
+        if (warehouse and user.id == warehouse.manager_user_id)
+        or warehouse_id in (get_inventory_scope_warehouse_ids(db, user) or [])
     ]
 
 
@@ -574,13 +576,13 @@ def create_task(
     if payload_usage_map and set(payload_usage_map) != bom_material_ids:
         raise HTTPException(status_code=409, detail="领料明细必须与 BOM 原料保持一致")
 
-    warehouse_id = None
+    warehouse_id = get_factory_warehouse(db).id
     if payload.warehouse_id:
         target_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.warehouse_id)).scalar_one_or_none()
         if target_warehouse is None:
             raise HTTPException(status_code=404, detail="目标仓库不存在")
-        if target_warehouse.warehouse_type != "finished":
-            raise HTTPException(status_code=409, detail="生产成品只能入成品仓")
+        if target_warehouse.warehouse_type not in {"raw", "finished"}:
+            raise HTTPException(status_code=409, detail="生产目标仓库必须是廊坊工厂仓或成品仓")
         warehouse_id = target_warehouse.id
 
     task = ProductionTask(
@@ -706,6 +708,8 @@ def submit_material_request(
         raise HTTPException(status_code=409, detail="领料申请必须覆盖任务全部原料明细")
 
     inventory_user_ids = _inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id)
+    if not inventory_user_ids:
+        raise HTTPException(status_code=409, detail="廊坊工厂仓未配置库管，请先配置仓库负责人或部门仓库范围")
     manager_user_ids = _role_user_ids(db, "manager")
     requested_rows: list[ProductionMaterialUsage] = []
     special_rows: list[ProductionMaterialUsage] = []
@@ -843,7 +847,7 @@ def submit_special_requests(
         submitted_rows.append(usage)
 
     task.status = "pending_special_approval"
-    approver_user_ids = list(dict.fromkeys([*_role_user_ids(db, "inventory"), *_role_user_ids(db, "manager")]))
+    approver_user_ids = list(dict.fromkeys([*_inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id), *_role_user_ids(db, "manager")]))
     for usage in submitted_rows:
         for user_id in approver_user_ids:
             create_todo(
@@ -906,6 +910,8 @@ def approve_special_request(
     task = usage.production_task
     allowed_quantity = _allowed_quantity(task, usage)
     role_code = current_user.role.code if current_user.role else ""
+    if role_code == "inventory" and current_user.id not in _inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id):
+        raise HTTPException(status_code=403, detail="只有廊坊工厂仓库管可以审批生产领料")
     review_note = payload.remark.strip() if payload.remark else None
     is_admin = is_system_admin(current_user)
     is_special_request = _is_special_material_request(task, usage)
@@ -1112,10 +1118,10 @@ def complete_task(
     task.completion_recorded_by_id = current_user.id
 
     quality_task = None
-    finished_warehouse = get_finished_warehouse(db)
-    # 目标入库仓库：任务指定优先，否则默认成品仓（沧州）
+    # 生产成品先进入任务指定仓库，未指定的历史任务默认廊坊工厂仓。
     if not task.warehouse_id:
-        task.warehouse_id = finished_warehouse.id
+        task.warehouse_id = get_factory_warehouse(db).id
+    target_warehouse = db.get(Warehouse, task.warehouse_id)
     if task.requires_quality:
         required_tests = max(1, ceil(float(payload.produced_quantity) / 1000))
         quality_task = create_production_quality_task(
@@ -1134,16 +1140,17 @@ def complete_task(
             business_type="quality_task",
             business_id=quality_task.id,
         )
-        # 指定了质检员就只派给他(需求:由指定质检员或超级质检员处理);
-        # 未指定时按仓库路由,优先该仓绑定的质检员
+        eligible_quality_user_ids = resolve_quality_recipients_for_warehouse(
+            db, warehouse_id=task.warehouse_id, fallback_user_ids=quality_user_ids,
+        )
         if quality_task.assigned_inspector_id:
+            if quality_task.assigned_inspector_id not in eligible_quality_user_ids:
+                raise HTTPException(status_code=409, detail="指定质检员不属于生产目标仓库")
             quality_user_ids = [quality_task.assigned_inspector_id]
         else:
-            quality_user_ids = resolve_quality_recipients_for_warehouse(
-                db,
-                warehouse_id=task.warehouse_id,
-                fallback_user_ids=quality_user_ids,
-            )
+            quality_user_ids = eligible_quality_user_ids
+        if not quality_user_ids:
+            raise HTTPException(status_code=409, detail="生产目标仓库尚未配置质检员，请先配置仓库质检员或部门仓库范围")
         for user_id in quality_user_ids:
             create_todo(
                 db,
@@ -1175,7 +1182,7 @@ def complete_task(
             source_type="production_task",
             source_id=task.id,
             source_no=task.task_no,
-            warehouse_id=finished_warehouse.id,
+            warehouse_id=target_warehouse.id,
             requested_by_id=current_user.id,
             items=[
                 {
@@ -1187,7 +1194,7 @@ def complete_task(
                 }
             ],
             remark=payload.notes if hasattr(payload, "notes") else None,
-            recipient_user_ids=_inventory_user_ids_for_warehouse(db, finished_warehouse.id),
+            recipient_user_ids=_inventory_user_ids_for_warehouse(db, target_warehouse.id),
             title=f"待执行生产入库 {task.task_no}",
             description=f"生产任务 {task.task_no} 已完工且无需质检，请库管执行成品入库。",
         )
@@ -1196,7 +1203,7 @@ def complete_task(
             title="生产入库申请已提交",
             content=f"生产任务 {task.task_no} 已完工且无需质检，已向库管提交成品入库申请。",
             module="production",
-            recipient_user_ids=list(dict.fromkeys([task.created_by_id, *_inventory_user_ids_for_warehouse(db, finished_warehouse.id)])),
+            recipient_user_ids=list(dict.fromkeys([task.created_by_id, *_inventory_user_ids_for_warehouse(db, target_warehouse.id)])),
             created_by_id=current_user.id,
             category="success",
         )
@@ -1216,7 +1223,7 @@ def complete_task(
             "produced_quantity": float(task.produced_quantity),
             "scrap_quantity": float(task.scrap_quantity),
             "raw_warehouse": raw_warehouse.name,
-            "finished_warehouse": finished_warehouse.name,
+            "finished_warehouse": target_warehouse.name,
             "batch_no": task.batch_no,
         },
     )

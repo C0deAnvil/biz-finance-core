@@ -30,3 +30,8 @@ def get_raw_warehouse(db: Session) -> Warehouse:
         codes=("LANGFANG_RAW", "WH-RM"),
         error_message="原料仓未初始化，请先在主数据中创建 warehouse_type=raw 的原料仓库",
     )
+
+
+def get_factory_warehouse(db: Session) -> Warehouse:
+    """廊坊工厂仓库；当前主数据将它归类为 raw，但也接收生产成品。"""
+    return get_raw_warehouse(db)

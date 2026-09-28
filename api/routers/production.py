@@ -60,6 +60,7 @@ from services.production_service import (
     convert_plan_to_task as convert_plan_to_task_service,
     create_plan as create_plan_service,
     create_task as create_task_service,
+    _inventory_user_ids_for_warehouse,
     _create_raw_material_demands_for_task,
     raw_material_shortage_detail,
     submit_material_request as submit_material_request_service,
@@ -69,7 +70,7 @@ from services.production_service import (
 from services.quality_workflow import quality_sample_consumption
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request, production_flow_steps
-from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
+from services.warehouse_lookup import get_factory_warehouse, get_finished_warehouse, get_raw_warehouse
 from services.inventory_availability import purchase_in_transit_map, stock_key
 
 
@@ -610,7 +611,7 @@ def get_task_detail(task_id: int, current_user: User = Depends(get_current_user)
         )
         .order_by(InventoryOperationRequest.id.desc())
     ).scalars().first()
-    finished_warehouse = _finished_warehouse(db)
+    finished_warehouse = task.warehouse or get_factory_warehouse(db)
     sales_order = db.execute(
         select(SalesOrder).options(joinedload(SalesOrder.customer)).where(SalesOrder.id == task.sales_order_id)
     ).scalar_one_or_none() if task.sales_order_id else None
@@ -662,8 +663,7 @@ def get_task_detail(task_id: int, current_user: User = Depends(get_current_user)
                 "code": finished_warehouse.code,
                 "name": finished_warehouse.name,
             },
-            # 本任务实际归属的入库仓库(建任务时选的 warehouse_id,未选则为默认成品仓)。
-            # finished_warehouse 是全局默认仓,不能代表本任务的选择;
+            # 本任务实际归属的入库仓库；历史未指定任务默认廊坊工厂仓。
             # 完工录入要据此告知"质检与入库由哪个仓库接手",
             # 后端建质检任务时用的也正是 task.warehouse_id
             # (services/quality_workflow.py:114)。
@@ -866,13 +866,13 @@ def finish_inbound(
         if quality_task.status != "completed":
             raise HTTPException(status_code=409, detail="质检尚未准许入库")
 
-    warehouse = _finished_warehouse(db)
+    warehouse = db.get(Warehouse, task.warehouse_id) if task.warehouse_id else get_factory_warehouse(db)
     if payload.warehouse_id and payload.warehouse_id != warehouse.id:
         override_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.warehouse_id)).scalar_one_or_none()
         if override_warehouse is None:
             raise HTTPException(status_code=404, detail="入库仓库不存在")
-        if override_warehouse.warehouse_type != "finished":
-            raise HTTPException(status_code=409, detail="生产成品只能入成品仓")
+        if override_warehouse.warehouse_type not in {"raw", "finished"}:
+            raise HTTPException(status_code=409, detail="生产成品只能入廊坊工厂仓或成品仓")
         warehouse = override_warehouse
 
     produced_quantity = Decimal(task.produced_quantity or 0)
@@ -901,7 +901,7 @@ def finish_inbound(
             }
         ],
         remark=payload.remark,
-        recipient_user_ids=_role_user_ids(db, "inventory"),
+        recipient_user_ids=_inventory_user_ids_for_warehouse(db, warehouse.id),
         title=f"待执行生产入库 {task.task_no}",
         description=f"生产任务 {task.task_no} 已提交入库申请，请库管执行成品入库。",
     )
@@ -916,7 +916,7 @@ def finish_inbound(
         title="生产入库申请已提交",
         content=f"生产任务 {task.task_no} 已向库管提交入库申请，数量 {float(inbound_quantity)}。",
         module="production",
-        recipient_user_ids=list(dict.fromkeys([task.created_by_id, *_role_user_ids(db, 'inventory', 'manager', 'chairman')])),
+        recipient_user_ids=list(dict.fromkeys([task.created_by_id, *_inventory_user_ids_for_warehouse(db, warehouse.id)])),
         created_by_id=current_user.id,
         category="info",
     )

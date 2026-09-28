@@ -83,6 +83,10 @@ def _assigned_operation_request_ids(db: Session, current_user: User) -> list[int
 
 
 def _can_access_operation_request(db: Session, current_user: User, row: InventoryOperationRequest) -> bool:
+    if row.request_category == "production_material_issue" and current_user.role.code == "inventory":
+        warehouse = db.get(Warehouse, row.warehouse_id)
+        scope = get_inventory_scope_warehouse_ids(db, current_user)
+        return bool((warehouse and warehouse.manager_user_id == current_user.id) or (scope is not None and row.warehouse_id in scope))
     if warehouse_in_scope(db, current_user, row.warehouse_id):
         return True
     return row.id in set(_assigned_operation_request_ids(db, current_user))

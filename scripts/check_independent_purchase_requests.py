@@ -10,10 +10,12 @@ from api.routers.purchases import (
     list_department_purchase_requests,
     process_department_purchase_request,
 )
-from models import Base, BOM, BOMItem, Material, Product, ProductionPlan, PurchaseOrder, PurchaseOrderItem, PurchaseRequest, Role, User
+from models import Base, BOM, BOMItem, Material, Product, ProductionPlan, ProductionTask, PurchaseOrder, PurchaseOrderItem, PurchaseRequest, Role, User, Warehouse
 from schemas.production import ProductionTaskCreate
-from schemas.purchases import DepartmentPurchaseRequestCreate, DepartmentPurchaseRequestProcess
-from services.production_service import convert_plan_to_task, create_task
+from schemas.purchases import DepartmentPurchaseRequestCreate, DepartmentPurchaseRequestProcess, PurchaseOrderItemInput
+from services.production_service import _inventory_user_ids_for_warehouse, convert_plan_to_task, create_task
+from services.quality_workflow import resolve_quality_recipients_for_warehouse
+from services.purchase_service.orders import _purchase_target_warehouse_id
 
 
 engine = create_engine("sqlite:///:memory:")
@@ -21,7 +23,7 @@ Base.metadata.create_all(engine)
 with Session(engine) as db:
     roles = {}
     users = {}
-    for code in ("production", "quality", "purchase"):
+    for code in ("production", "quality", "purchase", "inventory"):
         role = Role(code=code, name=code, home_route="/")
         db.add(role)
         db.flush()
@@ -38,7 +40,26 @@ with Session(engine) as db:
     db.add(bom)
     db.flush()
     db.add(BOMItem(bom_id=bom.id, material_id=material.id, standard_quantity=Decimal("1")))
+    factory = Warehouse(
+        code="LANGFANG_RAW", name="廊坊仓库", warehouse_type="raw",
+        manager_user_id=users["inventory"].id, qc_user_id=users["quality"].id,
+    )
+    sales = Warehouse(code="CANGZHOU_FINISHED", name="沧州仓库", warehouse_type="finished")
+    db.add_all([factory, sales])
     db.commit()
+    assert _inventory_user_ids_for_warehouse(db, factory.id) == [users["inventory"].id]
+    assert resolve_quality_recipients_for_warehouse(
+        db, warehouse_id=factory.id, fallback_user_ids=[users["purchase"].id],
+    ) == [users["quality"].id]
+    assert resolve_quality_recipients_for_warehouse(
+        db, warehouse_id=sales.id, fallback_user_ids=[users["quality"].id],
+    ) == []
+    assert _purchase_target_warehouse_id(
+        db, None, [PurchaseOrderItemInput(material_id=material.id, quantity="1", unit_price="1")],
+    ) == factory.id
+    assert _purchase_target_warehouse_id(
+        db, sales.id, [PurchaseOrderItemInput(material_id=material.id, quantity="1", unit_price="1")],
+    ) == sales.id
 
     # No inventory stock exists, but creating a task must still succeed.
     result = create_task(
@@ -46,6 +67,7 @@ with Session(engine) as db:
         users["production"], db,
     )
     assert result["data"]["task_no"]
+    assert db.get(ProductionTask, result["data"]["id"]).warehouse_id == factory.id
 
     plan = ProductionPlan(
         plan_no="SCJH-TEST", product_id=product.id, planned_quantity=Decimal("3"),

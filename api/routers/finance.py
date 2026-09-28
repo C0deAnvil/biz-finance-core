@@ -11,6 +11,7 @@ from database import get_db
 from dependencies import get_current_user, require_roles
 from models import (
     CashFlowRecord,
+    Customer,
     Inventory,
     InventoryDispatchQueue,
     PayableRecord,
@@ -853,20 +854,37 @@ def list_receivable_records(
 def list_my_receivables(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    keyword: str | None = Query(default=None, max_length=100),
+    status: str = Query(default="all", pattern="^(all|pending|completed)$"),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     current_user: User = Depends(require_roles("sales")),
     db: Session = Depends(get_db),
 ):
     """Read-only receivables for the signed-in order owner, never other salespeople."""
-    own_order_filter = (SalesOrder.sales_user_id == current_user.id, SalesOrder.status != "cancelled")
-    total = db.scalar(
-        select(func.count(func.distinct(SalesOrder.id)))
-        .join(ReceivablePlan, ReceivablePlan.sales_order_id == SalesOrder.id)
-        .where(*own_order_filter)
-    ) or 0
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
+    plan_exists = exists(select(ReceivablePlan.id).where(ReceivablePlan.sales_order_id == SalesOrder.id))
+    open_plan_exists = exists(select(ReceivablePlan.id).where(
+        ReceivablePlan.sales_order_id == SalesOrder.id, ReceivablePlan.status != "completed",
+    ))
+    filters = [SalesOrder.sales_user_id == current_user.id, SalesOrder.status != "cancelled", plan_exists]
+    if keyword and keyword.strip():
+        term = f"%{keyword.strip()}%"
+        filters.append(or_(SalesOrder.order_no.ilike(term), SalesOrder.customer.has(Customer.name.ilike(term))))
+    if status == "pending":
+        filters.append(open_plan_exists)
+    elif status == "completed":
+        filters.append(~open_plan_exists)
+    if date_from:
+        filters.append(SalesOrder.created_at >= datetime.combine(date_from, datetime.min.time()))
+    if date_to:
+        filters.append(SalesOrder.created_at <= datetime.combine(date_to, datetime.max.time()))
+    total = db.scalar(select(func.count(SalesOrder.id)).where(*filters)) or 0
     orders = db.execute(
         select(SalesOrder)
         .options(joinedload(SalesOrder.customer))
-        .where(*own_order_filter, exists(select(ReceivablePlan.id).where(ReceivablePlan.sales_order_id == SalesOrder.id)))
+        .where(*filters)
         .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -883,6 +901,7 @@ def list_my_receivables(
         receivable = sum((Decimal(plan.planned_amount or 0) for plan in plans), Decimal("0"))
         received = sum((Decimal(plan.received_amount or 0) for plan in plans), Decimal("0"))
         remaining = max(receivable - received, Decimal("0"))
+        converted_at = min((plan.created_at for plan in plans if plan.created_at), default=None)
         rows.append({
             "order_id": order.id,
             "order_no": order.order_no,
@@ -892,6 +911,7 @@ def list_my_receivables(
             "received_amount": str(received),
             "remaining_amount": str(remaining),
             "status": "completed" if all(plan.status == "completed" for plan in plans) else "pending",
+            "receivable_created_at": converted_at.isoformat() if converted_at else None,
             "created_at": order.created_at.isoformat() if order.created_at else None,
         })
     return api_response(data={"rows": rows, "total": total, "page": page, "page_size": page_size})

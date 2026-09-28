@@ -17,9 +17,12 @@ from models import (
     QualityInspection,
     QualityTask,
     Supplier,
+    User,
+    Role,
     Warehouse,
 )
 from services.core import next_business_no, resolve_assigned_inspector_id
+from services.organization import get_inventory_scope_warehouse_ids
 
 PURCHASE_QUALITY_NOTES_PREFIX = "PURCHASE_QUALITY::"
 RETURN_QUALITY_NOTES_PREFIX = "RETURN_QUALITY::"
@@ -63,11 +66,20 @@ def resolve_quality_recipients_for_warehouse(
     warehouse_id: int | None,
     fallback_user_ids: list[int],
 ) -> list[int]:
-    """按仓库路由质检员：优先该仓库绑定的质检员，否则回退到全部质检员。"""
+    """有目标仓库时只通知该仓库的质检员；无仓库的旧任务才用回退名单。"""
     if warehouse_id:
         warehouse = db.execute(select(Warehouse).where(Warehouse.id == warehouse_id)).scalar_one_or_none()
-        if warehouse is not None and warehouse.qc_user_id:
-            return [warehouse.qc_user_id]
+        if warehouse is None:
+            raise HTTPException(status_code=404, detail="质检目标仓库不存在")
+        users = db.execute(
+            select(User).join(Role, User.role_id == Role.id)
+            .where(Role.code.in_(["quality", "quality_super"]), User.is_active.is_(True))
+        ).scalars().all()
+        return list(dict.fromkeys(
+            user.id for user in users
+            if user.id == warehouse.qc_user_id
+            or (scope := get_inventory_scope_warehouse_ids(db, user)) is not None and warehouse_id in scope
+        ))
     return list(dict.fromkeys(fallback_user_ids))
 
 

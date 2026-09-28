@@ -22,6 +22,7 @@
       <el-table-column prop="operator_name" label="经办人" width="120" />
       <el-table-column prop="payment_type_label" label="付款方式" min-width="160" />
       <el-table-column prop="expected_arrival_date" label="预计到货日期" width="140"><template #default="scope">{{ scope.row.expected_arrival_date || '-' }}</template></el-table-column>
+      <el-table-column prop="target_warehouse_name" label="目标仓库" width="130" />
       <el-table-column prop="status_label" label="状态" width="140">
         <template #default="scope">
           <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag>
@@ -163,6 +164,13 @@
               <el-date-picker v-model="form.expected_arrival_date" type="date" value-format="YYYY-MM-DD" placeholder="请选择预计到货日期" style="width: 100%" />
             </el-form-item>
           </el-col>
+          <el-col :span="12">
+            <el-form-item label="目标仓库" required>
+              <el-select v-model="form.target_warehouse_id" placeholder="选择采购到货仓库" style="width: 100%">
+                <el-option v-for="warehouse in warehouses" :key="warehouse.id" :value="warehouse.id" :label="warehouse.name" />
+              </el-select>
+            </el-form-item>
+          </el-col>
         </el-row>
 
         <el-alert
@@ -257,6 +265,7 @@
         <el-descriptions-item label="状态">{{ detail.status_label || statusLabel(detail.status) }}</el-descriptions-item>
         <el-descriptions-item label="付款方式">{{ detail.payment_type_label || paymentTypeLabel(detail.payment_type) }}</el-descriptions-item>
         <el-descriptions-item label="预计到货日期">{{ detail.expected_arrival_date || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="目标仓库">{{ detail.target_warehouse_name || '历史单未指定' }}</el-descriptions-item>
         <el-descriptions-item label="结算状态">{{ detail.fund_status_label || statusLabel(detail.fund_status) }}</el-descriptions-item>
         <el-descriptions-item label="流程进度" :span="2">
           <div class="flow-steps">
@@ -418,6 +427,7 @@ const userOptions = ref([])
 const products = ref([])
 const materials = ref([])
 const packagingConfigs = ref([])
+const warehouses = ref([])
 const supplierCatalogItems = ref([])
 const demandSupplierOptions = ref([])
 const supplierAi = ref(null)
@@ -478,6 +488,7 @@ const emptyForm = () => ({
   operator_user_id: auth.user?.id || null,
   payment_type: '先付款后到货',
   expected_arrival_date: '',
+  target_warehouse_id: warehouses.value.find((item) => item.code === 'LANGFANG_RAW' || item.code === 'WH-RM')?.id || null,
   fulfillment_demand_id: null,
   items: [{ type: 'material', target_id: null, quantity: 1, unit_price: 0 }]
 })
@@ -807,6 +818,8 @@ async function prefillDemand(row) {
     quantity: Number(item.shortage_quantity || 1),
     unit_price: 0
   }))
+  const targetCode = isRawDemand ? 'LANGFANG_RAW' : 'CANGZHOU_FINISHED'
+  form.target_warehouse_id = warehouses.value.find((warehouse) => warehouse.code === targetCode)?.id || form.target_warehouse_id
   form.fulfillment_demand_id = (isRawDemand || isLowStockDemand) ? null : row.id
   mergeMode.value = false
   await loadSupplierOptionsForDemand(row)
@@ -963,6 +976,10 @@ async function cancelDemand(row) {
 }
 
 async function submit() {
+  if (!form.target_warehouse_id) {
+    ElMessage.warning('请选择目标仓库')
+    return
+  }
   if (!form.expected_arrival_date) {
     ElMessage.warning('请选择预计到货日期')
     return
@@ -987,6 +1004,7 @@ async function submit() {
     operator_user_id: form.operator_user_id || auth.user?.id,
     payment_type: form.payment_type,
     expected_arrival_date: form.expected_arrival_date,
+    target_warehouse_id: form.target_warehouse_id,
     items: form.items.map((item) => ({
       product_id: item.type === 'product' ? item.target_id : null,
       material_id: item.type === 'material' ? item.target_id : null,
@@ -1075,6 +1093,7 @@ async function editOrder(row) {
   await loadSupplierAi(order.supplier_id)
   form.payment_type = order.payment_type
   form.expected_arrival_date = order.expected_arrival_date || ''
+  form.target_warehouse_id = order.target_warehouse_id || form.target_warehouse_id
   form.items = (order.items || []).map((item) => ({
     type: item.product_id ? 'product' : item.material_id ? 'material' : 'packaging',
     target_id: item.product_id || item.material_id || item.packaging_config_id,
@@ -1108,6 +1127,8 @@ onMounted(async () => {
     products.value = await get('/api/master-data/products')
     materials.value = await get('/api/master-data/materials')
     packagingConfigs.value = await get('/api/master-data/packaging-configs?entity_type=global&active_only=true')
+    warehouses.value = await get('/api/master-data/warehouses')
+    warehouses.value = warehouses.value.filter((item) => ['raw', 'finished'].includes(item.type))
     await load()
   } catch (error) {
     ElMessage.error(`采购页面初始化失败：${error.message || '请稍后重试'}`)

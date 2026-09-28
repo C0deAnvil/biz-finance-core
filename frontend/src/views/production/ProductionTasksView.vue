@@ -279,7 +279,7 @@
         <el-form-item label="计划数量"><el-input-number v-model="createForm.planned_quantity" :min="0.01" style="width: 100%" /></el-form-item>
         <el-form-item label="浮动比例"><el-input-number v-model="createForm.fluctuation_ratio" :min="0" :max="1" :step="0.01" style="width: 100%" /></el-form-item>
         <el-form-item label="目标仓库">
-          <el-select v-model="createForm.warehouse_id" clearable placeholder="默认沧州成品仓" style="width: 100%">
+          <el-select v-model="createForm.warehouse_id" placeholder="默认廊坊工厂仓" style="width: 100%">
             <el-option v-for="item in finishedWarehouses" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
@@ -383,7 +383,7 @@
                (services/quality_workflow.py:114),所以此处只需展示归属仓库。 -->
           <el-col v-if="completeForm.requires_quality" :span="24">
             <el-form-item label="入库仓库">
-              <span>{{ taskDetail?.warehouse?.name || taskDetail?.warehouse_name || '默认成品仓' }}</span>
+              <span>{{ taskDetail?.warehouse?.name || taskDetail?.warehouse_name || '廊坊工厂仓' }}</span>
               <span class="toolbar-tip" style="margin-left: 8px">质检与入库由该仓库的质检员、库管完成</span>
             </el-form-item>
           </el-col>
@@ -454,7 +454,7 @@
         <el-descriptions-item label="原料仓">{{ taskDetail.raw_warehouse?.name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="质检任务">{{ taskDetail.quality_task?.quality_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="质检状态">{{ taskDetail.quality_task?.status_label || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="成品仓">{{ taskDetail.finished_warehouse?.name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="目标入库仓">{{ taskDetail.finished_warehouse?.name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="完工记录人">{{ taskDetail.completion_recorded_by_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="完工时间">{{ taskDetail.completed_at ? formatDateTime(taskDetail.completed_at) : '-' }}</el-descriptions-item>
         <el-descriptions-item label="初步验收" :span="2">{{ taskDetail.preliminary_acceptance_note || '-' }}</el-descriptions-item>
@@ -681,7 +681,8 @@ function canShowInboundAction(row) {
 }
 
 function resetCreateForm() {
-  Object.assign(createForm, { source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null, create_raw_material_demands: false, raw_material_demands: [] })
+  const factory = finishedWarehouses.value.find((item) => item.code === 'LANGFANG_RAW' || item.code === 'WH-RM')
+  Object.assign(createForm, { source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: factory?.id || null, create_raw_material_demands: false, raw_material_demands: [] })
   selectedSalesOrder.value = null
   activeDemand.value = null
 }
@@ -1304,7 +1305,7 @@ watch(
 )
 
 /**
- * 目标仓库候选(成品仓)。
+ * 生产成品目标仓库：默认廊坊工厂仓，也可选沧州仓库。
  *
  * 原先 onMounted 里直接调用 loadFinishedWarehouses(),但全文没有定义它 ——
  * Promise.all([...]) 在构造数组时就抛 ReferenceError,
@@ -1315,7 +1316,9 @@ async function loadFinishedWarehouses() {
   try {
     const res = await get('/api/master-data/warehouses')
     const rows = Array.isArray(res) ? res : (res?.items || [])
-    finishedWarehouses.value = rows.filter((item) => item.type === 'finished')
+    finishedWarehouses.value = rows.filter((item) => ['raw', 'finished'].includes(item.warehouse_type || item.type))
+    const factory = finishedWarehouses.value.find((item) => item.code === 'LANGFANG_RAW' || item.code === 'WH-RM')
+    if (factory && !createForm.warehouse_id) createForm.warehouse_id = factory.id
   } catch (error) {
     finishedWarehouses.value = []
   }

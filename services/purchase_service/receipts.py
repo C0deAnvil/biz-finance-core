@@ -84,6 +84,8 @@ def create_receipt(payload: PurchaseReceiptCreate, current_user: User, db: Sessi
     warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.warehouse_id)).scalar_one_or_none()
     if warehouse is None:
         raise HTTPException(status_code=404, detail="入库仓库不存在")
+    if order.target_warehouse_id and payload.warehouse_id != order.target_warehouse_id:
+        raise HTTPException(status_code=409, detail="到货仓库与采购单目标仓库不一致；请先修改采购单目标仓库")
     force_quality = (
         "inspection" in (warehouse.warehouse_type or "").lower()
         or "inspection" in (warehouse.code or "").lower()

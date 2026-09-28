@@ -88,9 +88,20 @@ with Session(engine) as db:
     assert db.get(SalesOrderItem, sales_order.items[0].id).total_amount == Decimal("2.4690")
     assert db.get(PurchaseOrder, purchase_order.id).total_amount == Decimal("2.4690")
     assert db.query(FinancialAccountTransaction).first().amount == Decimal("1.2345")
-    response = list_my_receivables(page=1, page_size=20, current_user=users[0], db=db)["data"]
+    response = list_my_receivables(
+        page=1, page_size=20, keyword=None, status="all", date_from=None, date_to=None,
+        current_user=users[0], db=db,
+    )["data"]
     assert response["total"] == 1 and len(response["rows"]) == 1
     assert response["rows"][0]["order_no"] == "XS-PRECISION"
     assert Decimal(response["rows"][0]["remaining_amount"]) == Decimal("1.1111")
+    assert list_my_receivables(
+        page=1, page_size=20, keyword="PRECISION", status="pending", date_from=None, date_to=None,
+        current_user=users[0], db=db,
+    )["data"]["total"] == 1
+    assert list_my_receivables(
+        page=1, page_size=20, keyword=None, status="completed", date_from=None, date_to=None,
+        current_user=users[0], db=db,
+    )["data"]["total"] == 0
 
 print("money precision and sales receivable scope passed")

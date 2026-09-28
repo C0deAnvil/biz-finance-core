@@ -34,12 +34,11 @@ with TemporaryDirectory(prefix="yecai-money-migration-") as folder:
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "alembic"))
     command.stamp(config, "fd4e5f6a7b8c")
-    command.upgrade(config, "head")
+    command.upgrade(config, "fe5f6a7b8c9d")
     inspector = inspect(engine)
     for table_name, column_name, precision in old_columns:
         column = next(row for row in inspector.get_columns(table_name) if row["name"] == column_name)
         assert column["type"].scale == 4, f"{table_name}.{column_name} is still scale 2"
         assert column["type"].precision == precision
-    assert inspector.has_table("purchase_requests")
     engine.dispose()
     print(f"money migration passed for {len(old_columns)} columns")
