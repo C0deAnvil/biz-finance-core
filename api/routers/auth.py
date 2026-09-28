@@ -49,6 +49,10 @@ def build_user_profile(user: User, db: Session) -> UserProfile:
             allowed_paths.add("/admin/module-permissions")
     if user.role.code in {"sales", "purchase", "manager", "chairman", "system_admin", "master_data_admin"} and "/standard-prices" in base_paths:
         allowed_paths.add("/standard-prices")
+    # 销售查看本人应收是角色基础功能。仅靠一次性迁移补授权会漏掉后续新增的销售账号，
+    # 导致路由守卫把页面重定向到首页，看起来像是“我的应收款”页面空白。
+    if user.role.code == "sales" and "/sales/my-receivables" in base_paths:
+        allowed_paths.add("/sales/my-receivables")
     navigation = filter_navigation_by_paths(base_navigation, allowed_paths)
     return UserProfile(
         id=user.id,
