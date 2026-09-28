@@ -36,8 +36,8 @@
               <el-table-column prop="display_specification" label="规格" width="140" />
               <el-table-column prop="packaging_name" label="包装" width="140" />
               <el-table-column prop="bag_count" label="袋数" width="100"><template #default="innerScope">{{ formatNumber(innerScope.row.bag_count) }}</template></el-table-column>
-              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_unit_price) }}</template></el-table-column>
-              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
+              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_unit_price) }}</template></el-table-column>
+              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_fee) }}</template></el-table-column>
               <el-table-column prop="quantity" label="订单数量" width="120">
                 <template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template>
               </el-table-column>
@@ -45,10 +45,10 @@
                 <template #default="innerScope">{{ formatNumber(innerScope.row.shipped_quantity) }}</template>
               </el-table-column>
               <el-table-column prop="unit_price" label="单价" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
               </el-table-column>
               <el-table-column prop="total_amount" label="金额" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
               </el-table-column>
             </el-table>
           </template>
@@ -67,13 +67,13 @@
         </el-table-column>
         <el-table-column prop="item_summary" label="订单摘要" min-width="220" show-overflow-tooltip />
         <el-table-column prop="total_amount" label="订单金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
         </el-table-column>
         <el-table-column prop="receivable_amount" label="应收金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.receivable_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.receivable_amount) }}</template>
         </el-table-column>
         <el-table-column prop="received_amount" label="已收金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.received_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.received_amount) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="190" fixed="right">
           <template #default="scope">
@@ -101,8 +101,8 @@
               <el-table-column prop="display_specification" label="规格" width="140" />
               <el-table-column prop="packaging_name" label="包装" width="140" />
               <el-table-column prop="bag_count" label="袋数" width="100"><template #default="innerScope">{{ formatNumber(innerScope.row.bag_count) }}</template></el-table-column>
-              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_unit_price) }}</template></el-table-column>
-              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
+              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_unit_price) }}</template></el-table-column>
+              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_fee) }}</template></el-table-column>
               <el-table-column prop="quantity" label="订单数量" width="120">
                 <template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template>
               </el-table-column>
@@ -110,10 +110,10 @@
                 <template #default="innerScope">{{ formatNumber(innerScope.row.shipped_quantity) }}</template>
               </el-table-column>
               <el-table-column prop="unit_price" label="单价" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
               </el-table-column>
               <el-table-column prop="total_amount" label="金额" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
               </el-table-column>
             </el-table>
           </template>
@@ -133,10 +133,10 @@
           </template>
         </el-table-column>
         <el-table-column prop="requested_amount" label="申请金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.requested_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.requested_amount) }}</template>
         </el-table-column>
         <el-table-column prop="actual_amount" label="确认金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.actual_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.actual_amount) }}</template>
         </el-table-column>
         <el-table-column prop="installment_total" label="总期数" width="100" />
         <el-table-column prop="installment_index" label="当前期数" width="100" />
@@ -173,9 +173,9 @@
       <el-table :data="completedOrders" stripe>
         <el-table-column prop="order_no" label="客户订单号" width="160" />
         <el-table-column prop="customer_name" label="客户" min-width="180" />
-        <el-table-column prop="total_amount" label="订单金额" width="120"><template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template></el-table-column>
-        <el-table-column prop="receivable_amount" label="应收金额" width="120"><template #default="scope">{{ formatNumber(scope.row.receivable_amount) }}</template></el-table-column>
-        <el-table-column prop="received_amount" label="已收金额" width="120"><template #default="scope">{{ formatNumber(scope.row.received_amount) }}</template></el-table-column>
+        <el-table-column prop="total_amount" label="订单金额" width="120"><template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template></el-table-column>
+        <el-table-column prop="receivable_amount" label="应收金额" width="120"><template #default="scope">{{ formatMoney(scope.row.receivable_amount) }}</template></el-table-column>
+        <el-table-column prop="received_amount" label="已收金额" width="120"><template #default="scope">{{ formatMoney(scope.row.received_amount) }}</template></el-table-column>
         <el-table-column prop="completed_at" label="完成时间" min-width="170"><template #default="scope">{{ formatDateTime(scope.row.completed_at) }}</template></el-table-column>
         <el-table-column label="操作" width="100" fixed="right"><template #default="scope"><el-button size="small" text type="primary" @click="goToSalesOrder(scope.row.id)">详情</el-button></template></el-table-column>
       </el-table>
@@ -188,8 +188,8 @@
         <el-descriptions-item label="客户">{{ activeReceiptRequest.customer_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="付款方式">{{ activeReceiptRequest.payment_type_label || '-' }}</el-descriptions-item>
         <el-descriptions-item label="收款阶段">{{ activeReceiptRequest.payment_stage_label || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="申请金额">{{ formatNumber(activeReceiptRequest.requested_amount) }}</el-descriptions-item>
-        <el-descriptions-item label="已确认金额">{{ formatNumber(activeReceiptRequest.actual_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="申请金额">{{ formatMoney(activeReceiptRequest.requested_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="已确认金额">{{ formatMoney(activeReceiptRequest.actual_amount) }}</el-descriptions-item>
         <el-descriptions-item label="总期数">{{ activeReceiptRequest.installment_total || '-' }}</el-descriptions-item>
         <el-descriptions-item label="当前期数">{{ activeReceiptRequest.installment_index || '-' }}</el-descriptions-item>
         <el-descriptions-item label="申请说明" :span="2">{{ activeReceiptRequest.remark_display || activeReceiptRequest.remark || '-' }}</el-descriptions-item>
@@ -225,8 +225,8 @@
           <el-table-column prop="display_specification" label="规格" width="140" />
           <el-table-column prop="packaging_name" label="包装" width="140" />
           <el-table-column prop="bag_count" label="袋数" width="100"><template #default="scope">{{ formatNumber(scope.row.bag_count) }}</template></el-table-column>
-          <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="scope">{{ formatNumber(scope.row.packaging_unit_price) }}</template></el-table-column>
-          <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="scope">{{ formatNumber(scope.row.packaging_fee) }}</template></el-table-column>
+          <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="scope">{{ formatMoney(scope.row.packaging_unit_price) }}</template></el-table-column>
+          <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="scope">{{ formatMoney(scope.row.packaging_fee) }}</template></el-table-column>
           <el-table-column prop="quantity" label="订单数量" width="120">
             <template #default="scope">{{ formatNumber(scope.row.quantity) }}</template>
           </el-table-column>
@@ -234,10 +234,10 @@
             <template #default="scope">{{ formatNumber(scope.row.shipped_quantity) }}</template>
           </el-table-column>
           <el-table-column prop="unit_price" label="单价" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.unit_price) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.unit_price) }}</template>
           </el-table-column>
           <el-table-column prop="total_amount" label="金额" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
           </el-table-column>
         </el-table>
         <el-table v-if="activeReceiptRequest?.attachments?.length" :data="activeReceiptRequest.attachments" border size="small" class="mb-16">
@@ -250,7 +250,7 @@
           </el-table-column>
         </el-table>
         <el-form-item label="实际入账金额">
-          <el-input-number v-model="receiptRegisterForm.actual_amount" :min="0.01" :precision="2" style="width: 100%" />
+          <el-input-number v-model="receiptRegisterForm.actual_amount" :min="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="处理说明">
           <el-input v-model="receiptRegisterForm.remark" type="textarea" :rows="3" placeholder="可填写到账凭证、金额差异或确认意见" />
@@ -304,8 +304,8 @@
               <el-table-column prop="display_specification" label="规格" width="140" />
               <el-table-column prop="packaging_name" label="包装" width="140" />
               <el-table-column prop="bag_count" label="袋数" width="100"><template #default="innerScope">{{ formatNumber(innerScope.row.bag_count) }}</template></el-table-column>
-              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_unit_price) }}</template></el-table-column>
-              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
+              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_unit_price) }}</template></el-table-column>
+              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_fee) }}</template></el-table-column>
               <el-table-column prop="quantity" label="订单数量" width="120">
                 <template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template>
               </el-table-column>
@@ -313,10 +313,10 @@
                 <template #default="innerScope">{{ formatNumber(innerScope.row.shipped_quantity) }}</template>
               </el-table-column>
               <el-table-column prop="unit_price" label="单价" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
               </el-table-column>
               <el-table-column prop="total_amount" label="金额" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
               </el-table-column>
             </el-table>
           </template>
@@ -325,11 +325,11 @@
         <el-table-column prop="sales_order_no" label="客户订单号" width="160" />
         <el-table-column prop="payment_stage_label" label="收款阶段" width="120" />
         <el-table-column prop="requested_amount" label="申请金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.requested_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.requested_amount) }}</template>
         </el-table-column>
         <el-table-column label="实际入账" width="160">
           <template #default="scope">
-            <el-input-number v-model="scope.row.actual_amount" :min="0.01" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.actual_amount" :min="0.0001" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
       </el-table>
@@ -391,8 +391,8 @@
               <el-table-column prop="display_specification" label="规格" width="140" />
               <el-table-column prop="packaging_name" label="包装" width="140" />
               <el-table-column prop="bag_count" label="袋数" width="100"><template #default="innerScope">{{ formatNumber(innerScope.row.bag_count) }}</template></el-table-column>
-              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_unit_price) }}</template></el-table-column>
-              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
+              <el-table-column prop="packaging_unit_price" label="包装单价" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_unit_price) }}</template></el-table-column>
+              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatMoney(innerScope.row.packaging_fee) }}</template></el-table-column>
               <el-table-column prop="quantity" label="订单数量" width="120">
                 <template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template>
               </el-table-column>
@@ -400,21 +400,21 @@
                 <template #default="innerScope">{{ formatNumber(innerScope.row.shipped_quantity) }}</template>
               </el-table-column>
               <el-table-column prop="unit_price" label="单价" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
               </el-table-column>
               <el-table-column prop="total_amount" label="金额" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
               </el-table-column>
             </el-table>
           </template>
         </el-table-column>
         <el-table-column prop="order_no" label="客户订单号" width="160" />
         <el-table-column prop="remaining_amount" label="待收金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.remaining_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.remaining_amount) }}</template>
         </el-table-column>
         <el-table-column label="本次回款" width="160">
           <template #default="scope">
-            <el-input-number v-model="scope.row.amount" :min="0.01" :max="scope.row.remaining_amount" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.amount" :min="0.0001" :max="scope.row.remaining_amount" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
       </el-table>
@@ -437,7 +437,7 @@
         <el-table-column prop="sales_order_no" label="客户订单号" width="160" />
         <el-table-column prop="customer_name" label="客户" min-width="160" />
         <el-table-column prop="amount" label="回款金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.amount) }}</template>
         </el-table-column>
         <el-table-column prop="received_at" label="回款时间" min-width="180">
           <template #default="scope">{{ formatDateTime(scope.row.received_at) }}</template>
@@ -468,7 +468,7 @@
         <el-table-column prop="purchase_return_no" label="退货单号" width="160" />
         <el-table-column prop="return_type_label" label="类型" width="100" />
         <el-table-column prop="amount" label="退款金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.amount) }}</template>
         </el-table-column>
         <el-table-column prop="refunded_at" label="退款时间" min-width="180">
           <template #default="scope">{{ formatDateTime(scope.row.refunded_at) }}</template>
@@ -499,7 +499,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="退款金额">
-          <el-input-number v-model="refundForm.amount" :min="0.01" :precision="2" style="width: 100%" />
+          <el-input-number v-model="refundForm.amount" :min="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="退款时间">
           <el-date-picker v-model="refundForm.refunded_at" type="datetime" style="width: 100%" value-format="YYYY-MM-DDTHH:mm:ss" />
@@ -586,7 +586,7 @@ import SettlementAccounts from '../../components/SettlementAccounts.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { parseFocusId } from '../../composables/useRouteFocus'
 import { useAuthStore } from '../../stores/auth'
-import { formatDateTime, formatNumber, formatRemark, statusLabel, statusType } from '../../utils/format'
+import { formatDateTime, formatNumber, formatRemark, statusLabel, statusType, formatMoney } from '../../utils/format'
 
 const auth = useAuthStore()
 const route = useRoute()

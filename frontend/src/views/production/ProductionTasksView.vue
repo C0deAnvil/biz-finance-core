@@ -11,6 +11,7 @@
       <template #actions>
         <el-button @click="load">刷新</el-button>
         <el-button v-if="canManageTasks" @click="openStocks">查看库存</el-button>
+        <el-button v-if="canManageTasks" @click="purchaseRequestsPanel?.openCreate()">提交采购需求</el-button>
         <el-button v-if="canManageTasks" type="primary" @click="openCreate">新增任务</el-button>
       </template>
 
@@ -489,6 +490,7 @@
         <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
       </el-table>
     </el-drawer>
+    <DepartmentPurchaseRequests v-if="auth.isRole('production')" ref="purchaseRequestsPanel" />
   </div>
 </template>
 
@@ -542,6 +544,7 @@ import AppPagination from '../../components/AppPagination.vue'
 import { useRouteFocus } from '../../composables/useRouteFocus'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import PageSection from '../../components/PageSection.vue'
+import DepartmentPurchaseRequests from '../../components/DepartmentPurchaseRequests.vue'
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatNumber, statusLabel, statusType } from '../../utils/format'
@@ -574,6 +577,7 @@ const canManageTasks = computed(() => auth.user?.role_code === 'production' && p
 const showTaskTabs = computed(() => !auth.isRole('quality'))
 const createForm = reactive({ source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null, create_raw_material_demands: false, raw_material_demands: [] })
 const finishedWarehouses = ref([])
+const purchaseRequestsPanel = ref(null)
 const materialRequestForm = reactive({ material_usages: [] })
 const completeForm = reactive({ produced_quantity: 0, scrap_quantity: 0, requires_quality: true, preliminary_acceptance_note: '', actual_usages: [] })
 const cancelForm = reactive({ reason: '' })
@@ -861,32 +865,35 @@ async function createTask() {
 }
 
 async function createTaskDirect() {
-  const result = await post('/api/production/tasks', {
-    ...createForm,
-    material_usages: createForm.material_usages.map((item) => ({
-      material_id: item.material_id,
-      requested_quantity: item.requested_quantity,
-      reason: item.reason
-    }))
-  })
   try {
-    if (activeDemand.value?.low_stock_todo_id) {
-      await post(`/api/dashboard/todos/${activeDemand.value.low_stock_todo_id}/done`)
+    const result = await post('/api/production/tasks', {
+      ...createForm,
+      material_usages: createForm.material_usages.map((item) => ({
+        material_id: item.material_id,
+        requested_quantity: item.requested_quantity,
+        reason: item.reason
+      }))
+    })
+    try {
+      if (activeDemand.value?.low_stock_todo_id) {
+        await post(`/api/dashboard/todos/${activeDemand.value.low_stock_todo_id}/done`)
+      }
+    } catch (e) {
+      // 待办已完成等并发场景不影响任务创建结果
+      console.warn('low_stock todo done failed', e)
     }
-  } catch (e) {
-    // 待办已完成等并发场景不影响任务创建结果
-    console.warn('low_stock todo done failed', e)
+    ElMessage.success(result?.task_no ? `已转生产任务，任务编号 ${result.task_no}` : '生产任务已创建')
+    createVisible.value = false
+    resetCreateForm()
+    activeTaskTab.value = 'ongoing'
+    focusedTaskId.value = null
+    if (route.query.focusId || route.query.focusType) {
+      router.replace({ path: '/production/tasks', query: {} })
+    }
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '创建生产任务失败')
   }
-  // 回显任务编号:库管/生产需要据此追溯,原先只说"已创建"看不出建了哪一单
-  ElMessage.success(result?.task_no ? `已转生产任务，任务编号 ${result.task_no}` : '生产任务已创建')
-  createVisible.value = false
-  resetCreateForm()
-  activeTaskTab.value = 'ongoing'
-  focusedTaskId.value = null
-  if (route.query.focusId || route.query.focusType) {
-    router.replace({ path: '/production/tasks', query: {} })
-  }
-  await load()
 }
 
 const rawDemandConfirmVisible = ref(false)

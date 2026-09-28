@@ -12,7 +12,7 @@
       <el-table-column prop="bank_name" label="开户银行" min-width="180" />
       <el-table-column prop="account_number" label="账号" min-width="210" />
       <el-table-column prop="currency" label="币种" width="80" />
-      <el-table-column label="参考余额" width="140"><template #default="{ row }">{{ row.owner_type === 'company' ? Number(row.balance || 0).toFixed(2) : '-' }}</template></el-table-column>
+      <el-table-column label="参考余额" width="140"><template #default="{ row }">{{ row.owner_type === 'company' ? formatMoney(row.balance || 0) : '-' }}</template></el-table-column>
       <el-table-column label="状态" width="90"><template #default="{ row }">{{ row.is_active ? '启用' : '停用' }}</template></el-table-column>
       <el-table-column label="操作" width="310"><template #default="{ row }"><el-button text type="primary" @click="openEdit(row)">编辑</el-button><el-button v-if="row.owner_type === 'company'" text type="primary" @click="openAdjustment(row)">余额调整</el-button><el-button text type="primary" @click="toggle(row)">{{ row.is_active ? '停用' : '启用' }}</el-button><el-button text type="danger" @click="deleteAccount(row)">删除</el-button></template></el-table-column>
     </el-table>
@@ -30,11 +30,11 @@
       <template #footer><el-button @click="visible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
     </el-dialog>
     <el-dialog v-model="adjustVisible" title="调整账户参考余额" width="480px" destroy-on-close>
-      <el-form label-width="100px"><el-form-item label="账户">{{ adjustmentRow?.account_name }} / {{ adjustmentRow?.account_number }}</el-form-item><el-form-item label="调整金额" required><el-input-number v-model="adjustment.amount" :precision="2" controls-position="right" style="width: 100%" /></el-form-item><el-form-item label="说明" required><el-input v-model="adjustment.remark" type="textarea" maxlength="500" /></el-form-item></el-form>
+      <el-form label-width="100px"><el-form-item label="账户">{{ adjustmentRow?.account_name }} / {{ adjustmentRow?.account_number }}</el-form-item><el-form-item label="调整金额" required><el-input-number v-model="adjustment.amount" :precision="4" controls-position="right" style="width: 100%" /></el-form-item><el-form-item label="说明" required><el-input v-model="adjustment.remark" type="textarea" maxlength="500" /></el-form-item></el-form>
       <template #footer><el-button @click="adjustVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveAdjustment">保存调整</el-button></template>
     </el-dialog>
     <el-dialog v-model="transferVisible" title="公司账户之间转账" width="520px" destroy-on-close>
-      <el-form label-width="100px"><el-form-item label="转出账户"><el-select v-model="transfer.from_account_id" style="width: 100%"><el-option v-for="item in companyRows" :key="item.id" :value="item.id" :label="item.label" /></el-select></el-form-item><el-form-item label="转入账户"><el-select v-model="transfer.to_account_id" style="width: 100%"><el-option v-for="item in companyRows" :key="item.id" :value="item.id" :label="item.label" /></el-select></el-form-item><el-form-item label="金额"><el-input-number v-model="transfer.amount" :min="0.01" :precision="2" style="width: 100%" /></el-form-item><el-form-item label="说明"><el-input v-model="transfer.remark" maxlength="500" /></el-form-item></el-form>
+      <el-form label-width="100px"><el-form-item label="转出账户"><el-select v-model="transfer.from_account_id" style="width: 100%"><el-option v-for="item in companyRows" :key="item.id" :value="item.id" :label="item.label" /></el-select></el-form-item><el-form-item label="转入账户"><el-select v-model="transfer.to_account_id" style="width: 100%"><el-option v-for="item in companyRows" :key="item.id" :value="item.id" :label="item.label" /></el-select></el-form-item><el-form-item label="金额"><el-input-number v-model="transfer.amount" :min="0.0001" :precision="4" style="width: 100%" /></el-form-item><el-form-item label="说明"><el-input v-model="transfer.remark" maxlength="500" /></el-form-item></el-form>
       <template #footer><el-button @click="transferVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveTransfer">确认转账</el-button></template>
     </el-dialog>
   </PageSection>
@@ -60,6 +60,7 @@ import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import PageSection from '../../components/PageSection.vue'
 import { get, post, put, patch, remove } from '../../api/client'
+import { formatMoney } from '../../utils/format'
 const types = { company: '企业账户', customer: '客户账户', supplier: '供应商账户' }
 const rows = ref([]), customers = ref([]), suppliers = ref([]), keyword = ref(''), ownerType = ref('company'), visible = ref(false), adjustVisible = ref(false), transferVisible = ref(false), saving = ref(false), adjustmentRow = ref(null)
 const form = reactive({})

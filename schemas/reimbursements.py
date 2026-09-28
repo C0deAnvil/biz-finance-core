@@ -1,5 +1,6 @@
-﻿from datetime import datetime
+from datetime import datetime
 from decimal import Decimal
+from schemas.money import Money
 
 from pydantic import BaseModel, Field
 
@@ -7,7 +8,7 @@ from pydantic import BaseModel, Field
 class ReimbursementCreate(BaseModel):
     expense_category: str = Field(..., pattern="^(management|sales|finance|other)$")
     expense_subcategory: str = Field(..., max_length=80)
-    amount: Decimal = Field(..., gt=0)
+    amount: Money = Field(..., gt=0)
     occurred_at: datetime
     reason: str = Field(..., min_length=2, max_length=1000)
     attachment_id: int | None = None
@@ -30,7 +31,7 @@ class ReimbursementPayRequest(BaseModel):
 class BusinessMatterCreate(BaseModel):
     expense_category: str = Field(..., pattern="^(management|sales|finance|other)$")
     expense_subcategory: str = Field(..., max_length=80)
-    estimated_amount: Decimal = Field(..., ge=0)
+    estimated_amount: Money = Field(..., ge=0)
     occurred_at: datetime
     detail: str = Field(..., min_length=2, max_length=2000)
     attachment_id: int | None = None
@@ -42,7 +43,7 @@ class BusinessMatterAuditRequest(BaseModel):
 
 
 class BusinessMatterConvertRequest(BaseModel):
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
     occurred_at: datetime | None = None
     reason: str | None = Field(default=None, max_length=1000)
     attachment_id: int | None = None

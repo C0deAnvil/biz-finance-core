@@ -47,7 +47,7 @@
         <template #default="scope">{{ scope.row.receipt_account_label || '尚未选择' }}</template>
       </el-table-column>
       <el-table-column prop="total_amount" label="总金额" width="120">
-        <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
+        <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
       </el-table-column>
         <el-table-column prop="status" label="状态" width="140">
           <template #default="scope">
@@ -165,9 +165,9 @@
         </el-row>
 
         <div class="order-total-bar">
-          <span>商品金额：{{ formatNumber(orderGoodsAmount) }}</span>
-          <span>包装费：{{ formatNumber(orderPackagingAmount) }}</span>
-          <span>订单总额：{{ formatNumber(orderTotalAmount) }}</span>
+          <span>商品金额：{{ formatMoney(orderGoodsAmount) }}</span>
+          <span>包装费：{{ formatMoney(orderPackagingAmount) }}</span>
+          <span>订单总额：{{ formatMoney(orderTotalAmount) }}</span>
         </div>
 
         <el-alert
@@ -247,7 +247,7 @@
                 <el-option
                   v-for="item in packagingOptionsForProduct(scope.row.product_id)"
                   :key="item.id"
-                  :label="`${item.packaging_name} / ${formatNumber(item.kg_per_bag)}kg / ${formatNumber(item.unit_price)}元`"
+                  :label="`${item.packaging_name} / ${formatNumber(item.kg_per_bag)}kg / ${formatMoney(item.unit_price)}元`"
                   :value="item.id"
                 />
               </el-select>
@@ -257,7 +257,7 @@
             <template #default="scope">{{ resolvePackagingRow(scope.row)?.packaging_name || productSpec(scope.row.product_id) }}</template>
           </el-table-column>
           <el-table-column label="数量(kg)" width="140">
-            <template #default="scope"><el-input-number v-model="scope.row.quantity" :min="0.01" :precision="2" style="width: 100%" :disabled="!canEditOrderForm" /></template>
+            <template #default="scope"><el-input-number v-model="scope.row.quantity" :min="0.0001" :precision="4" style="width: 100%" :disabled="!canEditOrderForm" /></template>
           </el-table-column>
           <el-table-column label="当前库存" width="120">
             <template #default="scope">{{ formatNumber(productAvailableQuantity(scope.row.product_id)) }}</template>
@@ -272,7 +272,7 @@
             <template #default="scope">{{ formatNumber(packagingFee(scope.row)) }}</template>
           </el-table-column>
           <el-table-column label="单价" width="140">
-            <template #default="scope"><el-input-number v-model="scope.row.unit_price" :min="0" :precision="2" style="width: 100%" :disabled="!canEditOrderForm" @change="() => handleSalesPriceChange(scope.row)" /></template>
+            <template #default="scope"><el-input-number v-model="scope.row.unit_price" :min="0" :precision="4" style="width: 100%" :disabled="!canEditOrderForm" @change="() => handleSalesPriceChange(scope.row)" /></template>
           </el-table-column>
           <el-table-column label="标准价" width="120">
             <template #default="scope">{{ formatNumber(productStandardPrice(scope.row.product_id)) }}</template>
@@ -325,9 +325,9 @@
         <el-descriptions-item label="收货人">{{ detail.finance_edit_snapshot.before_data?.consignee || '-' }}</el-descriptions-item>
         <el-descriptions-item label="联系电话">{{ detail.finance_edit_snapshot.before_data?.consignee_phone || '-' }}</el-descriptions-item>
         <el-descriptions-item label="收货地址" :span="2">{{ detail.finance_edit_snapshot.before_data?.delivery_address || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="定金">{{ formatNumber(detail.finance_edit_snapshot.before_data?.deposit_amount) }}</el-descriptions-item>
-        <el-descriptions-item label="运费">{{ formatNumber(detail.finance_edit_snapshot.before_data?.transport_fee) }}</el-descriptions-item>
-        <el-descriptions-item label="包装费（明细汇总）">{{ formatNumber(detail.finance_edit_snapshot.before_data?.packaging_fee) }}</el-descriptions-item>
+        <el-descriptions-item label="定金">{{ formatMoney(detail.finance_edit_snapshot.before_data?.deposit_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="运费">{{ formatMoney(detail.finance_edit_snapshot.before_data?.transport_fee) }}</el-descriptions-item>
+        <el-descriptions-item label="包装费（明细汇总）">{{ formatMoney(detail.finance_edit_snapshot.before_data?.packaging_fee) }}</el-descriptions-item>
         <el-descriptions-item label="整单备注" :span="2">{{ detail.finance_edit_snapshot.before_data?.order_remark || '-' }}</el-descriptions-item>
       </el-descriptions>
       <el-table v-if="detail?.finance_edit_snapshot" :data="detail.finance_edit_snapshot.before_data?.items || []" border class="mt-16">
@@ -341,16 +341,16 @@
           <template #default="scope">{{ formatNumber(scope.row.bag_count) }}</template>
         </el-table-column>
         <el-table-column prop="packaging_unit_price" label="包装单价" width="110">
-          <template #default="scope">{{ formatNumber(scope.row.packaging_unit_price) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.packaging_unit_price) }}</template>
         </el-table-column>
         <el-table-column prop="packaging_fee" label="包装费" width="110">
-          <template #default="scope">{{ formatNumber(scope.row.packaging_fee) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.packaging_fee) }}</template>
         </el-table-column>
         <el-table-column prop="unit_price" label="单价" width="110">
-          <template #default="scope">{{ formatNumber(scope.row.unit_price) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.unit_price) }}</template>
         </el-table-column>
         <el-table-column prop="total_amount" label="金额" width="110">
-          <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
       </el-table>
@@ -411,23 +411,23 @@
           <template #default="scope">{{ formatNumber(scope.row.bag_count) }}</template>
         </el-table-column>
         <el-table-column prop="packaging_unit_price" label="包装单价" width="110">
-          <template #default="scope">{{ formatNumber(scope.row.packaging_unit_price) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.packaging_unit_price) }}</template>
         </el-table-column>
         <el-table-column prop="packaging_fee" label="包装费" width="110">
-          <template #default="scope">{{ formatNumber(scope.row.packaging_fee) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.packaging_fee) }}</template>
         </el-table-column>
         <el-table-column prop="unit_price" label="单价">
-          <template #default="scope">{{ formatNumber(scope.row.unit_price) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.unit_price) }}</template>
         </el-table-column>
         <el-table-column prop="total_amount" label="金额">
-          <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
         </el-table-column>
         <el-table-column prop="remark" label="明细备注" min-width="160" show-overflow-tooltip />
       </el-table>
       <el-table v-if="detail?.price_change_logs?.length" :data="detail.price_change_logs" stripe class="mt-16">
         <el-table-column prop="product_name" label="改价产品" min-width="160" />
-        <el-table-column prop="standard_price" label="标准价" width="110"><template #default="scope">{{ formatNumber(scope.row.standard_price) }}</template></el-table-column>
-        <el-table-column prop="actual_price" label="订单价" width="110"><template #default="scope">{{ formatNumber(scope.row.actual_price) }}</template></el-table-column>
+        <el-table-column prop="standard_price" label="标准价" width="110"><template #default="scope">{{ formatMoney(scope.row.standard_price) }}</template></el-table-column>
+        <el-table-column prop="actual_price" label="订单价" width="110"><template #default="scope">{{ formatMoney(scope.row.actual_price) }}</template></el-table-column>
         <el-table-column prop="remark" label="改价备注" min-width="180" show-overflow-tooltip />
         <el-table-column prop="status_label" label="审批状态" width="120" />
       </el-table>
@@ -483,8 +483,8 @@
       </el-descriptions>
       <el-table :data="priceApprovalDetail?.price_change_logs || []" border class="mb-12">
         <el-table-column prop="product_name" label="产品" min-width="160" />
-        <el-table-column prop="standard_price" label="标准价" width="110"><template #default="scope">{{ formatNumber(scope.row.standard_price) }}</template></el-table-column>
-        <el-table-column prop="actual_price" label="订单价" width="110"><template #default="scope">{{ formatNumber(scope.row.actual_price) }}</template></el-table-column>
+        <el-table-column prop="standard_price" label="标准价" width="110"><template #default="scope">{{ formatMoney(scope.row.standard_price) }}</template></el-table-column>
+        <el-table-column prop="actual_price" label="订单价" width="110"><template #default="scope">{{ formatMoney(scope.row.actual_price) }}</template></el-table-column>
         <el-table-column prop="remark" label="销售改价备注" min-width="180" />
       </el-table>
       <el-input v-model="priceApprovalForm.note" type="textarea" :rows="3" placeholder="可填写审批说明" />
@@ -592,7 +592,7 @@ import SettlementAccounts from '../../components/SettlementAccounts.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
 import { exportRowsToCsv } from '../../utils/export'
-import { formatDateTime, formatNumber, paymentTypeLabel, statusLabel, statusType } from '../../utils/format'
+import { formatDateTime, formatNumber, paymentTypeLabel, statusLabel, statusType, formatMoney } from '../../utils/format'
 
 const auth = useAuthStore()
 async function handlePrintSales(row) {
@@ -944,11 +944,11 @@ function productStandardPrice(productId) {
 
 function isSalesPriceChanged(row) {
   if (!row?.product_id) return false
-  return Number(row.unit_price || 0).toFixed(2) !== Number(productStandardPrice(row.product_id) || 0).toFixed(2)
+  return Number(row.unit_price || 0) !== Number(productStandardPrice(row.product_id) || 0)
 }
 
 function isBelowStandardPrice(row) {
-  return Number(Number(row.unit_price || 0).toFixed(2)) < Number(productStandardPrice(row.product_id).toFixed(2))
+  return Number(row.unit_price || 0) < Number(productStandardPrice(row.product_id) || 0)
 }
 
 function handleSalesPriceChange(row) {

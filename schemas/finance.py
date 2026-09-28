@@ -1,5 +1,6 @@
 from datetime import datetime, date
 from decimal import Decimal
+from schemas.money import Money
 
 from pydantic import BaseModel, Field
 from schemas.accounts import SettlementAccountInput
@@ -8,13 +9,13 @@ from schemas.accounts import SettlementAccountInput
 class ReceivablePlanCreate(BaseModel):
     sales_order_id: int
     due_date: date
-    planned_amount: Decimal = Field(..., gt=0)
+    planned_amount: Money = Field(..., gt=0)
 
 
 class ReceivableRecordCreate(BaseModel):
     sales_order_id: int
     receivable_plan_id: int | None = None
-    amount: Decimal = Field(..., gt=0)
+    amount: Money = Field(..., gt=0)
     received_at: datetime
     remark: str | None = None
 
@@ -22,7 +23,7 @@ class ReceivableRecordCreate(BaseModel):
 class PayableRecordCreate(BaseModel):
     purchase_order_id: int
     purchase_receipt_id: int | None = None
-    amount: Decimal = Field(..., gt=0)
+    amount: Money = Field(..., gt=0)
     paid_at: datetime
     remark: str | None = None
 
@@ -31,36 +32,36 @@ class RefundRecordCreate(BaseModel):
     business_type: str = Field(..., pattern="^(sales_return|purchase_return)$")
     sales_return_id: int | None = None
     purchase_return_id: int | None = None
-    amount: Decimal = Field(..., gt=0)
+    amount: Money = Field(..., gt=0)
     refunded_at: datetime
     remark: str | None = None
 
 
 class SalesCostUpdate(BaseModel):
-    transport_fee: Decimal = 0
-    packaging_fee: Decimal = 0
+    transport_fee: Money = 0
+    packaging_fee: Money = 0
 
 
 class QualityCostRecognize(BaseModel):
-    recognized_amount: Decimal = Field(..., ge=0)
+    recognized_amount: Money = Field(..., ge=0)
     remark: str | None = None
 
 
 class FinancePaymentAuditRequest(BaseModel):
     purchase_payment_request_id: int
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
     remark: str | None = None
 
 
 class FinanceReceiptNoticeRequest(BaseModel):
     sales_receipt_request_id: int
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
     remark: str | None = None
 
 
 class FinancePurchasePaymentRegisterRequest(SettlementAccountInput):
     purchase_payment_request_id: int
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
     remark: str | None = None
     payment_method: str | None = Field(default=None, max_length=80)
     bank_receipt_attachment_id: int | None = None
@@ -69,14 +70,14 @@ class FinancePurchasePaymentRegisterRequest(SettlementAccountInput):
 
 class FinanceMergedPurchasePaymentRegisterItem(BaseModel):
     purchase_order_id: int
-    order_amount: Decimal = Field(..., ge=0)
-    other_fee_amount: Decimal = Field(default=0, ge=0)
+    order_amount: Money = Field(..., ge=0)
+    other_fee_amount: Money = Field(default=0, ge=0)
 
 
 class FinanceMergedPurchasePaymentRegisterRequest(SettlementAccountInput):
     supplier_id: int | None = None
     items: list[FinanceMergedPurchasePaymentRegisterItem]
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
     remark: str | None = None
     payment_method: str | None = Field(default=None, max_length=80)
     bank_receipt_attachment_id: int | None = None
@@ -85,7 +86,7 @@ class FinanceMergedPurchasePaymentRegisterRequest(SettlementAccountInput):
 
 class FinanceSalesReceiptRegisterRequest(SettlementAccountInput):
     sales_receipt_request_id: int
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
     remark: str | None = None
     payment_type: str | None = None
     receipt_method: str | None = Field(default=None, max_length=80)
@@ -96,7 +97,7 @@ class FinanceSalesReceiptRegisterRequest(SettlementAccountInput):
 
 class FinanceMergedPurchasePaymentRequestRegisterItem(BaseModel):
     purchase_payment_request_id: int
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
 
 
 class FinanceMergedPurchasePaymentRequestRegisterRequest(SettlementAccountInput):
@@ -109,7 +110,7 @@ class FinanceMergedPurchasePaymentRequestRegisterRequest(SettlementAccountInput)
 
 class FinanceDirectSalesReceiptRegisterItem(BaseModel):
     sales_order_id: int
-    amount: Decimal = Field(..., gt=0)
+    amount: Money = Field(..., gt=0)
 
 
 class FinanceDirectSalesReceiptRegisterRequest(SettlementAccountInput):
@@ -125,7 +126,7 @@ class FinanceDirectSalesReceiptRegisterRequest(SettlementAccountInput):
 
 class FinanceMergedSalesReceiptRequestRegisterItem(BaseModel):
     sales_receipt_request_id: int
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
 
 
 class FinanceMergedSalesReceiptRequestRegisterRequest(SettlementAccountInput):

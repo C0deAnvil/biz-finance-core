@@ -235,7 +235,7 @@ def _ensure_failed_task(task: QualityTask, inspections: list[QualityInspection])
 
 
 def _round_amount(amount: Decimal) -> Decimal:
-    return amount.quantize(Decimal("0.01"))
+    return amount.quantize(Decimal("0.0001"))
 
 
 def _usage_cost(usage: ProductionMaterialUsage) -> Decimal:

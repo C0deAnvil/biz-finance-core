@@ -566,17 +566,8 @@ def create_task(
     if bom is None or not bom.items:
         raise HTTPException(status_code=409, detail="当前产品尚未配置 BOM，不能创建生产任务")
 
-    max_quantity, material_rows = _max_producible_quantity_from_raw_stock(db, product_id=payload.product_id)
-    if Decimal(payload.planned_quantity) > max_quantity:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "production_batch_exceeds_raw_stock",
-                "message": "本批生产数量超过当前原料可支持的最大生产数量",
-                "max_producible_quantity": float(max_quantity),
-                "materials": material_rows,
-            },
-        )
+    # 排产/转任务不等于领料出库；缺料任务仍需先创建，以便后续提交采购需求。
+    # 原料可用量在领料审批和实际出库时再次校验。
 
     payload_usage_map = {item.material_id: item for item in (payload.material_usages or [])}
     bom_material_ids = {item.material_id for item in bom.items}

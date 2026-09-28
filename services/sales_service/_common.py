@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -41,6 +41,7 @@ from services.request_trace import emit
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_finished_warehouse
 from services.time_utils import now_local
+from services.money import money
 
 
 
@@ -48,7 +49,7 @@ from services.time_utils import now_local
 
 
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -243,7 +244,7 @@ def _calculate_packaging_fee(quantity: Decimal, packaging: PackagingConfig | Non
     if bag_count is None:
         return None, Decimal(packaging.unit_price or 0), Decimal("0")
     unit_price = Decimal(packaging.unit_price or 0)
-    packaging_fee = (Decimal(bag_count) * unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    packaging_fee = money(Decimal(bag_count) * unit_price)
     return bag_count, unit_price, packaging_fee
 
 
@@ -280,7 +281,7 @@ def _build_order_items(
 
         packaging = _resolve_line_packaging(db, product_id=product_id, packaging_config_id=packaging_config_id)
         bag_count, packaging_unit_price, packaging_fee = _calculate_packaging_fee(quantity, packaging)
-        product_amount = quantity * unit_price
+        product_amount = money(quantity * unit_price)
         line_total = product_amount + packaging_fee
         total_amount += line_total
         packaging_total += packaging_fee

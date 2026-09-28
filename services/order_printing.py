@@ -44,7 +44,8 @@ def _paragraph(value, *, size=7.5, align=0):
 
 
 def _money(value):
-    return f"{Decimal(value or 0):,.2f}"
+    value_text = f"{Decimal(value or 0):,.4f}"
+    return value_text[:-1] if value_text.endswith("0") else value_text
 
 
 def _qty(value):

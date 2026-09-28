@@ -66,7 +66,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="退款金额">
-          <el-input-number v-model="form.refund_amount" :min="0" :precision="2" style="width: 100%" />
+          <el-input-number v-model="form.refund_amount" :min="0" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="是否复检">
           <el-switch v-model="form.requires_reinspection" active-text="需要复检" inactive-text="无需复检" />

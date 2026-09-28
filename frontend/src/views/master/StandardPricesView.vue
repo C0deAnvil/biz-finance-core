@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <PageSection title="标准价格表" description="维护企业出售产品的标准销售价格。销售建客户订单选择商品时，单价默认带出此处价格；如订单改价，必须填写备注并同步通知经理和董事长。">
     <template #actions>
       <el-input v-model="keyword" clearable placeholder="搜索产品编码 / 名称" class="w-260" />
@@ -34,7 +34,7 @@
           <el-input :model-value="formatMoney(activeRow?.standard_price)" disabled />
         </el-form-item>
         <el-form-item label="新标准售价">
-          <el-input-number v-model="editForm.price" :min="0.01" :precision="2" style="width: 100%" />
+          <el-input-number v-model="editForm.price" :min="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="调整原因">
           <el-input v-model="editForm.remark" type="textarea" :rows="3" placeholder="请填写调价原因，例如市场价格变化、客户政策调整、成本变化等" />
@@ -115,7 +115,7 @@ const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPaginati
 
 function formatMoney(value) {
   const number = Number(value || 0)
-  return Number.isFinite(number) ? number.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'
+  return Number.isFinite(number) ? number.toLocaleString('zh-CN', { minimumFractionDigits: 3, maximumFractionDigits: 4 }) : '-'
 }
 
 async function load() {

@@ -211,13 +211,13 @@ function clearFeedback() {
 function formatNumber(value) {
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue)) return '-'
-  return numberValue.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+  return numberValue.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 }
 
 function formatMoney(value) {
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue)) return '-'
-  return `${numberValue.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 元`
+  return `${numberValue.toLocaleString('zh-CN', { minimumFractionDigits: 3, maximumFractionDigits: 4 })} 元`
 }
 
 function formatBomItems(row) {

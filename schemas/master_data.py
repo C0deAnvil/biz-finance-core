@@ -1,4 +1,5 @@
 from decimal import Decimal
+from schemas.money import Money
 
 from pydantic import BaseModel, Field
 
@@ -63,7 +64,7 @@ class SupplierCatalogItemInput(BaseModel):
 
 
 class StandardPriceUpdate(BaseModel):
-    price: Decimal = Field(..., gt=0)
+    price: Money = Field(..., gt=0)
     remark: str = Field(..., min_length=2, max_length=255)
 
 
@@ -71,7 +72,7 @@ class ProductCreate(BaseModel):
     # 新建时由服务端生成；保留该字段以兼容编辑和既有接口调用。
     product_code: str | None = Field(default=None, max_length=50)
     name: str = Field(..., max_length=200)
-    price: Decimal
+    price: Money
     specification: str | None = Field(default=None, max_length=255)
     unit: str = Field(default="kg", max_length=20)
     safety_stock_qty: Decimal = 0
@@ -85,7 +86,7 @@ class PackagingConfigCreate(BaseModel):
     entity_id: int = 0
     packaging_name: str = Field(..., max_length=100)
     kg_per_bag: Decimal = Field(..., gt=0)
-    unit_price: Decimal | None = Field(default=None, ge=0)
+    unit_price: Money | None = Field(default=None, ge=0)
     is_default: bool = True
     is_active: bool = True
 
@@ -94,7 +95,7 @@ class MaterialCreate(BaseModel):
     # 新建时由服务端生成；保留该字段以兼容编辑和既有接口调用。
     material_code: str | None = Field(default=None, max_length=50)
     name: str = Field(..., max_length=200)
-    price: Decimal
+    price: Money
     specification: str | None = Field(default=None, max_length=255)
     unit: str = Field(default="kg", max_length=20)
     safety_stock_qty: Decimal = 0

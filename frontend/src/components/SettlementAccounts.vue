@@ -1,7 +1,7 @@
 <template>
   <el-form-item v-if="showCompany" :label="direction === 'receipt' ? '企业收款账户' : '企业付款账户'" required>
     <el-select :model-value="companyAccountId" :disabled="companyReadonly" filterable clearable style="width: 100%" placeholder="请选择企业账户" @update:model-value="$emit('update:companyAccountId', $event || null)">
-      <el-option v-for="item in companyAccounts" :key="item.id" :value="item.id" :label="item.balance === undefined ? item.label : `${item.label} / 参考余额 ${item.balance.toFixed(2)}`" />
+      <el-option v-for="item in companyAccounts" :key="item.id" :value="item.id" :label="item.balance === undefined ? item.label : `${item.label} / 参考余额 ${formatMoney(item.balance)}`" />
     </el-select>
     <span v-if="companyReadonly" class="hint">申请人已选择收款账户，请核对该账户的到账情况</span>
     <span v-if="!companyAccounts.length" class="hint">请联系财务在“收付款账户”中维护企业账户</span>
@@ -23,6 +23,7 @@ import 'element-plus/es/components/form/style/css'
 import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/message/style/css'
 import { get } from '../api/client'
+import { formatMoney } from '../utils/format'
 
 const props = defineProps({ companyAccountId: Number, counterpartyAccountId: Number, partyId: Number, direction: { type: String, default: 'receipt' }, showCompany: { type: Boolean, default: true }, companyReadonly: Boolean, counterpartyReadonly: Boolean, counterpartyRequired: Boolean })
 const emit = defineEmits(['update:companyAccountId', 'update:counterpartyAccountId'])

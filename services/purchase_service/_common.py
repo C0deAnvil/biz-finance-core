@@ -56,6 +56,7 @@ from services.core import _role_user_ids, apply_inventory_change, complete_todos
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label, status_label
 from services.quality_workflow import create_purchase_quality_tasks, create_return_reinspection_quality_task
 from services.time_utils import now_local
+from services.money import money
 from services.workflow import create_inventory_operation_request, purchase_arrival_status, purchase_flow_steps
 
 
@@ -254,7 +255,7 @@ def _build_order_items(db: Session, order: PurchaseOrder, payload_items) -> tupl
         if item_threshold > 0 and quantity >= item_threshold:
             quantity_threshold_triggered = True
 
-        line_total = Decimal(item_payload.quantity) * Decimal(item_payload.unit_price)
+        line_total = money(Decimal(item_payload.quantity) * Decimal(item_payload.unit_price))
         total_amount += line_total
         packaging = packaging_item if item_payload.packaging_config_id and not item_payload.product_id and not item_payload.material_id else None
         if item_payload.product_id:

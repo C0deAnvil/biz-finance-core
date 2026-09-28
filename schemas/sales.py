@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from schemas.money import Money
 
 from pydantic import BaseModel, Field
 from schemas.accounts import SettlementAccountInput
@@ -7,8 +8,8 @@ from schemas.accounts import SettlementAccountInput
 
 class SalesOrderItemInput(BaseModel):
     product_id: int
-    quantity: Decimal = Field(..., gt=0)
-    unit_price: Decimal = Field(..., ge=0)
+    quantity: Decimal = Field(..., gt=0, decimal_places=4)
+    unit_price: Money = Field(..., ge=0)
     packaging_config_id: int | None = None
     remark: str | None = Field(default=None, max_length=255)
     price_change_remark: str | None = Field(default=None, max_length=255)
@@ -18,7 +19,7 @@ class SalesOrderDraftItemInput(BaseModel):
     """草稿允许商品行尚未填写完整，完整性在提交时统一校验。"""
     product_id: int | None = None
     quantity: Decimal | None = None
-    unit_price: Decimal | None = None
+    unit_price: Money | None = None
     packaging_config_id: int | None = None
     remark: str | None = Field(default=None, max_length=255)
     price_change_remark: str | None = Field(default=None, max_length=255)
@@ -36,8 +37,8 @@ class SalesOrderDraftPayload(BaseModel):
     payment_type: str | None = Field(default=None, max_length=50)
     order_type: str | None = Field(default="normal", max_length=30)
     expected_delivery_date: date | None = None
-    deposit_amount: Decimal | None = 0
-    transport_fee: Decimal | None = 0
+    deposit_amount: Money | None = 0
+    transport_fee: Money | None = 0
     order_remark: str | None = None
     items: list[SalesOrderDraftItemInput] = Field(default_factory=list)
 
@@ -54,8 +55,8 @@ class SalesOrderCreate(BaseModel):
     payment_type: str = Field(..., max_length=50)
     order_type: str = Field(default="normal", max_length=30)
     expected_delivery_date: date | None = None
-    deposit_amount: Decimal = 0
-    transport_fee: Decimal = 0
+    deposit_amount: Money = 0
+    transport_fee: Money = 0
     order_remark: str | None = None
     items: list[SalesOrderItemInput]
 
@@ -72,8 +73,8 @@ class SalesOrderUpdate(BaseModel):
     payment_type: str = Field(..., max_length=50)
     order_type: str = Field(default="normal", max_length=30)
     expected_delivery_date: date | None = None
-    deposit_amount: Decimal = 0
-    transport_fee: Decimal = 0
+    deposit_amount: Money = 0
+    transport_fee: Money = 0
     order_remark: str | None = None
     items: list[SalesOrderItemInput]
 
@@ -84,8 +85,8 @@ class SalesOrderFinanceEditRequest(SalesOrderUpdate):
 
 class SalesApprovalRequest(BaseModel):
     decision: str = Field(..., pattern="^(approved|rejected)$")
-    voucher_amount: Decimal = 0
-    actual_amount: Decimal = 0
+    voucher_amount: Money = 0
+    actual_amount: Money = 0
     convert_to_receivable: bool = False
     note: str | None = None
 
@@ -99,7 +100,7 @@ class SalesReturnCreate(BaseModel):
     sales_order_id: int
     return_type: str = Field(default="return", pattern="^(return|exchange)$")
     reason: str
-    refund_amount: Decimal = 0
+    refund_amount: Money = 0
     requires_reinspection: bool = False
     items: list[SalesReturnItemInput]
 
@@ -136,7 +137,7 @@ class SalesShipmentRequest(BaseModel):
 
 class SalesSettlementCollectRequest(BaseModel):
     sales_order_id: int
-    amount: Decimal = Field(..., gt=0)
+    amount: Money = Field(..., gt=0)
     stage: str = Field(..., pattern="^(deposit|balance)$")
     remark: str | None = None
 
@@ -151,7 +152,7 @@ class SalesOrderSubmitRequest(BaseModel):
 
 class SalesReceiptRequestCreate(SettlementAccountInput):
     sales_order_id: int
-    requested_amount: Decimal = Field(..., gt=0)
+    requested_amount: Money = Field(..., gt=0)
     payment_stage: str = Field(..., pattern="^(deposit|balance|cod_full|pre_shipment_full|installment)$")
     installment_total: int | None = Field(default=None, ge=1, le=24)
     installment_index: int | None = Field(default=None, ge=1, le=24)
@@ -161,7 +162,7 @@ class SalesReceiptRequestCreate(SettlementAccountInput):
 
 class SalesMergedReceiptRequestItem(BaseModel):
     sales_order_id: int
-    requested_amount: Decimal = Field(..., gt=0)
+    requested_amount: Money = Field(..., gt=0)
 
 
 class SalesMergedReceiptRequestCreate(SettlementAccountInput):
@@ -177,7 +178,7 @@ class SalesMergedReceiptRequestCreate(SettlementAccountInput):
 
 class SalesReceiptApprovalRequest(BaseModel):
     decision: str = Field(..., pattern="^(approved|rejected)$")
-    actual_amount: Decimal = Field(..., gt=0)
+    actual_amount: Money = Field(..., gt=0)
     approval_remark: str | None = None
     payment_type: str | None = None
 

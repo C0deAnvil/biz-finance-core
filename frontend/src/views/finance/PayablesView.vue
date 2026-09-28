@@ -3,8 +3,8 @@
     <el-row :gutter="12" class="summary-row">
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待付款订单</div><div class="summary-value">{{ summary.pending_order_count || 0 }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">付款记录</div><div class="summary-value">{{ summary.record_count || 0 }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待付总额</div><div class="summary-value">{{ formatNumber(totalRemainingAmount) }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">已付总额</div><div class="summary-value">{{ formatNumber(totalPaidAmount) }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待付总额</div><div class="summary-value">{{ formatMoney(totalRemainingAmount) }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">已付总额</div><div class="summary-value">{{ formatMoney(totalPaidAmount) }}</div></el-card></el-col>
     </el-row>
 
     <div ref="pendingSectionRef">
@@ -47,10 +47,10 @@
                   <template #default="innerScope">{{ formatNumber(innerScope.row.received_quantity) }}</template>
                 </el-table-column>
                 <el-table-column prop="unit_price" label="单价" width="120">
-                  <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                  <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
                 </el-table-column>
                 <el-table-column prop="total_amount" label="金额" width="120">
-                  <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                  <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
                 </el-table-column>
               </el-table>
             </template>
@@ -69,13 +69,13 @@
           </el-table-column>
           <el-table-column prop="item_summary" label="订单明细摘要" min-width="220" show-overflow-tooltip />
           <el-table-column prop="total_amount" label="订单金额" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
           </el-table-column>
           <el-table-column prop="paid_amount" label="已付金额" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.paid_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.paid_amount) }}</template>
           </el-table-column>
           <el-table-column prop="remaining_amount" label="待付金额" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.remaining_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.remaining_amount) }}</template>
           </el-table-column>
           <el-table-column label="操作" width="100" fixed="right">
             <template #default="scope">
@@ -108,10 +108,10 @@
                   <template #default="innerScope">{{ formatNumber(innerScope.row.received_quantity) }}</template>
                 </el-table-column>
                 <el-table-column prop="unit_price" label="单价" width="120">
-                  <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                  <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
                 </el-table-column>
                 <el-table-column prop="total_amount" label="金额" width="120">
-                  <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                  <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
                 </el-table-column>
               </el-table>
             </template>
@@ -134,16 +134,16 @@
             </template>
           </el-table-column>
           <el-table-column prop="order_amount" label="订单金额" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.order_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.order_amount) }}</template>
           </el-table-column>
           <el-table-column prop="other_fee_amount" label="其他费用" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.other_fee_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.other_fee_amount) }}</template>
           </el-table-column>
           <el-table-column prop="requested_amount" label="申请总额" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.requested_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.requested_amount) }}</template>
           </el-table-column>
           <el-table-column prop="actual_amount" label="实际出账" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.actual_amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.actual_amount) }}</template>
           </el-table-column>
           <el-table-column prop="requested_by_name" label="申请人" width="120" />
           <el-table-column prop="approved_by_name" label="审批人" width="120" />
@@ -195,7 +195,7 @@
             </template>
           </el-table-column>
           <el-table-column prop="amount" label="付款金额" width="120">
-            <template #default="scope">{{ formatNumber(scope.row.amount) }}</template>
+            <template #default="scope">{{ formatMoney(scope.row.amount) }}</template>
           </el-table-column>
           <el-table-column prop="paid_at" label="付款时间" min-width="180">
             <template #default="scope">{{ formatDateTime(scope.row.paid_at) }}</template>
@@ -225,9 +225,9 @@
         <el-descriptions-item label="采购订单">{{ activePaymentRequest.purchase_order_no }}</el-descriptions-item>
         <el-descriptions-item label="供应商">{{ activePaymentRequest.supplier_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="到货状态">{{ activePaymentRequest.arrival_status_label || statusLabel(activePaymentRequest.arrival_status) }}</el-descriptions-item>
-        <el-descriptions-item label="订单金额">{{ formatNumber(activePaymentRequest.order_amount) }}</el-descriptions-item>
-        <el-descriptions-item label="其他费用">{{ formatNumber(activePaymentRequest.other_fee_amount) }}</el-descriptions-item>
-        <el-descriptions-item label="申请总额">{{ formatNumber(activePaymentRequest.requested_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="订单金额">{{ formatMoney(activePaymentRequest.order_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="其他费用">{{ formatMoney(activePaymentRequest.other_fee_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="申请总额">{{ formatMoney(activePaymentRequest.requested_amount) }}</el-descriptions-item>
         <el-descriptions-item label="申请人">{{ activePaymentRequest.requested_by_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="申请说明" :span="2">{{ activePaymentRequest.payment_detail_remark_display || activePaymentRequest.payment_detail_remark || '-' }}</el-descriptions-item>
       </el-descriptions>
@@ -242,10 +242,10 @@
           <template #default="scope">{{ formatNumber(scope.row.received_quantity) }}</template>
         </el-table-column>
         <el-table-column prop="unit_price" label="单价" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.unit_price) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.unit_price) }}</template>
         </el-table-column>
         <el-table-column prop="total_amount" label="金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.total_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
         </el-table-column>
       </el-table>
       <el-table v-if="activePaymentRequest?.attachments?.length" :data="activePaymentRequest.attachments" border size="small" class="mb-16">
@@ -260,7 +260,7 @@
       <el-form :model="paymentRegisterForm" label-width="110px">
         <SettlementAccounts v-model:company-account-id="paymentRegisterForm.company_account_id" v-model:counterparty-account-id="paymentRegisterForm.counterparty_account_id" :party-id="activePaymentRequest?.supplier_id" :counterparty-readonly="Boolean(activePaymentRequest?.counterparty_account_id)" direction="payment" />
         <el-form-item label="实际出账金额">
-          <el-input-number v-model="paymentRegisterForm.actual_amount" :min="0.01" :precision="2" style="width: 100%" />
+          <el-input-number v-model="paymentRegisterForm.actual_amount" :min="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="付款方式">
           <div class="method-select-line">
@@ -308,10 +308,10 @@
                 <template #default="innerScope">{{ formatNumber(innerScope.row.received_quantity) }}</template>
               </el-table-column>
               <el-table-column prop="unit_price" label="单价" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
               </el-table-column>
               <el-table-column prop="total_amount" label="金额" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
               </el-table-column>
             </el-table>
           </template>
@@ -319,17 +319,17 @@
         <el-table-column prop="request_no" label="申请单号" width="160" />
         <el-table-column prop="purchase_order_no" label="采购单号" width="160" />
         <el-table-column prop="requested_amount" label="申请金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.requested_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.requested_amount) }}</template>
         </el-table-column>
         <el-table-column prop="order_amount" label="订单金额" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.order_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.order_amount) }}</template>
         </el-table-column>
         <el-table-column prop="other_fee_amount" label="其他费用" width="120">
-          <template #default="scope">{{ formatNumber(scope.row.other_fee_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.other_fee_amount) }}</template>
         </el-table-column>
         <el-table-column label="实际出账" width="160">
           <template #default="scope">
-            <el-input-number v-model="scope.row.actual_amount" :min="0.01" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.actual_amount" :min="0.0001" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
       </el-table>
@@ -364,7 +364,7 @@
       <el-descriptions v-if="mergedSupplierName" :column="2" border class="mb-16">
         <el-descriptions-item label="供应商">{{ mergedSupplierName }}</el-descriptions-item>
         <el-descriptions-item label="订单数量">{{ mergedRegisterForm.items.length }}</el-descriptions-item>
-        <el-descriptions-item label="实付总额">{{ formatNumber(mergedActualAmount) }}</el-descriptions-item>
+        <el-descriptions-item label="实付总额">{{ formatMoney(mergedActualAmount) }}</el-descriptions-item>
         <el-descriptions-item label="说明">支持同一供应商的单单或多单付款登记</el-descriptions-item>
       </el-descriptions>
       <el-table :data="mergedRegisterForm.items" stripe border>
@@ -381,10 +381,10 @@
                 <template #default="innerScope">{{ formatNumber(innerScope.row.received_quantity) }}</template>
               </el-table-column>
               <el-table-column prop="unit_price" label="单价" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
               </el-table-column>
               <el-table-column prop="total_amount" label="金额" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.total_amount) }}</template>
+                <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
               </el-table-column>
             </el-table>
           </template>
@@ -393,16 +393,16 @@
         <el-table-column prop="supplier_name" label="供应商" min-width="180" />
         <el-table-column prop="item_summary" label="订单摘要" min-width="220" show-overflow-tooltip />
         <el-table-column prop="remaining_amount" label="待付金额" width="130">
-          <template #default="scope">{{ formatNumber(scope.row.remaining_amount) }}</template>
+          <template #default="scope">{{ formatMoney(scope.row.remaining_amount) }}</template>
         </el-table-column>
         <el-table-column label="本次订单金额" width="150">
           <template #default="scope">
-            <el-input-number v-model="scope.row.order_amount" :min="0" :max="scope.row.remaining_amount" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.order_amount" :min="0" :max="scope.row.remaining_amount" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
         <el-table-column label="其他费用" width="140">
           <template #default="scope">
-            <el-input-number v-model="scope.row.other_fee_amount" :min="0" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.other_fee_amount" :min="0" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
       </el-table>
@@ -504,7 +504,7 @@ import { useLocalPagination } from '../../composables/useLocalPagination'
 import { parseFocusId } from '../../composables/useRouteFocus'
 import { useAuthStore } from '../../stores/auth'
 import { exportRowsToCsv } from '../../utils/export'
-import { formatDateTime, formatNumber, formatRemark, statusLabel, statusType } from '../../utils/format'
+import { formatDateTime, formatNumber, formatRemark, statusLabel, statusType, formatMoney } from '../../utils/format'
 
 const auth = useAuthStore()
 const route = useRoute()

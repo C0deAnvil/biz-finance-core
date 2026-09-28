@@ -1,4 +1,5 @@
 from decimal import Decimal
+from schemas.money import Money
 
 from pydantic import BaseModel, Field
 
@@ -27,7 +28,7 @@ class InventoryOperationItemInput(BaseModel):
     packaging_config_id: int | None = None
     batch_no: str | None = None
     quantity: Decimal = Field(..., gt=0)
-    unit_cost: Decimal = Field(default=0, ge=0)
+    unit_cost: Money = Field(default=0, ge=0)
 
 
 class InventoryOperationHandleRequest(BaseModel):

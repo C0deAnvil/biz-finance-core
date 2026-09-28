@@ -67,7 +67,7 @@
           </el-col>
           <el-col :span="12">
             <el-form-item label="包装单价">
-              <el-input-number v-model="form.unit_price" :min="0" :precision="2" style="width: 100%" />
+              <el-input-number v-model="form.unit_price" :min="0" :precision="4" style="width: 100%" />
             </el-form-item>
           </el-col>
           <el-col :span="12">

@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from schemas.money import Money
 
 from pydantic import BaseModel, Field
 
@@ -25,7 +26,7 @@ class LogisticsRecordCreate(BaseModel):
     consignee_name: str | None = Field(default=None, max_length=100)
     consignee_phone: str | None = Field(default=None, max_length=30)
     consignee_address: str | None = Field(default=None, max_length=255)
-    delivery_fee: Decimal = Field(default=0, ge=0)
+    delivery_fee: Money = Field(default=0, ge=0)
     freight_payment_type: str | None = Field(default=None, max_length=30)
     handover_type: str | None = Field(default=None, max_length=30)
     document_attachment_id: int | None = None
@@ -51,7 +52,7 @@ class LogisticsRecordUpdate(BaseModel):
     consignee_name: str | None = Field(default=None, max_length=100)
     consignee_phone: str | None = Field(default=None, max_length=30)
     consignee_address: str | None = Field(default=None, max_length=255)
-    delivery_fee: Decimal = Field(default=0, ge=0)
+    delivery_fee: Money = Field(default=0, ge=0)
     freight_payment_type: str | None = Field(default=None, max_length=30)
     handover_type: str | None = Field(default=None, max_length=30)
     document_attachment_id: int | None = None

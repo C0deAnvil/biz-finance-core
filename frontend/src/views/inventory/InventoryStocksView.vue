@@ -244,7 +244,7 @@
           </el-table-column>
           <el-table-column v-if="!hidePriceInOperation" label="单价" width="140">
             <template #default="scope">
-              <el-input-number v-model="scope.row.unit_cost" :disabled="operationItemsReadOnly" :min="0" :precision="2" style="width: 100%" />
+              <el-input-number v-model="scope.row.unit_cost" :disabled="operationItemsReadOnly" :min="0" :precision="4" style="width: 100%" />
             </template>
           </el-table-column>
         </el-table>
@@ -331,7 +331,7 @@
           </el-table-column>
           <el-table-column label="单价" width="140">
             <template #default="scope">
-              <el-input-number v-model="scope.row.unit_cost" :min="0" :precision="2" style="width: 100%" />
+              <el-input-number v-model="scope.row.unit_cost" :min="0" :precision="4" style="width: 100%" />
             </template>
           </el-table-column>
           <el-table-column label="操作" width="90">

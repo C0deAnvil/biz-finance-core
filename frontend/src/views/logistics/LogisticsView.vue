@@ -72,7 +72,7 @@
           <el-col :span="12"><el-form-item label="始发站"><el-input v-model="form.origin_station" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="目的站"><el-input v-model="form.destination_station" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="中转站"><el-input v-model="form.transfer_station" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="送货费"><el-input-number v-model="form.delivery_fee" :min="0" :precision="2" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="送货费"><el-input-number v-model="form.delivery_fee" :min="0" :precision="4" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="付款方式"><el-select v-model="form.freight_payment_type" clearable style="width: 100%"><el-option label="现付" value="现付" /><el-option label="到付" value="到付" /><el-option label="其他" value="其他" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="交接方式"><el-select v-model="form.handover_type" clearable style="width: 100%"><el-option label="自提" value="自提" /><el-option label="送货上门" value="送货上门" /><el-option label="其他" value="其他" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="托运人"><el-input v-model="form.consignor_name" /></el-form-item></el-col>

@@ -127,8 +127,8 @@ def create_receivable_record(payload: ReceivableRecordCreate, current_user: User
         db,
         title="客户订单回款已登记",
         content=(
-            f"客户订单 {order.order_no} 已登记回款 {Decimal(payload.amount or 0):.2f} 元，"
-            f"累计回款 {received_after:.2f} / {Decimal(order.total_amount or 0):.2f} 元，"
+            f"客户订单 {order.order_no} 已登记回款 {Decimal(payload.amount or 0):.4f} 元，"
+            f"累计回款 {received_after:.4f} / {Decimal(order.total_amount or 0):.4f} 元，"
             f"{'已结清' if settled else '尚未结清'}。"
         ),
         module="finance",
@@ -200,8 +200,8 @@ def create_payable_record(payload: PayableRecordCreate, current_user: User, db: 
         db,
         title="采购订单付款已登记",
         content=(
-            f"采购订单 {order.order_no} 已登记付款 {Decimal(payload.amount or 0):.2f} 元，"
-            f"累计付款 {paid_after:.2f} / {Decimal(order.total_amount or 0):.2f} 元，"
+            f"采购订单 {order.order_no} 已登记付款 {Decimal(payload.amount or 0):.4f} 元，"
+            f"累计付款 {paid_after:.4f} / {Decimal(order.total_amount or 0):.4f} 元，"
             f"{'已结算' if settlement_status == 'settled' else '部分结算'}。"
         ),
         module="finance",
@@ -268,7 +268,7 @@ def create_refund_record(payload: RefundRecordCreate, current_user: User, db: Se
             create_notification(
                 db,
                 title="销售退换货退款已完成",
-                content=f"退换货单 {sales_return.return_no} 已完成退款，金额 {Decimal(payload.amount or 0):.2f} 元。",
+                content=f"退换货单 {sales_return.return_no} 已完成退款，金额 {Decimal(payload.amount or 0):.4f} 元。",
                 module="finance",
                 recipient_user_ids=recipient_user_ids,
                 created_by_id=current_user.id,
@@ -296,7 +296,7 @@ def create_refund_record(payload: RefundRecordCreate, current_user: User, db: Se
             create_notification(
                 db,
                 title="采购退货退款已完成",
-                content=f"采购退货单 {purchase_return.return_no} 已完成退款，金额 {Decimal(payload.amount or 0):.2f} 元。",
+                content=f"采购退货单 {purchase_return.return_no} 已完成退款，金额 {Decimal(payload.amount or 0):.4f} 元。",
                 module="finance",
                 recipient_user_ids=recipient_user_ids,
                 created_by_id=current_user.id,
@@ -365,7 +365,7 @@ def recognize_quality_cost(record_id: int, payload: QualityCostRecognize, curren
             title=f"财务回执：{quality_no or record.id}",
             content=(
                 f"质检单 {quality_no or '-'} 已由 {operator_name} 完成财务确认，"
-                f"确认金额 {Decimal(payload.recognized_amount or 0):.2f} 元，处置类型：{disposition_label}。"
+                f"确认金额 {Decimal(payload.recognized_amount or 0):.4f} 元，处置类型：{disposition_label}。"
             ),
             module="finance",
             recipient_user_ids=recipient_user_ids,

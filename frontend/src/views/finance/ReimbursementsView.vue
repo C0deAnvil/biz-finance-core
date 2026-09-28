@@ -173,7 +173,7 @@
             <el-option v-for="item in matterSubcategoryOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="预估金额"><el-input-number v-model="matterForm.estimated_amount" :min="0" :precision="2" style="width:100%" /></el-form-item>
+        <el-form-item label="预估金额"><el-input-number v-model="matterForm.estimated_amount" :min="0" :precision="4" style="width:100%" /></el-form-item>
         <el-form-item label="申请时间"><el-date-picker v-model="matterForm.occurred_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width:100%" /></el-form-item>
         <el-form-item label="事务附件"><input type="file" accept=".jpg,.jpeg,.png,.pdf,.xls,.xlsx" @change="handleMatterFileChange" /></el-form-item>
         <el-form-item label="事务详情"><el-input v-model="matterForm.detail" type="textarea" :rows="4" /></el-form-item>
@@ -196,7 +196,7 @@
             <el-option v-for="item in subcategoryOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="实际金额"><el-input-number v-model="form.amount" :min="0.01" :precision="2" style="width:100%" /></el-form-item>
+        <el-form-item label="实际金额"><el-input-number v-model="form.amount" :min="0.0001" :precision="4" style="width:100%" /></el-form-item>
         <el-form-item label="发生时间"><el-date-picker v-model="form.occurred_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width:100%" /></el-form-item>
         <el-form-item label="报销凭证"><input type="file" accept=".jpg,.jpeg,.png,.pdf,.xls,.xlsx" @change="handleAttachmentChange" /></el-form-item>
         <el-form-item label="报销事由"><el-input v-model="form.reason" type="textarea" :rows="3" /></el-form-item>
@@ -232,7 +232,7 @@
     <el-dialog v-model="payVisible" title="财务出账" width="620px">
       <el-form :model="payForm" label-width="110px">
         <el-form-item label="报销单号"><el-input :model-value="activeRow?.reimbursement_no || '-'" disabled /></el-form-item>
-        <el-form-item label="出账金额"><el-input-number :model-value="Number(activeRow?.amount || 0)" disabled :precision="2" style="width:100%" /></el-form-item>
+        <el-form-item label="出账金额"><el-input-number :model-value="Number(activeRow?.amount || 0)" disabled :precision="4" style="width:100%" /></el-form-item>
         <el-form-item label="出账时间"><el-date-picker v-model="payForm.paid_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width:100%" /></el-form-item>
         <el-form-item label="出账方式"><el-input v-model="payForm.payment_method" placeholder="如银行转账、现金等" /></el-form-item>
         <el-form-item label="出账凭证"><input type="file" accept=".jpg,.jpeg,.png,.pdf,.xls,.xlsx" @change="handlePayFileChange" /></el-form-item>

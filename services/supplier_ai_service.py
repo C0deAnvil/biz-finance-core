@@ -493,8 +493,8 @@ def _predict_with_artifact(artifact: dict, frame: pd.DataFrame) -> pd.DataFrame:
 def _business_metrics(metrics: dict) -> dict:
     return {
         "order_count": _round(metrics.get("order_count"), 0),
-        "total_purchase_amount": _round(metrics.get("total_sales"), 2),
-        "avg_order_value": _round(metrics.get("avg_order_value"), 2),
+        "total_purchase_amount": _round(metrics.get("total_sales"), 4),
+        "avg_order_value": _round(metrics.get("avg_order_value"), 4),
         "late_delivery_rate": _round(metrics.get("late_delivery_rate")),
         "quality_fail_rate": _round(metrics.get("quality_fail_rate")),
         "on_time_delivery_rate": _round(metrics.get("on_time_delivery_rate")),
@@ -807,8 +807,8 @@ def get_supplier_ai_detail(db: Session, current_user: User, supplier_id: int) ->
             "order_no": row["order_no"],
             "status": row["status"],
             "payment_type": row["payment_type"],
-            "total_amount": _round(row["total_amount"], 2),
-            "paid_amount": _round(row["paid_amount"], 2),
+            "total_amount": _round(row["total_amount"], 4),
+            "paid_amount": _round(row["paid_amount"], 4),
             "item_quantity": _round(row["item_quantity"], 2),
             "received_quantity": _round(row["received_quantity"], 2),
             "created_at": _to_iso(row["created_at"]),

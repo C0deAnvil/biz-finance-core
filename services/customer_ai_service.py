@@ -377,8 +377,8 @@ def refresh_customer_ai_results(db: Session, current_user: User) -> dict:
             "rfm_json": {
                 "recency": row["recency"],
                 "frequency": row["frequency"],
-                "monetary": round(row["monetary"], 2),
-                "avg_order_amount": round(row["avg_order_amount"], 2),
+                "monetary": round(row["monetary"], 4),
+                "avg_order_amount": round(row["avg_order_amount"], 4),
                 "category_diversity": row["category_diversity"],
                 "profit_rate": round(row["profit_rate"], 4),
                 "intent_rate": round(row["intent_rate"], 4),
@@ -412,8 +412,8 @@ def _serialize_result(row: CustomerAIResult | None, feature_row: dict) -> dict:
             "rfm": {
                 "recency": feature_row["recency"],
                 "frequency": feature_row["frequency"],
-                "monetary": round(feature_row["monetary"], 2),
-                "avg_order_amount": round(feature_row["avg_order_amount"], 2),
+                "monetary": round(feature_row["monetary"], 4),
+                "avg_order_amount": round(feature_row["avg_order_amount"], 4),
                 "category_diversity": feature_row["category_diversity"],
                 "profit_rate": round(feature_row["profit_rate"], 4),
                 "intent_rate": round(feature_row["intent_rate"], 4),
@@ -458,9 +458,9 @@ def list_customer_ai_results(db: Session, current_user: User, keyword: str | Non
             {
                 **feature_row,
                 **result,
-                "monetary": round(feature_row["monetary"], 2),
-                "gross_profit": round(feature_row["gross_profit"], 2),
-                "received_amount": round(feature_row["received_amount"], 2),
+                "monetary": round(feature_row["monetary"], 4),
+                "gross_profit": round(feature_row["gross_profit"], 4),
+                "received_amount": round(feature_row["received_amount"], 4),
             }
         )
     items.sort(key=lambda item: (SEGMENT_LABELS.get(item["segment_label"], {}).get("priority", 0), item["lead_score"], item["monetary"]), reverse=True)

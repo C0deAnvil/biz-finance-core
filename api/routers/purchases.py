@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, Notification, NotificationRecipient, PackagingConfig, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse, order_type_style
+from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, Notification, NotificationRecipient, PackagingConfig, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseRequest, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse, order_type_style
 from models import FulfillmentDemand
 from responses import api_response
 from schemas.production import FulfillmentDemandUpdateRequest
 from schemas.purchases import (
+    DepartmentPurchaseRequestCreate,
+    DepartmentPurchaseRequestProcess,
     PurchasePaymentInvoiceUpdate,
     PurchaseApprovalRequest,
     PurchaseMergedPaymentRequestCreate,
@@ -43,7 +45,7 @@ from services.purchase_service import (
     submit_purchase_payment_request as submit_purchase_payment_request_service,
     update_purchase_order as update_purchase_order_service,
 )
-from services.core import _role_user_ids, complete_todos, create_notification, sync_low_stock_alerts, write_operation_log
+from services.core import _role_user_ids, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.workflow import purchase_arrival_status, purchase_flow_steps
 from services.workflow_repair import repair_fulfillment_demand_workflows
@@ -52,6 +54,153 @@ from services.inventory_availability import purchase_in_transit_map, stock_key
 
 
 router = APIRouter(prefix="/purchases", tags=["采购"])
+
+
+def _purchase_request_data(row: PurchaseRequest) -> dict:
+    return {
+        "id": row.id,
+        "request_no": row.request_no,
+        "department": row.department,
+        "item_type": row.item_type,
+        "product_id": row.product_id,
+        "material_id": row.material_id,
+        "item_name": row.item_name,
+        "specification": row.specification,
+        "quantity": str(row.quantity),
+        "unit": row.unit,
+        "reason": row.reason,
+        "status": row.status,
+        "submitted_by_name": row.submitted_by.full_name if row.submitted_by else None,
+        "purchase_order_id": row.purchase_order_id,
+        "purchase_order_no": row.purchase_order.order_no if row.purchase_order else None,
+        "process_note": row.process_note,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.get("/department-requests")
+def list_department_purchase_requests(
+    current_user: User = Depends(require_roles("production", "quality", "purchase", "manager", "chairman")),
+    db: Session = Depends(get_db),
+):
+    query = select(PurchaseRequest).options(
+        joinedload(PurchaseRequest.submitted_by), joinedload(PurchaseRequest.purchase_order)
+    )
+    if current_user.role.code in {"production", "quality"}:
+        query = query.where(PurchaseRequest.submitted_by_id == current_user.id)
+    rows = db.execute(query.order_by(PurchaseRequest.created_at.desc(), PurchaseRequest.id.desc())).scalars().all()
+    return api_response(data=[_purchase_request_data(row) for row in rows])
+
+
+@router.post("/department-requests")
+def create_department_purchase_request(
+    payload: DepartmentPurchaseRequestCreate,
+    current_user: User = Depends(require_roles("production", "quality")),
+    db: Session = Depends(get_db),
+):
+    if payload.item_type == "material":
+        if not payload.material_id or payload.product_id:
+            raise HTTPException(status_code=422, detail="原料采购需求必须选择原料")
+        item = db.get(Material, payload.material_id)
+        if item is None or not item.is_active:
+            raise HTTPException(status_code=422, detail="所选原料不存在或已停用")
+        item_name = item.name
+    elif payload.item_type == "product":
+        if not payload.product_id or payload.material_id:
+            raise HTTPException(status_code=422, detail="产品采购需求必须选择产品")
+        item = db.get(Product, payload.product_id)
+        if item is None or not item.is_active:
+            raise HTTPException(status_code=422, detail="所选产品不存在或已停用")
+        item_name = item.name
+    else:
+        if payload.product_id or payload.material_id or not (payload.item_name or "").strip():
+            raise HTTPException(status_code=422, detail="其他物品需填写物品名称")
+        item_name = payload.item_name.strip()
+    request = PurchaseRequest(
+        request_no=next_business_no(db, "CGXQ"),
+        department=current_user.role.code,
+        item_type=payload.item_type,
+        material_id=payload.material_id if payload.item_type == "material" else None,
+        product_id=payload.product_id if payload.item_type == "product" else None,
+        item_name=item_name,
+        specification=payload.specification,
+        quantity=payload.quantity,
+        unit=payload.unit.strip(),
+        reason=payload.reason.strip(),
+        status="pending",
+        submitted_by_id=current_user.id,
+    )
+    db.add(request)
+    db.flush()
+    recipients = _role_user_ids(db, "purchase")
+    for user_id in recipients:
+        create_todo(
+            db, title=f"待处理采购需求 {request.request_no}",
+            description=f"{item_name} × {payload.quantity} {payload.unit}；{request.reason}",
+            module="purchase", assigned_user_id=user_id,
+            business_type="department_purchase_request", business_id=request.id,
+        )
+    create_notification(
+        db, title="新采购需求", content=f"{current_user.full_name} 提交采购需求 {request.request_no}：{item_name}",
+        module="purchase", recipient_user_ids=recipients, created_by_id=current_user.id,
+    )
+    write_operation_log(
+        db, user_id=current_user.id, module="purchase", action="create_department_purchase_request",
+        content=f"提交自主采购需求 {request.request_no}",
+        after_data={"request_id": request.id, "department": request.department, "item_type": request.item_type},
+    )
+    db.commit()
+    db.refresh(request)
+    return api_response(data={"id": request.id, "request_no": request.request_no})
+
+
+@router.post("/department-requests/{request_id}/process")
+def process_department_purchase_request(
+    request_id: int,
+    payload: DepartmentPurchaseRequestProcess,
+    current_user: User = Depends(require_roles("purchase")),
+    db: Session = Depends(get_db),
+):
+    request = db.execute(select(PurchaseRequest).where(PurchaseRequest.id == request_id).with_for_update()).scalar_one_or_none()
+    if request is None:
+        raise HTTPException(status_code=404, detail="采购需求不存在")
+    if request.status != "pending":
+        raise HTTPException(status_code=409, detail="采购需求已处理")
+    order = db.get(PurchaseOrder, payload.purchase_order_id) if payload.purchase_order_id else None
+    if payload.purchase_order_id and order is None:
+        raise HTTPException(status_code=404, detail="关联采购订单不存在")
+    if order is not None:
+        _ensure_purchase_scope(db, current_user, order.purchaser_user_id)
+        if order.status == "cancelled":
+            raise HTTPException(status_code=409, detail="不能关联已作废的采购订单")
+        matched_quantity = sum(
+            (Decimal(item.quantity or 0) for item in order.items
+             if (item.material_id == request.material_id if request.item_type == "material"
+                 else item.product_id == request.product_id if request.item_type == "product" else False)),
+            Decimal("0"),
+        )
+        if matched_quantity < Decimal(request.quantity):
+            raise HTTPException(status_code=409, detail="采购订单中对应物品数量不足；其他物品请先建主数据后再关联")
+    if order is None and not (payload.process_note or "").strip():
+        raise HTTPException(status_code=422, detail="未关联采购订单时必须填写处理说明")
+    request.status = "ordered" if order else "closed"
+    request.purchase_order_id = order.id if order else None
+    request.processed_by_id = current_user.id
+    request.process_note = (payload.process_note or "").strip() or None
+    complete_todos(db, business_type="department_purchase_request", business_id=request.id)
+    create_notification(
+        db, title="采购需求已处理",
+        content=f"采购需求 {request.request_no} 已处理" + (f"，关联采购订单 {order.order_no}" if order else ""),
+        module="purchase", recipient_user_ids=[request.submitted_by_id], created_by_id=current_user.id,
+        category="success",
+    )
+    write_operation_log(
+        db, user_id=current_user.id, module="purchase", action="process_department_purchase_request",
+        content=f"处理自主采购需求 {request.request_no}",
+        after_data={"request_id": request.id, "status": request.status, "purchase_order_id": request.purchase_order_id},
+    )
+    db.commit()
+    return api_response(data={"id": request.id, "status": request.status})
 
 
 def _ensure_purchase_scope(db: Session, current_user: User, owner_user_id: int | None) -> None:

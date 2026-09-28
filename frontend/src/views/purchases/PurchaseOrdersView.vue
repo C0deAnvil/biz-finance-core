@@ -28,7 +28,7 @@
         </template>
       </el-table-column>
       <el-table-column prop="fund_status_label" label="结算状态" width="140" />
-      <el-table-column prop="total_amount" label="总金额" width="120" />
+      <el-table-column prop="total_amount" label="总金额" width="130"><template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template></el-table-column>
       <el-table-column label="操作" width="260" fixed="right">
         <template #default="scope">
           <div class="row-actions">
@@ -221,7 +221,7 @@
           </el-table-column>
           <el-table-column label="数量" width="140">
             <template #default="scope">
-              <el-input-number v-model="scope.row.quantity" :min="0.01" style="width: 100%" :disabled="!canManageOrders" />
+              <el-input-number v-model="scope.row.quantity" :min="0.0001" :precision="4" style="width: 100%" :disabled="!canManageOrders" />
             </template>
           </el-table-column>
           <el-table-column label="袋数" width="120">
@@ -229,7 +229,7 @@
           </el-table-column>
           <el-table-column label="单价" width="140">
             <template #default="scope">
-              <el-input-number v-model="scope.row.unit_price" :min="0.01" style="width: 100%" :disabled="!canManageOrders" />
+              <el-input-number v-model="scope.row.unit_price" :min="0.0001" :precision="4" style="width: 100%" :disabled="!canManageOrders" />
             </template>
           </el-table-column>
           <el-table-column label="最近供价" width="130">
@@ -282,7 +282,7 @@
         <el-table-column prop="display_specification" label="规格" width="130" />
         <el-table-column prop="quantity" label="数量" />
         <el-table-column prop="bag_count" label="袋数" width="110" />
-        <el-table-column prop="unit_price" label="单价" />
+        <el-table-column prop="unit_price" label="单价"><template #default="scope">{{ formatMoney(scope.row.unit_price) }}</template></el-table-column>
         <el-table-column prop="received_quantity" label="已收货" />
       </el-table>
     </el-drawer>
@@ -301,7 +301,7 @@
         <el-descriptions-item label="供应商">{{ confirmDetail.supplier_name }}</el-descriptions-item>
         <el-descriptions-item label="经办人">{{ confirmDetail.operator_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="付款方式">{{ confirmDetail.payment_type_label || paymentTypeLabel(confirmDetail.payment_type) }}</el-descriptions-item>
-        <el-descriptions-item label="订单金额">{{ formatNumber(confirmDetail.total_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="订单金额">{{ formatMoney(confirmDetail.total_amount) }}</el-descriptions-item>
         <el-descriptions-item label="当前状态">{{ confirmDetail.status_label || statusLabel(confirmDetail.status) }}</el-descriptions-item>
       </el-descriptions>
       <el-table :data="confirmDetail?.items || []" stripe class="mt-16">
@@ -309,7 +309,7 @@
         <el-table-column prop="material_name" label="原料" />
         <el-table-column prop="packaging_name" label="包装" />
         <el-table-column prop="quantity" label="数量" />
-        <el-table-column prop="unit_price" label="单价" />
+        <el-table-column prop="unit_price" label="单价"><template #default="scope">{{ formatMoney(scope.row.unit_price) }}</template></el-table-column>
       </el-table>
       <template #footer>
         <el-button @click="purchaseConfirmVisible = false">稍后处理</el-button>
@@ -320,7 +320,7 @@
     <el-dialog v-model="thresholdVisible" title="采购审批金额阈值" width="520px">
       <el-form label-width="130px">
         <el-form-item label="当前金额阈值">
-          <el-input-number v-model="thresholdForm.amount" :min="0" :precision="2" style="width: 100%" :disabled="!canManageSettings" />
+          <el-input-number v-model="thresholdForm.amount" :min="0" :precision="4" style="width: 100%" :disabled="!canManageSettings" />
         </el-form-item>
         <el-alert title="采购订单总金额达到或超过该金额时，需要经理审批；审批通过后还需采购员确认才进入采购中。" type="info" :closable="false" show-icon />
       </el-form>
@@ -348,6 +348,7 @@
       </template>
     </el-dialog>
   </PageSection>
+  <DepartmentPurchaseRequests v-if="canManageOrders" purchase-mode />
 </template>
 
 <script setup>
@@ -400,10 +401,11 @@ import { get, post, put, remove } from '../../api/client'
 import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import DepartmentPurchaseRequests from '../../components/DepartmentPurchaseRequests.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { useAuthStore } from '../../stores/auth'
 import { exportRowsToCsv } from '../../utils/export'
-import { formatNumber, paymentTypeLabel, statusLabel, statusType } from '../../utils/format'
+import { formatNumber, paymentTypeLabel, statusLabel, statusType, formatMoney } from '../../utils/format'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -665,11 +667,11 @@ function currentCatalogItem(row) {
 function latestCatalogPriceText(row) {
   const price = currentCatalogItem(row)?.latest_price
   if (!price) return '-'
-  return Number(price).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return Number(price).toLocaleString('zh-CN', { minimumFractionDigits: 3, maximumFractionDigits: 4 })
 }
 
 function supplierOptionLabel(item) {
-  const price = item.latest_price == null ? '暂无历史供价' : `最新供价 ${formatNumber(item.latest_price)}`
+  const price = item.latest_price == null ? '暂无历史供价' : `最新供价 ${formatMoney(item.latest_price)}`
   return item.latest_order_no ? `${item.name}（${price}，${item.latest_order_no}）` : `${item.name}（${price}）`
 }
 

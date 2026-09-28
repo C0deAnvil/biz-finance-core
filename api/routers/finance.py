@@ -849,6 +849,54 @@ def list_receivable_records(
     )
 
 
+@router.get("/my-receivables")
+def list_my_receivables(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(require_roles("sales")),
+    db: Session = Depends(get_db),
+):
+    """Read-only receivables for the signed-in order owner, never other salespeople."""
+    own_order_filter = (SalesOrder.sales_user_id == current_user.id, SalesOrder.status != "cancelled")
+    total = db.scalar(
+        select(func.count(func.distinct(SalesOrder.id)))
+        .join(ReceivablePlan, ReceivablePlan.sales_order_id == SalesOrder.id)
+        .where(*own_order_filter)
+    ) or 0
+    orders = db.execute(
+        select(SalesOrder)
+        .options(joinedload(SalesOrder.customer))
+        .where(*own_order_filter, exists(select(ReceivablePlan.id).where(ReceivablePlan.sales_order_id == SalesOrder.id)))
+        .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).scalars().all()
+    plan_rows = db.scalars(
+        select(ReceivablePlan).where(ReceivablePlan.sales_order_id.in_([row.id for row in orders] or [-1]))
+    ).all()
+    plans_by_order: dict[int, list[ReceivablePlan]] = {}
+    for plan in plan_rows:
+        plans_by_order.setdefault(plan.sales_order_id, []).append(plan)
+    rows = []
+    for order in orders:
+        plans = plans_by_order.get(order.id, [])
+        receivable = sum((Decimal(plan.planned_amount or 0) for plan in plans), Decimal("0"))
+        received = sum((Decimal(plan.received_amount or 0) for plan in plans), Decimal("0"))
+        remaining = max(receivable - received, Decimal("0"))
+        rows.append({
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "customer_name": order.customer.name if order.customer else "-",
+            "order_amount": str(order.total_amount or Decimal("0")),
+            "receivable_amount": str(receivable),
+            "received_amount": str(received),
+            "remaining_amount": str(remaining),
+            "status": "completed" if all(plan.status == "completed" for plan in plans) else "pending",
+            "created_at": order.created_at.isoformat() if order.created_at else None,
+        })
+    return api_response(data={"rows": rows, "total": total, "page": page, "page_size": page_size})
+
+
 @router.post("/receivables/receipt-requests/{request_id}/register")
 def register_sales_receipt_request(
     request_id: int,
@@ -1772,12 +1820,12 @@ def report_detail(
             },
             'summary': {
                 'sales_order_count': len(sales_profit_rows),
-                'sales_total': round(sum(row['sales_amount'] for row in sales_profit_rows), 2),
-                'profit_total': round(sum(row['profit_amount'] for row in sales_profit_rows), 2),
-                'purchase_payment_total': round(sum(row['amount'] for row in purchase_payment_rows), 2),
-                'incoming_total': round(incoming_total, 2),
-                'outgoing_total': round(outgoing_total, 2),
-                'inventory_capital_total': round(sum(row['inventory_amount'] for row in inventory_capital_rows), 2),
+                'sales_total': round(sum(row['sales_amount'] for row in sales_profit_rows), 4),
+                'profit_total': round(sum(row['profit_amount'] for row in sales_profit_rows), 4),
+                'purchase_payment_total': round(sum(row['amount'] for row in purchase_payment_rows), 4),
+                'incoming_total': round(incoming_total, 4),
+                'outgoing_total': round(outgoing_total, 4),
+                'inventory_capital_total': round(sum(row['inventory_amount'] for row in inventory_capital_rows), 4),
                 'below_safety_stock_count': sum(1 for row in inventory_capital_rows if row['below_safety_stock']),
             },
             'sales_profit_rows': sales_profit_rows,

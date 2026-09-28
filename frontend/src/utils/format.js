@@ -181,7 +181,20 @@ export function formatNumber(value) {
   if (value == null || value === '') return '-'
   const number = Number(value)
   if (Number.isNaN(number)) return value
-  return number.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+  return number.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+}
+
+export function formatMoney(value) {
+  if (value == null || value === '') return '-'
+  // Computed UI totals are JS numbers and may contain binary floating-point tails.
+  // Decimal strings from the API are kept intact instead of passing through Number.
+  const text = typeof value === 'number' ? value.toFixed(4) : String(value).trim()
+  if (!/^-?\d+(?:\.\d+)?$/.test(text)) return value
+  const negative = text.startsWith('-') ? '-' : ''
+  const [integer, fraction = ''] = text.replace(/^-/, '').split('.')
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  const decimals = fraction.length > 4 ? fraction : fraction.padEnd(3, '0')
+  return `${negative}${grouped}.${decimals}`
 }
 
 export function formatDateTime(value) {

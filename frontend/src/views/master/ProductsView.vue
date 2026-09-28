@@ -71,7 +71,7 @@
           <el-col :span="12"><el-form-item label="kg/袋"><el-input-number v-model="form.kg_per_bag" :min="0.01" :precision="2" style="width: 100%" disabled /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="标准单价"><el-input-number v-model="form.price" :min="0" :precision="2" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="标准单价"><el-input-number v-model="form.price" :min="0" :precision="4" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="启用"><el-switch v-model="form.is_active" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">

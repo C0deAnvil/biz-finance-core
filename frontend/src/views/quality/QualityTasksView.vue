@@ -17,6 +17,7 @@
         </el-select>
         <el-input v-model="filters.keyword" clearable placeholder="搜索质检单号 / 批次 / 产品" class="w-260" />
         <el-button @click="load">刷新</el-button>
+        <el-button v-if="canOperateQuality" @click="purchaseRequestsPanel?.openCreate()">提交采购需求</el-button>
         <el-button v-if="canOperateQuality" type="primary" @click="openCreate">新增质检任务</el-button>
       </template>
       <el-table :data="pagedActiveRows" stripe :row-class-name="rowClassName">
@@ -220,6 +221,7 @@
     <el-dialog v-model="attachmentVisible" title="质检照片上传" width="760px">
       <AttachmentUploader v-if="attachmentTargetId" business-type="quality_inspection" :business-id="attachmentTargetId" :readonly="!canUploadAttachments" />
     </el-dialog>
+    <DepartmentPurchaseRequests v-if="auth.isRole('quality')" ref="purchaseRequestsPanel" />
   </div>
 </template>
 
@@ -264,6 +266,7 @@ import { useRouteFocus } from '../../composables/useRouteFocus'
 import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import DepartmentPurchaseRequests from '../../components/DepartmentPurchaseRequests.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useQualityInspectors } from '../../composables/useQualityInspectors'
@@ -276,6 +279,7 @@ const { qualityInspectors, loadQualityInspectors } = useQualityInspectors()
 const { route, focusedId: focusedTaskId, applyFocus: applyRouteFocus } = useRouteFocus()
 
 const rows = ref([])
+const purchaseRequestsPanel = ref(null)
 const purchaseOrders = ref([])
 const selectedOrderDetail = ref(null)
 const activeTask = ref(null)

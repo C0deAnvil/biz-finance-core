@@ -168,7 +168,7 @@ def create_business_matter(payload: BusinessMatterCreate, current_user: User = D
         create_todo(
             db,
             title=f"事务审批 {row.matter_no}",
-            description=f"{current_user.full_name} 提交出账类事务申请，预估金额 {float(row.estimated_amount or 0):.2f} 元。",
+            description=f"{current_user.full_name} 提交出账类事务申请，预估金额 {float(row.estimated_amount or 0):.4f} 元。",
             module="finance",
             assigned_user_id=user_id,
             business_type="business_matter",
@@ -295,7 +295,7 @@ def _create_reimbursement_row(
         create_todo(
             db,
             title=f"报销审批 {row.reimbursement_no}",
-            description=f"报销申请金额 {float(row.amount or 0):.2f} 元，请董事长审批。",
+            description=f"报销申请金额 {float(row.amount or 0):.4f} 元，请董事长审批。",
             module="finance",
             assigned_user_id=user_id,
             business_type="reimbursement",
@@ -442,7 +442,7 @@ def pay_reimbursement(
     create_notification(
         db,
         title="报销已出账",
-        content=f"报销单 {row.reimbursement_no} 已完成实际报销，金额 {float(row.amount or 0):.2f} 元。",
+        content=f"报销单 {row.reimbursement_no} 已完成实际报销，金额 {float(row.amount or 0):.4f} 元。",
         module="finance",
         recipient_user_ids=list(dict.fromkeys([row.applicant_user_id, *_role_user_ids(db, "chairman")])),
         created_by_id=current_user.id,

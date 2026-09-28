@@ -128,7 +128,7 @@
              所以销售/采购/生产才各自保留了专用审批页。 -->
         <el-form v-if="canDecideActiveApproval" label-width="110px" class="mt-16 decision-form">
           <el-form-item v-if="decisionAmountField" :label="decisionAmountField.label">
-            <el-input-number v-model="decisionForm.amount" :min="0" :precision="2" style="width: 100%" />
+            <el-input-number v-model="decisionForm.amount" :min="0" :precision="4" style="width: 100%" />
             <div class="decision-hint">{{ decisionAmountField.hint }}</div>
           </el-form-item>
           <el-form-item v-if="decisionQuantityField" :label="decisionQuantityField.label">

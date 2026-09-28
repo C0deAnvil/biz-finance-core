@@ -263,9 +263,13 @@ function exportPlan(row) {
 }
 
 async function convertToTask(row) {
-  await post(`/api/production/plans/${row.id}/convert-task`, {})
-  ElMessage.success('生产计划已转为生产任务')
-  await load()
+  try {
+    await post(`/api/production/plans/${row.id}/convert-task`, {})
+    ElMessage.success('生产计划已转为生产任务')
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '转生产任务失败')
+  }
 }
 
 function goTask(taskId) {

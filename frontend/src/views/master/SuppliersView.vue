@@ -464,7 +464,7 @@ function formatNumber(value) {
 
 function formatMoney(value) {
   const number = Number(value || 0)
-  return Number.isFinite(number) ? number.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'
+  return Number.isFinite(number) ? number.toLocaleString('zh-CN', { minimumFractionDigits: 3, maximumFractionDigits: 4 }) : '-'
 }
 
 function catalogSpec(row) {

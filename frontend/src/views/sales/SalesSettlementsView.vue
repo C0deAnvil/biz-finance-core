@@ -204,7 +204,7 @@
           <el-input-number v-model="receiptForm.installment_index" :min="1" :max="24" style="width: 100%" />
         </el-form-item>
         <el-form-item label="申请金额">
-          <el-input-number v-model="receiptForm.requested_amount" :min="0.01" :precision="2" style="width: 100%" />
+          <el-input-number v-model="receiptForm.requested_amount" :min="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="说明">
           <el-input v-model="receiptForm.remark" type="textarea" :rows="3" />
@@ -269,7 +269,7 @@
         <el-table-column prop="remaining_amount" label="待收金额" width="120"><template #default="scope">{{ formatNumber(scope.row.remaining_amount) }}</template></el-table-column>
         <el-table-column label="本次申请金额" width="160">
           <template #default="scope">
-            <el-input-number v-model="scope.row.requested_amount" :min="0.01" :max="scope.row.remaining_amount" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.requested_amount" :min="0.0001" :max="scope.row.remaining_amount" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
       </el-table>

@@ -143,13 +143,13 @@
           </el-table-column>
         </el-table>
         <el-form-item class="mt-16" label="订单金额">
-          <el-input-number v-model="requestForm.order_amount" :min="0" :precision="2" style="width: 100%" />
+          <el-input-number v-model="requestForm.order_amount" :min="0" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="其他费用">
-          <el-input-number v-model="requestForm.other_fee_amount" :min="0" :precision="2" style="width: 100%" />
+          <el-input-number v-model="requestForm.other_fee_amount" :min="0" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="申请总金额">
-          <el-input-number v-model="requestForm.requested_amount" :min="0.01" :precision="2" style="width: 100%" />
+          <el-input-number v-model="requestForm.requested_amount" :min="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
         <el-form-item label="付款说明">
           <el-input v-model="requestForm.payment_detail_remark" type="textarea" :rows="3" />
@@ -208,12 +208,12 @@
         </el-table-column>
         <el-table-column label="本次订单金额" width="150">
           <template #default="scope">
-            <el-input-number v-model="scope.row.order_amount" :min="0" :max="scope.row.remaining_amount" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.order_amount" :min="0" :max="scope.row.remaining_amount" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
         <el-table-column label="其他费用" width="140">
           <template #default="scope">
-            <el-input-number v-model="scope.row.other_fee_amount" :min="0" :precision="2" style="width: 100%" />
+            <el-input-number v-model="scope.row.other_fee_amount" :min="0" :precision="4" style="width: 100%" />
           </template>
         </el-table-column>
       </el-table>
@@ -244,7 +244,7 @@
           <el-input v-model="invoiceForm.invoice_no" placeholder="请输入发票号码" />
         </el-form-item>
         <el-form-item label="发票金额">
-          <el-input-number v-model="invoiceForm.invoice_amount" :min="0" :precision="2" :controls="false" style="width:100%" placeholder="请输入发票金额" />
+          <el-input-number v-model="invoiceForm.invoice_amount" :min="0" :precision="4" :controls="false" style="width:100%" placeholder="请输入发票金额" />
         </el-form-item>
         <el-form-item label="发票日期">
           <el-input v-model="invoiceForm.invoice_date" placeholder="格式 YYYY-MM-DD，如 2026-08-31" />

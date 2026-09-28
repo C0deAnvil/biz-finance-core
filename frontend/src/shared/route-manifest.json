@@ -421,6 +421,15 @@
     ]
   },
   {
+    "path": "/sales/my-receivables",
+    "name": "sales-my-receivables",
+    "title": "我的应收款",
+    "group": "销售管理",
+    "menu_roles": ["sales"],
+    "preload_roles": ["sales"],
+    "warmers": []
+  },
+  {
     "path": "/sales/settlements",
     "name": "sales-settlements",
     "title": "销售结算协同",
