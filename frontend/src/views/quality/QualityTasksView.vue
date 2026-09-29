@@ -17,7 +17,7 @@
         </el-select>
         <el-input v-model="filters.keyword" clearable placeholder="搜索质检单号 / 批次 / 产品" class="w-260" />
         <el-button @click="load">刷新</el-button>
-        <el-button v-if="canOperateQuality" @click="purchaseRequestsPanel?.openCreate()">提交采购需求</el-button>
+        <el-button v-if="canOperateQuality" @click="openPurchaseRequest">提交采购需求</el-button>
         <el-button v-if="canOperateQuality" type="primary" @click="openCreate">新增质检任务</el-button>
       </template>
       <el-table :data="pagedActiveRows" stripe :row-class-name="rowClassName">
@@ -280,6 +280,14 @@ const { route, focusedId: focusedTaskId, applyFocus: applyRouteFocus } = useRout
 
 const rows = ref([])
 const purchaseRequestsPanel = ref(null)
+
+function openPurchaseRequest() {
+  if (!purchaseRequestsPanel.value?.openCreate) {
+    ElMessage.error('采购需求页面尚未就绪，请刷新后重试')
+    return
+  }
+  purchaseRequestsPanel.value.openCreate()
+}
 const purchaseOrders = ref([])
 const selectedOrderDetail = ref(null)
 const activeTask = ref(null)

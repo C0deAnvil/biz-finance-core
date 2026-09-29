@@ -20,10 +20,12 @@
   </PageSection>
 
   <el-dialog v-model="createVisible" title="提交自主采购需求" width="620px">
+    <el-alert v-if="masterDataError" :title="`物品数据加载失败：${masterDataError}`" type="error" :closable="false" class="mb-12" />
+    <el-button v-if="masterDataError" size="small" :loading="masterDataLoading" @click="loadMasterData">重试加载原料和产品</el-button>
     <el-form :model="form" label-width="95px">
       <el-form-item label="物品类型"><el-select v-model="form.item_type" style="width:100%" @change="resetItem"><el-option label="原料" value="material" /><el-option label="产品" value="product" /><el-option label="其他物品" value="other" /></el-select></el-form-item>
-      <el-form-item v-if="form.item_type === 'material'" label="原料"><el-select v-model="form.material_id" filterable style="width:100%" placeholder="搜索原料名称或编号" @change="syncUnit"><el-option v-for="row in materials" :key="row.id" :value="row.id" :label="`${row.material_code} - ${row.name}`" /></el-select></el-form-item>
-      <el-form-item v-else-if="form.item_type === 'product'" label="产品"><el-select v-model="form.product_id" filterable style="width:100%" placeholder="搜索产品名称或编号" @change="syncUnit"><el-option v-for="row in products" :key="row.id" :value="row.id" :label="`${row.product_code} - ${row.name}`" /></el-select></el-form-item>
+      <el-form-item v-if="form.item_type === 'material'" label="原料"><el-select v-model="form.material_id" filterable :loading="masterDataLoading" style="width:100%" placeholder="搜索原料名称或编号" @change="syncUnit"><el-option v-for="row in materials" :key="row.id" :value="row.id" :label="`${row.material_code} - ${row.name}`" /></el-select></el-form-item>
+      <el-form-item v-else-if="form.item_type === 'product'" label="产品"><el-select v-model="form.product_id" filterable :loading="masterDataLoading" style="width:100%" placeholder="搜索产品名称或编号" @change="syncUnit"><el-option v-for="row in products" :key="row.id" :value="row.id" :label="`${row.product_code} - ${row.name}`" /></el-select></el-form-item>
       <el-form-item v-else label="物品名称"><el-input v-model="form.item_name" placeholder="例如：质检手套、试剂耗材" /></el-form-item>
       <el-form-item label="规格"><el-input v-model="form.specification" /></el-form-item>
       <el-form-item label="数量"><el-input-number v-model="form.quantity" :min="0.0001" :precision="4" style="width:100%" /></el-form-item>
@@ -45,8 +47,26 @@
 </template>
 
 <script setup>
+import 'element-plus/es/components/alert/style/css'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/dialog/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/input-number/style/css'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/table/style/css'
+
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
+import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
+import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { get, post } from '../api/client'
 import PageSection from './PageSection.vue'
 import { formatNumber } from '../utils/format'
@@ -57,6 +77,8 @@ const materials = ref([])
 const products = ref([])
 const orders = ref([])
 const createVisible = ref(false)
+const masterDataLoading = ref(false)
+const masterDataError = ref('')
 const processVisible = ref(false)
 const submitting = ref(false)
 const activeRequest = ref(null)
@@ -74,14 +96,24 @@ function syncUnit() {
   const row = form.item_type === 'material' ? materials.value.find(x => x.id === form.material_id) : products.value.find(x => x.id === form.product_id)
   form.unit = row?.unit || 'kg'
 }
-async function openCreate() {
-  Object.assign(form, { item_type: 'material', material_id: null, product_id: null, item_name: '', specification: '', quantity: 1, unit: 'kg', reason: '' })
+async function loadMasterData() {
+  masterDataLoading.value = true
+  masterDataError.value = ''
   try {
     const [materialRows, productRows] = await Promise.all([get('/api/master-data/materials'), get('/api/master-data/products')])
     materials.value = (Array.isArray(materialRows) ? materialRows : materialRows?.items || []).filter(x => x.is_active !== false)
     products.value = (Array.isArray(productRows) ? productRows : productRows?.items || []).filter(x => x.is_active !== false)
-    createVisible.value = true
-  } catch (error) { ElMessage.error(error?.message || '主数据加载失败') }
+  } catch (error) {
+    masterDataError.value = error?.message || '请稍后重试'
+    ElMessage.error(`原料和产品加载失败：${masterDataError.value}`)
+  } finally {
+    masterDataLoading.value = false
+  }
+}
+async function openCreate() {
+  Object.assign(form, { item_type: 'material', material_id: null, product_id: null, item_name: '', specification: '', quantity: 1, unit: 'kg', reason: '' })
+  createVisible.value = true
+  await loadMasterData()
 }
 async function submit() {
   if ((form.item_type === 'material' && !form.material_id) || (form.item_type === 'product' && !form.product_id) || (form.item_type === 'other' && !form.item_name.trim())) { ElMessage.warning('请填写采购物品'); return }

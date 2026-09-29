@@ -11,7 +11,7 @@
       <template #actions>
         <el-button @click="load">刷新</el-button>
         <el-button v-if="auth.isRole('production')" @click="openStocks">查看库存</el-button>
-        <el-button v-if="canManageTasks" @click="purchaseRequestsPanel?.openCreate()">提交采购需求</el-button>
+        <el-button v-if="canManageTasks" @click="openPurchaseRequest">提交采购需求</el-button>
         <el-button v-if="canManageTasks" type="primary" @click="openCreate">新增任务</el-button>
       </template>
 
@@ -698,6 +698,14 @@ function openCreate() {
 
 function openStocks() {
   router.push('/inventory/stocks')
+}
+
+function openPurchaseRequest() {
+  if (!purchaseRequestsPanel.value?.openCreate) {
+    ElMessage.error('采购需求页面尚未就绪，请刷新后重试')
+    return
+  }
+  purchaseRequestsPanel.value.openCreate()
 }
 
 function handleSourceChange(value) {
