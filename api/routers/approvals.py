@@ -40,7 +40,7 @@ from schemas.production import SpecialMaterialApproval
 from schemas.purchases import PurchaseApprovalRequest
 from schemas.sales import SalesApprovalRequest, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReturnApprovalRequest
 from services.display import clean_display_text, payment_type_label, return_type_label, status_label
-from services.production_service import approve_special_request as approve_special_request_service
+from services.production_service import approve_special_request as approve_special_request_service, can_review_factory_material
 from services.purchase_service import approve_purchase_order as approve_purchase_order_service, approve_purchase_payment_request as approve_purchase_payment_request_service
 from services.sales_service import approve_order as approve_sales_order_service, approve_sales_price_change as approve_sales_price_change_service, approve_return as approve_sales_return_service, approve_sales_receipt_request as approve_sales_receipt_request_service
 from services.inventory_exception_service import approve_inventory_exception, reject_inventory_exception, serialize_inventory_exception
@@ -123,6 +123,15 @@ def _ensure_approval_permission(current_user: User, approval_type: str, *, actio
     allowed = _can_act_on_approval_type(current_user, approval_type) if action == "act" else _can_view_approval_type(current_user, approval_type)
     if not allowed:
         raise HTTPException(status_code=403, detail="无权访问当前审批数据")
+
+
+def _ensure_material_warehouse_scope(current_user: User, approval_type: str, db: Session) -> None:
+    if (
+        approval_type in {"production_material_request", "production_special_request"}
+        and _role_code(current_user) == "inventory"
+        and not can_review_factory_material(db, current_user)
+    ):
+        raise HTTPException(status_code=403, detail="只有廊坊工厂仓库管可以查看和处理领料审批")
 
 
 def _build_approval_id(approval_type: str, business_id: int) -> str:
@@ -642,6 +651,8 @@ def _pending_material_requests(current_user: User, db: Session) -> list[dict]:
     role_code = _role_code(current_user)
     if not _can_act_on_approval_type(current_user, "production_material_request"):
         return []
+    if role_code == "inventory" and not can_review_factory_material(db, current_user):
+        return []
     rows = db.execute(
         select(ProductionMaterialUsage)
         .options(
@@ -680,6 +691,8 @@ def _pending_material_requests(current_user: User, db: Session) -> list[dict]:
 
 def _history_material_requests(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     role_code = _role_code(current_user)
+    if role_code == "inventory" and not can_review_factory_material(db, current_user):
+        return []
     if role_code == "production":
         query = (
             select(ProductionMaterialUsage)
@@ -740,6 +753,8 @@ def _pending_special_requests(current_user: User, db: Session) -> list[dict]:
     role_code = _role_code(current_user)
     if not _can_act_on_approval_type(current_user, "production_special_request"):
         return []
+    if role_code == "inventory" and not can_review_factory_material(db, current_user):
+        return []
     rows = db.execute(
         select(ProductionMaterialUsage)
         .options(
@@ -793,6 +808,8 @@ def _history_special_requests(current_user: User, db: Session, start_date: str |
         )
     )
     role_code = _role_code(current_user)
+    if role_code == "inventory" and not can_review_factory_material(db, current_user):
+        return []
     if role_code == "production":
         query = query.join(ProductionTask, ProductionMaterialUsage.production_task_id == ProductionTask.id).where(ProductionTask.created_by_id == current_user.id)
     elif role_code not in {"inventory", "manager", "chairman", "system_admin"}:
@@ -1517,6 +1534,7 @@ def list_approval_history(
 def get_approval_detail(approval_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     approval_type, business_id = _parse_approval_id(approval_id)
     _ensure_approval_permission(current_user, approval_type, action="view")
+    _ensure_material_warehouse_scope(current_user, approval_type, db)
     if approval_type == "sales_order":
         detail = _sales_order_detail(business_id, db)
     elif approval_type == "sales_price_change":
@@ -1556,6 +1574,7 @@ def approve_item(
 ):
     approval_type, business_id = _parse_approval_id(approval_id)
     _ensure_approval_permission(current_user, approval_type, action="act")
+    _ensure_material_warehouse_scope(current_user, approval_type, db)
     if approval_type == "sales_order":
         return approve_sales_order_service(
             business_id,
@@ -1643,6 +1662,7 @@ def reject_item(
 ):
     approval_type, business_id = _parse_approval_id(approval_id)
     _ensure_approval_permission(current_user, approval_type, action="act")
+    _ensure_material_warehouse_scope(current_user, approval_type, db)
     if approval_type == "sales_order":
         return approve_sales_order_service(
             business_id,

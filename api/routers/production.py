@@ -61,6 +61,7 @@ from services.production_service import (
     create_plan as create_plan_service,
     create_task as create_task_service,
     _inventory_user_ids_for_warehouse,
+    can_review_factory_material,
     _create_raw_material_demands_for_task,
     raw_material_shortage_detail,
     submit_material_request as submit_material_request_service,
@@ -772,6 +773,8 @@ def list_special_requests(
     current_user: User = Depends(require_roles("production", "inventory", "manager", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
+    if current_user.role.code == "inventory" and not can_review_factory_material(db, current_user):
+        return api_response(data=[])
     query = (
         select(ProductionMaterialUsage)
         .join(ProductionTask, ProductionMaterialUsage.production_task_id == ProductionTask.id)

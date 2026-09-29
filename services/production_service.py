@@ -110,6 +110,15 @@ def _inventory_user_ids_for_warehouse(db: Session, warehouse_id: int) -> list[in
     ]
 
 
+def can_review_factory_material(db: Session, current_user: User) -> bool:
+    """普通领料审批与后续工厂仓出库使用同一批库管。"""
+    return bool(
+        current_user.role
+        and current_user.role.code == "inventory"
+        and current_user.id in _inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id)
+    )
+
+
 def _allowed_quantity(task: ProductionTask, usage: ProductionMaterialUsage) -> Decimal:
     return Decimal(usage.planned_quantity or 0) * (Decimal("1") + Decimal(task.fluctuation_ratio or 0))
 
@@ -387,6 +396,9 @@ def _create_material_issue_request(
         return False
 
     raw_warehouse = _raw_warehouse(db)
+    inventory_user_ids = _inventory_user_ids_for_warehouse(db, raw_warehouse.id)
+    if not inventory_user_ids:
+        raise HTTPException(status_code=409, detail="廊坊工厂仓未配置库管，无法派发领料出库")
     inventory = db.execute(
         select(Inventory).where(
             Inventory.warehouse_id == raw_warehouse.id,
@@ -428,7 +440,7 @@ def _create_material_issue_request(
         requested_by_id=current_user.id,
         items=items,
         remark=usage.reason,
-        recipient_user_ids=_inventory_user_ids_for_warehouse(db, raw_warehouse.id),
+        recipient_user_ids=inventory_user_ids,
         title=f"待执行领料出库 {task.task_no}",
         description=f"生产任务 {task.task_no} 的原料 {usage.material.name if usage.material else usage.material_id} 已提交领料申请，请库管审核并执行出库。",
     )
@@ -444,6 +456,9 @@ def _create_task_material_issue_request(
 ) -> bool:
     rows = []
     raw_warehouse = _raw_warehouse(db)
+    inventory_user_ids = _inventory_user_ids_for_warehouse(db, raw_warehouse.id)
+    if not inventory_user_ids:
+        raise HTTPException(status_code=409, detail="廊坊工厂仓未配置库管，无法派发领料出库")
     for usage in usages:
         issue_quantity = Decimal(usage.approved_quantity or usage.requested_quantity or 0)
         if issue_quantity <= 0:
@@ -491,7 +506,7 @@ def _create_task_material_issue_request(
         requested_by_id=current_user.id,
         items=rows,
         remark="；".join([row.reason for row in usages if row.reason]) or None,
-        recipient_user_ids=_inventory_user_ids_for_warehouse(db, raw_warehouse.id),
+        recipient_user_ids=inventory_user_ids,
         title=f"待执行领料出库 {task.task_no}",
         description=f"生产任务 {task.task_no} 已提交 {len(rows)} 项原料领料申请，请库管审核并执行一次性出库。",
     )
@@ -740,6 +755,16 @@ def submit_material_request(
 
     for usage in normal_rows:
         complete_todos(db, business_type="production_material_request", business_id=usage.id)
+        for user_id in inventory_user_ids:
+            create_todo(
+                db,
+                title=f"待审批领料 {task.task_no}",
+                description=f"原料 {usage.material.name if usage.material else usage.material_id} 申请领料 {float(usage.requested_quantity)}，请廊坊工厂仓库管审批。",
+                module="production",
+                assigned_user_id=user_id,
+                business_type="production_material_request",
+                business_id=usage.id,
+            )
     for usage in special_rows:
         complete_todos(db, business_type="production_special_request", business_id=usage.id)
         for user_id in dict.fromkeys([*inventory_user_ids, *manager_user_ids]):
@@ -847,7 +872,10 @@ def submit_special_requests(
         submitted_rows.append(usage)
 
     task.status = "pending_special_approval"
-    approver_user_ids = list(dict.fromkeys([*_inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id), *_role_user_ids(db, "manager")]))
+    inventory_user_ids = _inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id)
+    if not inventory_user_ids:
+        raise HTTPException(status_code=409, detail="廊坊工厂仓未配置库管，请先配置仓库负责人或部门仓库范围")
+    approver_user_ids = list(dict.fromkeys([*inventory_user_ids, *_role_user_ids(db, "manager")]))
     for usage in submitted_rows:
         for user_id in approver_user_ids:
             create_todo(
@@ -910,7 +938,7 @@ def approve_special_request(
     task = usage.production_task
     allowed_quantity = _allowed_quantity(task, usage)
     role_code = current_user.role.code if current_user.role else ""
-    if role_code == "inventory" and current_user.id not in _inventory_user_ids_for_warehouse(db, _raw_warehouse(db).id):
+    if role_code == "inventory" and not can_review_factory_material(db, current_user):
         raise HTTPException(status_code=403, detail="只有廊坊工厂仓库管可以审批生产领料")
     review_note = payload.remark.strip() if payload.remark else None
     is_admin = is_system_admin(current_user)

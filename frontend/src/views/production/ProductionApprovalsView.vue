@@ -68,7 +68,7 @@
       </el-form>
       <template #footer>
         <el-button @click="approvalVisible = false">取消</el-button>
-        <el-button :type="approvalForm.decision === 'approved' ? 'success' : 'danger'" @click="submitApproval">确认</el-button>
+        <el-button :type="approvalForm.decision === 'approved' ? 'success' : 'danger'" :loading="approvalSubmitting" @click="submitApproval">确认</el-button>
       </template>
     </el-dialog>
   </div>
@@ -76,6 +76,7 @@
 
 <script setup>
 import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/card/style/css'
 import 'element-plus/es/components/col/style/css'
@@ -89,6 +90,7 @@ import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
@@ -117,6 +119,7 @@ const { route, focusedId: focusedTaskId, applyFocus: applyRouteFocus } = useRout
 const rows = ref([])
 const activeRow = ref(null)
 const approvalVisible = ref(false)
+const approvalSubmitting = ref(false)
 const filters = reactive({ status: '', keyword: '' })
 const approvalForm = reactive({ decision: 'approved', approved_quantity: 0, remark: '' })
 
@@ -183,14 +186,40 @@ function openApproval(row, decision) {
 }
 
 async function submitApproval() {
-  await post(`/api/production/special-requests/${activeRow.value.id}/approve`, {
+  if (!activeRow.value || approvalSubmitting.value) return
+  approvalSubmitting.value = true
+  const payload = {
     decision: approvalForm.decision,
     approved_quantity: approvalForm.decision === 'approved' ? approvalForm.approved_quantity : undefined,
     remark: approvalForm.remark
-  })
-  ElMessage.success('审批已处理')
-  approvalVisible.value = false
-  await load()
+  }
+  const url = `/api/production/special-requests/${activeRow.value.id}/approve`
+  try {
+    try {
+      await post(url, payload)
+    } catch (error) {
+      if (approvalForm.decision !== 'approved' || error?.data?.code !== 'inventory_shortage_confirmation_required') throw error
+      const shortage = error.data
+      try {
+        await ElMessageBox.confirm(
+          `${shortage.material_name}申请 ${shortage.requested_quantity}，工厂仓可用 ${shortage.available_quantity}，缺口 ${shortage.shortage_quantity}。是否生成采购补货需求并继续审批？`,
+          '原料库存不足',
+          { confirmButtonText: '生成采购需求并通过', cancelButtonText: '暂不审批', type: 'warning' }
+        )
+      } catch (cancelled) {
+        if (cancelled === 'cancel' || cancelled === 'close') return
+        throw cancelled
+      }
+      await post(url, { ...payload, create_replenishment: true })
+    }
+    ElMessage.success('领料审批已处理')
+    approvalVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '领料审批失败，请稍后重试')
+  } finally {
+    approvalSubmitting.value = false
+  }
 }
 
 onMounted(load)

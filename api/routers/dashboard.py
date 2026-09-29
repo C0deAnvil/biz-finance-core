@@ -11,6 +11,7 @@ from models import (
     CashFlowRecord,
     Inventory,
     InventoryDispatchQueue,
+    InventoryOperationRequest,
     Notification,
     NotificationRecipient,
     Product,
@@ -28,6 +29,7 @@ from schemas.dashboard import BatchIdsRequest
 from services.core import complete_todos, sync_low_stock_alerts
 from services.display import status_label
 from services.organization import get_inventory_scope_warehouse_ids, get_scoped_user_ids
+from services.production_service import can_review_factory_material
 from services.realtime import realtime_manager
 from services.time_utils import now_local
 
@@ -425,6 +427,23 @@ def dashboard(current_user: User = Depends(get_current_user), db: Session = Depe
         .where(TodoItem.assigned_user_id == current_user.id, TodoItem.status != "completed")
         .order_by(TodoItem.created_at.desc())
     ).scalars().all()
+    if current_user.role and current_user.role.code == "inventory" and not can_review_factory_material(db, current_user):
+        material_issue_ids = {
+            request_id for request_id in db.execute(
+                select(InventoryOperationRequest.id).where(
+                    InventoryOperationRequest.request_category == "production_material_issue",
+                    InventoryOperationRequest.id.in_(
+                        todo.business_id for todo in todos
+                        if todo.business_type == "inventory_operation_request" and todo.business_id is not None
+                    ),
+                )
+            ).scalars()
+        }
+        todos = [
+            todo for todo in todos
+            if todo.business_type not in {"production_material_request", "production_special_request"}
+            and not (todo.business_type == "inventory_operation_request" and todo.business_id in material_issue_ids)
+        ]
     notifications = db.execute(
         select(NotificationRecipient)
         .options(joinedload(NotificationRecipient.notification))

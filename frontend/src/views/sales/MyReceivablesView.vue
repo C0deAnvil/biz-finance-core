@@ -14,7 +14,8 @@
     </div>
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="load-error" />
     <p class="result-count">共 {{ total }} 条本人已转应收订单</p>
-    <el-table :data="rows" stripe v-loading="loading">
+    <p v-if="loading" class="loading-message">正在加载应收款…</p>
+    <el-table :data="rows" stripe>
       <el-table-column prop="order_no" label="客户订单" min-width="160" />
       <el-table-column prop="customer_name" label="客户" min-width="180" show-overflow-tooltip />
       <el-table-column label="订单金额" min-width="130"><template #default="scope">{{ formatMoney(scope.row.order_amount) }}</template></el-table-column>
@@ -41,6 +42,14 @@ import 'element-plus/es/components/empty/style/css'
 import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/select/style/css'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import ElAlert from 'element-plus/es/components/alert/index.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
+import ElEmpty from 'element-plus/es/components/empty/index.mjs'
+import ElInput from 'element-plus/es/components/input/index.mjs'
+import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
+import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { onMounted, ref } from 'vue'
 import { get } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
@@ -105,4 +114,5 @@ onMounted(load)
 .filter-status { width: 125px; }
 .load-error { margin-bottom: 12px; }
 .result-count { margin: 0 0 10px; color: #606266; font-size: 13px; }
+.loading-message { margin: 0 0 10px; color: #606266; font-size: 13px; }
 </style>
