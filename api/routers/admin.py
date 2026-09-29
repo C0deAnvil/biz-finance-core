@@ -332,9 +332,11 @@ def create_user(payload: UserCreate, current_user: User = Depends(require_roles(
     )
     db.add(user)
     db.flush()
-    if role.code == "sales":
+    if role.code in {"sales", "production"}:
         db.add(UserModulePermission(
-            user_id=user.id, route_path="/sales/my-receivables", assigned_by_id=current_user.id,
+            user_id=user.id,
+            route_path="/sales/my-receivables" if role.code == "sales" else "/inventory/stocks",
+            assigned_by_id=current_user.id,
         ))
     if payload.inherit_from_user_id:
         _transfer_user_data(db, payload.inherit_from_user_id, user.id)
@@ -369,6 +371,13 @@ def update_user(
     )):
         db.add(UserModulePermission(
             user_id=user.id, route_path="/sales/my-receivables", assigned_by_id=current_user.id,
+        ))
+    if role.code == "production" and not db.scalar(select(UserModulePermission.id).where(
+        UserModulePermission.user_id == user.id,
+        UserModulePermission.route_path == "/inventory/stocks",
+    )):
+        db.add(UserModulePermission(
+            user_id=user.id, route_path="/inventory/stocks", assigned_by_id=current_user.id,
         ))
     if payload.inherit_from_user_id and payload.inherit_from_user_id != user.inherited_from_user_id:
         _transfer_user_data(db, payload.inherit_from_user_id, user.id)

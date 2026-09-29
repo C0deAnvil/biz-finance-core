@@ -10,7 +10,7 @@
     <PageSection title="生产任务" description="支持创建生产任务、提交特殊领用审批，并将已完工任务单独分区展示。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
-        <el-button v-if="canManageTasks" @click="openStocks">查看库存</el-button>
+        <el-button v-if="auth.isRole('production')" @click="openStocks">查看库存</el-button>
         <el-button v-if="canManageTasks" @click="purchaseRequestsPanel?.openCreate()">提交采购需求</el-button>
         <el-button v-if="canManageTasks" type="primary" @click="openCreate">新增任务</el-button>
       </template>
@@ -206,6 +206,10 @@
             每次提交新建独立原料补货需求。可追加量 = 需求数量 − 库存可用 − 已提交未入库量；已有采购单不影响继续补足剩余缺口。
           </template>
           <template v-else>当前生产补货需求已处理，不能再追加原料补货。</template>
+          <div v-if="!materialProgressItems.length">当前产品没有可计算的 BOM 原料明细，请先维护 BOM 后刷新。</div>
+          <div v-else-if="!materialProgressItems.some(item => Number(item.suggest_quantity) > 0) && materialProgressData.can_edit_replenishment">
+            当前没有可追加的原料缺口；如已有未入库补货需求，请等待采购处理及入库。
+          </div>
         </div>
         <el-table v-if="materialProgressData.replenishment_demands?.length" :data="materialProgressData.replenishment_demands" size="small" class="mb-12">
           <el-table-column prop="demand_no" label="已提交原料需求号" />
@@ -219,7 +223,7 @@
       </template>
       <template #footer>
         <el-button @click="materialProgressVisible = false">关闭</el-button>
-        <el-button v-if="materialProgressData && !materialProgressData.can_produce" type="primary" :disabled="!materialProgressItems.some(item => Number(item.suggest_quantity) > 0)" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">提交补货需求</el-button>
+        <el-button v-if="materialProgressData && !materialProgressData.can_produce" type="primary" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">提交补货需求</el-button>
         <el-button v-if="materialProgressData?.can_produce" type="success" @click="closeMaterialProgressAndCreateTask">转建任务</el-button>
       </template>
     </el-dialog>
@@ -973,8 +977,7 @@ async function openMaterialProgress(row) {
     })
     materialProgressVisible.value = true
   } catch (e) {
-    // 老数据无 BOM 等场景退回原逻辑
-    prefillLowStockDemand(row)
+    ElMessage.error(e?.message || '获取原料补货进度失败，请稍后重试')
   }
 }
 
@@ -996,23 +999,41 @@ function materialProgressLabel(item) {
 
 async function submitMaterialProgressDemands() {
   if (materialProgressSubmitting.value) return
+  if (!activeDemand.value?.id || !materialProgressData.value) {
+    ElMessage.error('生产补货需求信息未加载，请关闭后重新打开')
+    return
+  }
+  if (!materialProgressData.value.can_edit_replenishment) {
+    ElMessage.warning('当前生产补货需求已处理，不能再追加原料补货')
+    return
+  }
+  if (!materialProgressItems.value.length) {
+    ElMessage.warning('当前产品缺少 BOM 原料明细，无法提交补货需求')
+    return
+  }
   const items = materialProgressItems.value
     .filter((it) => Number(it.suggest_quantity || 0) > 0)
     .map((it) => ({ material_id: it.material_id, shortage_quantity: Number(it.suggest_quantity || 0) }))
   if (!items.length) {
-    ElMessage.warning('请先填写需要补货的原料数量')
+    ElMessage.warning('当前没有可追加的原料缺口；已有补货需求请等待采购及入库')
     return
   }
   materialProgressSubmitting.value = true
   try {
     const resp = await post(`/api/production/fulfillment-demands/${activeDemand.value.id}/raw-material-demands`, { items })
-    ElMessage.success(resp?.msg || '原料补货需求已提交')
+    ElMessage.success(resp?.raw_demand_nos?.length ? `原料补货需求 ${resp.raw_demand_nos.join('、')} 已提交` : '原料补货需求已提交')
     materialProgressVisible.value = false
-    await load()
   } catch (e) {
     ElMessage.error(e?.message || '提交失败')
   } finally {
     materialProgressSubmitting.value = false
+  }
+  if (!materialProgressVisible.value) {
+    try {
+      await load()
+    } catch (e) {
+      ElMessage.warning(`补货需求已提交，但列表刷新失败：${e?.message || '请手动刷新'}`)
+    }
   }
 }
 
