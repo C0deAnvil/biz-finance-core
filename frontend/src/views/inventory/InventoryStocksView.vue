@@ -126,7 +126,7 @@
       </div>
     </PageSection>
 
-    <PageSection title="库存出入库记录" description="按当前账号的仓库权限展示库存流水；财务人员可查看全部仓库。">
+    <PageSection class="transaction-section" title="库存出入库记录" description="按当前账号的仓库权限展示库存流水；财务人员可查看全部仓库。">
       <template #actions>
         <el-select v-model="transactionFilters.warehouseId" clearable placeholder="仓库" class="w-180">
           <el-option v-for="item in warehouses" :key="item.id" :label="item.name" :value="item.id" />
@@ -831,6 +831,11 @@ watch(
 .inventory-status-table { min-width: 1760px; }
 .inventory-operation-table { min-width: 1340px; }
 .inventory-transaction-table { min-width: 2050px; }
+.transaction-section :deep(.section-header) { flex-wrap: wrap; align-items: flex-start; }
+.transaction-section :deep(.section-main) { flex: 1 0 100%; min-width: 240px; }
+.transaction-section :deep(.section-actions) { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; white-space: normal; }
+.transaction-section :deep(.section-title),
+.transaction-section :deep(.section-description) { word-break: normal; white-space: normal; }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .drawer-title { font-size: 18px; font-weight: 700; color: #303133; }
 .drawer-subtitle { font-size: 13px; color: #909399; margin-top: 4px; }

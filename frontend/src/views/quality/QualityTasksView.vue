@@ -176,6 +176,7 @@
       <el-descriptions v-if="detail" :column="2" border>
         <el-descriptions-item label="质检任务号">{{ detail.quality_no }}</el-descriptions-item>
         <el-descriptions-item label="来源">{{ detail.source_label || '-' }}</el-descriptions-item>
+        <el-descriptions-item v-if="detail.stock_transfer_no" label="移库单号">{{ detail.stock_transfer_no }}</el-descriptions-item>
         <el-descriptions-item label="采购订单">{{ detail.purchase_order_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="到货单">{{ detail.purchase_receipt_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="供应商">{{ detail.supplier_name || '-' }}</el-descriptions-item>

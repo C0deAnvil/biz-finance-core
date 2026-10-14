@@ -564,11 +564,6 @@ def route_sales_order_to_inventory_shipment(db: Session, order: SalesOrder, curr
     _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
 
 
-def ensure_sales_order_fulfillment_demands(db: Session, order: SalesOrder, current_user: User) -> list[dict]:
-    """Refresh production/purchase demands without changing the order approval state."""
-    return _create_fulfillment_demands(db, order=order, current_user=current_user)
-
-
 def _build_split_items(db: Session, payload_items) -> tuple[list[dict], list[dict]]:
     warehouse = _finished_warehouse(db)
     product_ids = [_payload_value(item, "product_id") for item in payload_items]
@@ -619,6 +614,11 @@ def _create_fulfillment_demands(
     current_user: User,
     shortage_override: dict[int, Decimal] | None = None,
 ) -> list[dict]:
+    # 此服务只能由置货队列的库管确认动作调用，禁止销售提交或后台修复自动生成 BH。
+    if not current_user.role or current_user.role.code not in {"inventory", "inventory_super"}:
+        raise HTTPException(status_code=403, detail="销售订单补货需求只能由库管提交")
+    if shortage_override is None:
+        raise HTTPException(status_code=409, detail="请由库管在置货列表确认补货缺口后提交")
     warehouse = _finished_warehouse(db)
     inventory_rows = db.execute(
         select(Inventory).where(
@@ -636,7 +636,7 @@ def _create_fulfillment_demands(
         placed = Decimal(item.placed_quantity or 0)
         # 本明细自己锁定但还没置的量,对本单来说是可用的(那批货别人拿不走);
         # 只看"实有-总占用"会把已为本单锁定的货算成别人的,凭空造出等量缺口。
-        # 该函数会在每次启动的 repair_workflows 里被调用,若算错会持续生成假需求。
+        # 库管确认提交时必须把已为本单锁定的货计入可用量，避免产生假需求。
         reserved_for_me = max(Decimal(item.reserved_quantity or 0) - placed, Decimal("0"))
         # 散量全仓共享,边分配边扣,避免同产品多条明细重复计算
         free_pool = inventory_map.get(item.product_id, Decimal("0"))

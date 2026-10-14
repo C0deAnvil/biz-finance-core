@@ -10,6 +10,7 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A5, landscape
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.graphics.barcode.code128 import Code128
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -114,6 +115,17 @@ def render_order_pdf(order: SalesOrder, *, kind: str) -> bytes:
     title = "销售单" if kind == "sales" else "置货单"
     styles = ParagraphStyle(name="title", fontName=FONT, fontSize=16, leading=21, alignment=TA_CENTER, textColor=INK)
     story = [Paragraph(title, styles), Spacer(1, 3 * mm)]
+    if kind == "placement":
+        # 纸面只包含任务标识。设备认证码由扫描终端保存，不能印在单据中。
+        scan_code = f"PL:{order.id}"
+        barcode = Code128(scan_code, barWidth=0.45 * mm, barHeight=10 * mm, humanReadable=False)
+        barcode.hAlign = "CENTER"
+        story.extend([
+            barcode,
+            Spacer(1, 1 * mm),
+            _paragraph(f"置货任务码：{scan_code}（订单 {order.order_no}）", size=7, align=TA_CENTER),
+            Spacer(1, 2 * mm),
+        ])
     owner = (order.sales_user.full_name or order.sales_user.username) if order.sales_user else "-"
     operator = (order.operator_user.full_name or order.operator_user.username) if order.operator_user else owner
     common = [

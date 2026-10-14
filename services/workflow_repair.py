@@ -9,7 +9,6 @@ from models import FulfillmentDemand, InventoryDispatchQueue, InventoryOperation
 from services.core import complete_todos, ensure_notification, ensure_todo, resolve_workflow_recipients
 from services.request_trace import emit
 from services.replenishment_service import ensure_fulfillment_demand_routing
-from services.sales_service import ensure_sales_order_fulfillment_demands
 from sqlalchemy.orm import joinedload, selectinload
 
 
@@ -76,6 +75,8 @@ def repair_quality_workflows(db: Session) -> int:
     } if tasks else {}
 
     for task in tasks:
+        if task.stock_transfer_id:
+            continue  # 移库质检只通知目标仓质检员，不能由通用修复广播给全部质检员。
         try:
             production_task = production_tasks.get(task.production_task_id)
             task_no = production_task.task_no if production_task else str(task.production_task_id)
@@ -129,6 +130,8 @@ def repair_inventory_operation_workflows(db: Session) -> int:
         )
     ).scalars().all()
     for request in requests:
+        if request.source_type == "stock_transfer":
+            continue  # 移库作业只发给对应仓库负责人。
         try:
             is_manager_approval = request.status == "pending_manager_approval"
             recipient_ids = resolve_workflow_recipients(
@@ -180,17 +183,14 @@ def repair_sales_dispatch_workflows(db: Session) -> int:
     orders = db.execute(
         select(SalesOrder)
         .options(
-            joinedload(SalesOrder.sales_user),
             selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
         )
         .where(SalesOrder.status == "pending_shipment")
     ).unique().scalars().all()
-    fallback_user = db.execute(select(User).where(User.is_active.is_(True)).order_by(User.id.asc())).scalars().first()
     for order in orders:
         try:
-            actor = order.sales_user or fallback_user
-            if actor is not None:
-                ensure_sales_order_fulfillment_demands(db, order, actor)
+            # 销售订单缺货只能由库管在置货队列确认并提交。
+            # 启动修复仅补齐置货队列/待办，不得自动新建 BH 补货需求。
             queue = db.execute(
                 select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)
             ).scalar_one_or_none()

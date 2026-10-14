@@ -51,9 +51,9 @@ from services.workflow import (
     create_inventory_operation_request,
     normalize_inventory_operation_request_approval,
 )
+from services.stock_transfer_workflow import repair_pending_transfer_jobs
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
-from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
 from services.inventory_availability import purchase_in_transit_map, stock_key
 
@@ -316,6 +316,7 @@ def list_transactions(
 
 @router.get("/operation-requests")
 def list_operation_requests(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    repair_pending_transfer_jobs(db)
     query = select(InventoryOperationRequest).order_by(InventoryOperationRequest.created_at.desc(), InventoryOperationRequest.id.desc())
     warehouse_ids = _scoped_warehouse_ids(db, current_user)
     if warehouse_ids is not None:
@@ -432,6 +433,20 @@ def reject_operation_request(
     row.handled_by_id = current_user.id
     row.completed_at = now_local()
     row.handled_remark = payload.reject_reason
+    if row.source_type == "stock_transfer":
+        transfer = db.execute(select(StockTransfer).where(StockTransfer.id == row.source_id).with_for_update()).scalar_one_or_none()
+        if transfer:
+            transfer.status = "outbound_rejected" if row.operation_type == "outbound" else "inbound_rejected"
+            transfer.reject_reason = payload.reject_reason
+            create_notification(
+                db,
+                title=f"移库作业已拒绝 {transfer.transfer_no}",
+                content=f"原因：{payload.reject_reason}。{'尚未出库' if row.operation_type == 'outbound' else '货物已出源仓，尚未入目标仓，请人工处理在途实物'}。",
+                module="inventory",
+                recipient_user_ids=[transfer.created_by_id],
+                created_by_id=current_user.id,
+                category="warning",
+            )
     if row.request_category == "production_material_issue":
         if row.source_type == "production_task":
             task = db.execute(

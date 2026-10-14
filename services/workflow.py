@@ -305,7 +305,7 @@ def approve_inventory_operation_request(
     current_user: User,
     db: Session,
 ):
-    request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id)).scalar_one_or_none()
+    request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id).with_for_update()).scalar_one_or_none()
     if request is None:
         raise HTTPException(status_code=404, detail="库存作业请求不存在")
     if request.status != "pending_manager_approval":
@@ -369,7 +369,10 @@ def _sync_inventory_request_source(
 ) -> None:
     category = request.request_category
     source_id = request.source_id
-    if category == "production_material_issue":
+    if category in {"stock_transfer_outbound", "stock_transfer_inbound"}:
+        from services.stock_transfer_workflow import sync_transfer_operation
+        sync_transfer_operation(db, request, current_user)
+    elif category == "production_material_issue":
         if request.source_type == "production_task":
             task = db.execute(
                 select(ProductionTask)
@@ -583,7 +586,7 @@ def complete_inventory_operation_request(
     current_user: User,
     db: Session,
 ):
-    request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id)).scalar_one_or_none()
+    request = db.execute(select(InventoryOperationRequest).where(InventoryOperationRequest.id == request_id).with_for_update()).scalar_one_or_none()
     if request is None:
         raise HTTPException(status_code=404, detail="库存作业请求不存在")
     _ensure_production_material_issue_approved(request, db)
@@ -616,7 +619,34 @@ def complete_inventory_operation_request(
         raise HTTPException(status_code=409, detail=f"{expected_label}与{actual_label}不一致时必须填写差异备注")
 
     sign = Decimal("1") if request.operation_type == "inbound" else Decimal("-1")
-    transaction_type = "manual_inbound" if request.operation_type == "inbound" else "manual_outbound"
+    transaction_type = (
+        "stock_transfer_in" if request.request_category == "stock_transfer_inbound" else
+        "stock_transfer_out" if request.request_category == "stock_transfer_outbound" else
+        "manual_inbound" if request.operation_type == "inbound" else "manual_outbound"
+    )
+    if request.source_type == "stock_transfer":
+        from models import StockTransfer
+        transfer = db.execute(select(StockTransfer).where(StockTransfer.id == request.source_id).with_for_update()).scalar_one_or_none()
+        expected_status = "pending_outbound" if request.operation_type == "outbound" else "pending_inbound"
+        if transfer is None or transfer.status != expected_status:
+            raise HTTPException(status_code=409, detail="移库单状态已变化，请刷新库存作业")
+        if len(payload.items) != 1 or any(
+            getattr(payload.items[0], key) != getattr(transfer, key)
+            for key in ("product_id", "material_id", "packaging_config_id")
+        ):
+            raise HTTPException(status_code=409, detail="移库作业不能更换货品或增加其他明细")
+        if request.operation_type == "inbound" and Decimal(payload.items[0].quantity) != Decimal(transfer.quantity):
+            raise HTTPException(status_code=409, detail="移库入库数量须与实际出库数量一致；有差异请先处理异常")
+        if request.operation_type == "outbound":
+            stock = db.execute(select(Inventory).where(
+                Inventory.warehouse_id == request.warehouse_id,
+                Inventory.product_id == transfer.product_id,
+                Inventory.material_id == transfer.material_id,
+                Inventory.packaging_config_id == transfer.packaging_config_id,
+            ).with_for_update()).scalar_one_or_none()
+            available = max(Decimal(stock.quantity or 0) - Decimal(stock.reserved_quantity or 0), Decimal("0")) if stock else Decimal("0")
+            if Decimal(payload.items[0].quantity) > available:
+                raise HTTPException(status_code=409, detail=f"源仓库可用库存不足（可用 {available}）")
     for item in payload.items:
         try:
             apply_inventory_change(

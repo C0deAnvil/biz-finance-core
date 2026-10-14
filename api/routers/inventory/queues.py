@@ -53,7 +53,7 @@ from services.workflow import (
 )
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
-from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
+from services.sales_service import _create_fulfillment_demands, _sales_received_amount
 from services.document_status import sync_sales_order_process_status
 
 from api.routers.inventory._common import _finance_edit_confirm_state, _finance_edit_snapshot, _finished_warehouse_id, _has_open_demand, _order_item_name, _placement_blocked_reason, _role_user_ids, _scoped_warehouse_ids, _serialize_inventory_order_detail, _serialize_inventory_sales_order_summary, _serialize_placement_queue, _serialize_shipment_queue

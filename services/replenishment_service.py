@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -322,6 +323,8 @@ def create_sales_shortage_demand(
     shortage_quantity: Decimal,
     current_user: User,
 ) -> FulfillmentDemand | None:
+    if not current_user.role or current_user.role.code not in {"inventory", "inventory_super"}:
+        raise HTTPException(status_code=403, detail="销售订单补货需求只能由库管提交")
     if shortage_quantity <= 0:
         return None
     fulfillment_mode = product.fulfillment_mode if product else "production"

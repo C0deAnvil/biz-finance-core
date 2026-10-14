@@ -1046,6 +1046,7 @@ class StockTransfer(TimestampMixin, Base):
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
     packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     quantity = Column(Numeric(18, 4), nullable=False)
+    requires_quality = Column(Boolean, nullable=False, default=False)
     status = Column(String(30), nullable=False, default="pending_outbound")
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     outbound_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -1385,7 +1386,8 @@ class QualityTask(TimestampMixin, Base):
 
     id = Column(Integer, primary_key=True)
     quality_no = Column(String(60), nullable=False, unique=True)
-    production_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=False)
+    production_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=True)
+    stock_transfer_id = Column(Integer, ForeignKey("stock_transfers.id"), nullable=True, unique=True)
     batch_no = Column(String(80), nullable=False)
     source_category = Column(String(30), nullable=False, default="production")
     required_tests = Column(Integer, nullable=False, default=1)
@@ -1400,6 +1402,7 @@ class QualityTask(TimestampMixin, Base):
     # 供接口展示"派给谁检"与"归属哪个仓库"的名称,避免前端只拿到 id
     assigned_inspector = relationship("User", foreign_keys=[assigned_inspector_id])
     target_warehouse = relationship("Warehouse", foreign_keys=[target_warehouse_id])
+    stock_transfer = relationship("StockTransfer", foreign_keys=[stock_transfer_id])
 
     inspections = relationship(
         "QualityInspection",

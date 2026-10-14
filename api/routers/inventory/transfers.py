@@ -56,6 +56,7 @@ from services.warehouse_lookup import get_finished_warehouse
 from services.document_status import sync_sales_order_process_status
 
 from api.routers.inventory._common import _transfer_status_label
+from services.stock_transfer_workflow import create_transfer_operation, repair_pending_transfer_jobs
 
 
 
@@ -70,7 +71,7 @@ def create_stock_transfer(
     current_user: User = Depends(require_roles("inventory", "inventory_super", "system_admin")),
     db: Session = Depends(get_db),
 ):
-    """发起移库:源仓库出库,目标仓库质检后入库。"""
+    """发起移库并生成源仓出库作业；后续由库存作业和可选质检驱动。"""
     source_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.source_warehouse_id)).scalar_one_or_none()
     target_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.target_warehouse_id)).scalar_one_or_none()
     if source_warehouse is None or target_warehouse is None:
@@ -107,12 +108,14 @@ def create_stock_transfer(
         material_id=payload.material_id,
         packaging_config_id=payload.packaging_config_id,
         quantity=quantity,
+        requires_quality=payload.requires_quality,
         status="pending_outbound",
         created_by_id=current_user.id,
         remark=payload.remark,
     )
     db.add(transfer)
     db.flush()
+    create_transfer_operation(db, transfer, "outbound", current_user.id)
     write_operation_log(
         db,
         user_id=current_user.id,
@@ -131,6 +134,7 @@ def list_stock_transfers(
     db: Session = Depends(get_db),
 ):
     """移库列表:普通库管看自己发起或自己仓库的;超级/质检看全部。"""
+    repair_pending_transfer_jobs(db)
     query = (
         select(StockTransfer)
         .options(
@@ -169,6 +173,7 @@ def list_stock_transfers(
                 "packaging_config_id": row.packaging_config_id,
                 "item_name": (row.product.name if row.product else None) or (row.material.name if row.material else None) or (row.packaging_config.packaging_name if row.packaging_config else None),
                 "quantity": float(row.quantity),
+                "requires_quality": row.requires_quality,
                 "status": row.status,
                 "status_label": _transfer_status_label(row.status),
                 "created_by_name": row.created_by.full_name if row.created_by else None,
@@ -191,45 +196,7 @@ def confirm_transfer_outbound(
     current_user: User = Depends(require_roles("inventory", "inventory_super", "system_admin")),
     db: Session = Depends(get_db),
 ):
-    """源仓库出库确认:扣减源仓库库存。"""
-    transfer = db.execute(select(StockTransfer).where(StockTransfer.id == transfer_id)).scalar_one_or_none()
-    if transfer is None:
-        raise HTTPException(status_code=404, detail="移库单不存在")
-    if transfer.status != "pending_outbound":
-        raise HTTPException(status_code=409, detail="当前移库单状态不允许出库")
-    if not warehouse_in_scope(db, current_user, transfer.source_warehouse_id):
-        raise HTTPException(status_code=403, detail="当前账号无权操作源仓库")
-    inventory = db.execute(
-        select(Inventory).where(
-            Inventory.warehouse_id == transfer.source_warehouse_id,
-            Inventory.product_id == transfer.product_id,
-            Inventory.material_id == transfer.material_id,
-            Inventory.packaging_config_id == transfer.packaging_config_id,
-        ).with_for_update()
-    ).scalar_one_or_none()
-    if inventory is None:
-        raise HTTPException(status_code=404, detail="源仓库无对应库存")
-    available_quantity = max(Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0), Decimal("0"))
-    if Decimal(transfer.quantity) > available_quantity:
-        raise HTTPException(status_code=409, detail=f"源仓库可用库存不足(可用 {float(available_quantity)})")
-    apply_inventory_change(
-        db,
-        warehouse_id=transfer.source_warehouse_id,
-        product_id=transfer.product_id,
-        material_id=transfer.material_id,
-        packaging_config_id=transfer.packaging_config_id,
-        quantity=-Decimal(transfer.quantity),
-        unit_cost=Decimal(inventory.avg_unit_cost or 0),
-        transaction_type="stock_transfer_out",
-        related_type="stock_transfer",
-        related_id=transfer.id,
-        created_by_id=current_user.id,
-    )
-    transfer.status = "pending_quality"
-    transfer.outbound_by_id = current_user.id
-    transfer.outbound_at = now_local()
-    db.commit()
-    return api_response(msg=f"移库单 {transfer.transfer_no} 已出库,等待目标仓库质检")
+    raise HTTPException(status_code=409, detail="请在【库存状态 → 库存作业请求】执行移库出库")
 
 
 @router.post("/transfers/{transfer_id}/quality")
@@ -239,55 +206,7 @@ def submit_transfer_quality(
     current_user: User = Depends(require_roles("inventory", "inventory_super", "quality", "quality_super", "system_admin")),
     db: Session = Depends(get_db),
 ):
-    """目标仓库质检:通过→待入库;不通过→退回源仓库。"""
-    transfer = db.execute(select(StockTransfer).where(StockTransfer.id == transfer_id)).scalar_one_or_none()
-    if transfer is None:
-        raise HTTPException(status_code=404, detail="移库单不存在")
-    if transfer.status != "pending_quality":
-        raise HTTPException(status_code=409, detail="当前移库单状态不允许质检")
-    if not warehouse_in_scope(db, current_user, transfer.target_warehouse_id):
-        raise HTTPException(status_code=403, detail="当前账号无权操作目标仓库")
-    transfer.quality_by_id = current_user.id
-    transfer.quality_at = now_local()
-    transfer.quality_result = payload.result
-    if payload.result == "passed":
-        transfer.status = "pending_inbound"
-    else:
-        # 质检不通过:回滚源仓库库存,退回发起方
-        source_inventory = db.execute(
-            select(Inventory).where(
-                Inventory.warehouse_id == transfer.source_warehouse_id,
-                Inventory.product_id == transfer.product_id,
-                Inventory.material_id == transfer.material_id,
-                Inventory.packaging_config_id == transfer.packaging_config_id,
-            ).with_for_update()
-        ).scalar_one_or_none()
-        apply_inventory_change(
-            db,
-            warehouse_id=transfer.source_warehouse_id,
-            product_id=transfer.product_id,
-            material_id=transfer.material_id,
-            packaging_config_id=transfer.packaging_config_id,
-            quantity=Decimal(transfer.quantity),
-            unit_cost=Decimal(source_inventory.avg_unit_cost or 0) if source_inventory else Decimal("0"),
-            transaction_type="stock_transfer_return",
-            related_type="stock_transfer",
-            related_id=transfer.id,
-            created_by_id=current_user.id,
-        )
-        transfer.status = "returned"
-        transfer.reject_reason = payload.reject_reason
-        create_notification(
-            db,
-            title="移库质检不通过",
-            content=f"移库单 {transfer.transfer_no} 质检不通过:{payload.reject_reason or '未填写原因'},库存已退回源仓库。",
-            module="inventory",
-            recipient_user_ids=[transfer.created_by_id],
-            created_by_id=current_user.id,
-            category="warning",
-        )
-    db.commit()
-    return api_response(msg="质检通过,等待目标仓库入库" if payload.result == "passed" else "质检不通过,已退回源仓库")
+    raise HTTPException(status_code=409, detail="请在【质检任务】录入移库质检结果")
 
 
 @router.post("/transfers/{transfer_id}/inbound")
@@ -296,40 +215,6 @@ def confirm_transfer_inbound(
     current_user: User = Depends(require_roles("inventory", "inventory_super", "system_admin")),
     db: Session = Depends(get_db),
 ):
-    """目标仓库入库确认:增加目标仓库库存。"""
-    transfer = db.execute(select(StockTransfer).where(StockTransfer.id == transfer_id)).scalar_one_or_none()
-    if transfer is None:
-        raise HTTPException(status_code=404, detail="移库单不存在")
-    if transfer.status != "pending_inbound":
-        raise HTTPException(status_code=409, detail="当前移库单状态不允许入库")
-    if not warehouse_in_scope(db, current_user, transfer.target_warehouse_id):
-        raise HTTPException(status_code=403, detail="当前账号无权操作目标仓库")
-    source_inventory = db.execute(
-        select(Inventory).where(
-            Inventory.warehouse_id == transfer.source_warehouse_id,
-            Inventory.product_id == transfer.product_id,
-            Inventory.material_id == transfer.material_id,
-            Inventory.packaging_config_id == transfer.packaging_config_id,
-        ).with_for_update()
-    ).scalar_one_or_none()
-    unit_cost = Decimal(source_inventory.avg_unit_cost or 0) if source_inventory else Decimal("0")
-    apply_inventory_change(
-        db,
-        warehouse_id=transfer.target_warehouse_id,
-        product_id=transfer.product_id,
-        material_id=transfer.material_id,
-        packaging_config_id=transfer.packaging_config_id,
-        quantity=Decimal(transfer.quantity),
-        unit_cost=unit_cost,
-        transaction_type="stock_transfer_in",
-        related_type="stock_transfer",
-        related_id=transfer.id,
-        created_by_id=current_user.id,
-    )
-    transfer.status = "completed"
-    transfer.completed_by_id = current_user.id
-    transfer.completed_at = now_local()
-    db.commit()
-    return api_response(msg=f"移库单 {transfer.transfer_no} 已完成入库")
+    raise HTTPException(status_code=409, detail="请在【库存状态 → 库存作业请求】执行移库入库")
 
 

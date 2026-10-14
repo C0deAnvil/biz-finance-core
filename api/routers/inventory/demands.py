@@ -52,7 +52,6 @@ from services.workflow import (
 )
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
-from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
 
 

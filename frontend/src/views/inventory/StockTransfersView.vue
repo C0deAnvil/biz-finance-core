@@ -27,26 +27,10 @@
         <el-table-column label="操作" width="300" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openDetail(scope.row)">详情</el-button>
-            <el-button
-              v-if="canOperate && scope.row.status === 'pending_outbound'"
-              size="small"
-              type="primary"
-              @click="openAction(scope.row, 'outbound')"
-            >出库</el-button>
-            <el-button
-              v-if="canQuality && scope.row.status === 'pending_quality'"
-              size="small"
-              type="success"
-              @click="openQuality(scope.row)"
-            >质检</el-button>
-            <el-button
-              v-if="canOperate && scope.row.status === 'pending_inbound'"
-              size="small"
-              type="warning"
-              @click="openAction(scope.row, 'inbound')"
-            >入库</el-button>
-            <el-tooltip v-if="scope.row.status === 'returned'" :content="scope.row.reject_reason || '未填原因'">
-              <el-tag type="danger" size="small">已退回</el-tag>
+            <el-button v-if="canOperate && ['pending_outbound', 'pending_inbound'].includes(scope.row.status)" size="small" type="primary" @click="router.push('/inventory/stocks')">库存作业</el-button>
+            <el-button v-if="canQuality && scope.row.status === 'pending_quality'" size="small" type="success" @click="router.push('/quality/tasks')">质检任务</el-button>
+            <el-tooltip v-if="['quality_failed', 'outbound_rejected', 'inbound_rejected'].includes(scope.row.status)" :content="scope.row.reject_reason || '请处理异常及在途实物'">
+              <el-tag type="danger" size="small">{{ scope.row.status_label }}</el-tag>
             </el-tooltip>
           </template>
         </el-table-column>
@@ -98,6 +82,7 @@
         <el-form-item label="移库数量" required>
           <el-input-number v-model="createForm.quantity" :min="0.01" :precision="2" :step="1" style="width:100%" />
         </el-form-item>
+        <el-form-item label="需要质检"><el-switch v-model="createForm.requires_quality" /><span class="quality-hint">默认无需质检；勾选后由目标仓质检员处理</span></el-form-item>
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" type="textarea" :rows="2" placeholder="移库原因、注意事项等" />
         </el-form-item>
@@ -108,69 +93,13 @@
       </template>
     </el-dialog>
 
-    <!-- 出库 / 入库：确认前可上传现场照片 -->
-    <el-dialog v-model="actionVisible" :title="actionTitle" width="640px">
-      <el-alert v-if="activeTransfer" type="info" :closable="false" show-icon class="mb-12">
-        <template #title>
-          {{ activeTransfer.transfer_no }}：{{ activeTransfer.source_warehouse_name }} → {{ activeTransfer.target_warehouse_name }}，
-          {{ activeTransfer.item_name }} × {{ formatNumber(activeTransfer.quantity) }}
-        </template>
-      </el-alert>
-      <PhotoAttachments
-        v-if="activeTransfer"
-        :key="`${actionMode}-${activeTransfer.id}`"
-        business-type="stock_transfer"
-        :business-id="activeTransfer.id"
-        :attachment-type="actionMode === 'outbound' ? '出库照片' : '入库照片'"
-        :title="actionMode === 'outbound' ? '出库照片' : '入库照片'"
-      />
-      <template #footer>
-        <el-button @click="actionVisible = false">取消</el-button>
-        <el-button type="primary" :loading="actionSubmitting" @click="submitAction">
-          确认{{ actionMode === 'outbound' ? '出库' : '入库' }}
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 质检 -->
-    <el-dialog v-model="qualityVisible" title="移库质检" width="640px">
-      <el-alert v-if="activeTransfer" type="info" :closable="false" show-icon class="mb-12">
-        <template #title>
-          {{ activeTransfer.transfer_no }}：{{ activeTransfer.source_warehouse_name }} → {{ activeTransfer.target_warehouse_name }}，
-          {{ activeTransfer.item_name }} × {{ formatNumber(activeTransfer.quantity) }}
-        </template>
-      </el-alert>
-      <el-form :model="qualityForm" label-width="90px">
-        <el-form-item label="质检结果">
-          <el-radio-group v-model="qualityForm.result">
-            <el-radio value="passed">通过</el-radio>
-            <el-radio value="failed">不通过</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="qualityForm.result === 'failed'" label="退回原因" required>
-          <el-input v-model="qualityForm.reject_reason" type="textarea" :rows="2" />
-        </el-form-item>
-      </el-form>
-      <PhotoAttachments
-        v-if="activeTransfer"
-        :key="`quality-${activeTransfer.id}`"
-        business-type="stock_transfer"
-        :business-id="activeTransfer.id"
-        attachment-type="质检照片"
-        title="质检照片"
-      />
-      <template #footer>
-        <el-button @click="qualityVisible = false">取消</el-button>
-        <el-button type="primary" :loading="qualitySubmitting" @click="submitQuality">提交</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 详情 -->
     <el-drawer v-model="detailVisible" size="52%" :title="activeTransfer ? `移库单 ${activeTransfer.transfer_no}` : '移库详情'">
       <div v-if="activeTransfer" class="detail-meta">
         <div><strong>移库路径：</strong>{{ activeTransfer.source_warehouse_name }} → {{ activeTransfer.target_warehouse_name }}</div>
         <div><strong>货品：</strong>{{ activeTransfer.item_name }}</div>
         <div><strong>数量：</strong>{{ formatNumber(activeTransfer.quantity) }}</div>
+        <div><strong>质检要求：</strong>{{ activeTransfer.requires_quality ? '需要质检' : '无需质检' }}</div>
         <div><strong>状态：</strong>{{ activeTransfer.status_label }}</div>
         <div><strong>发起人：</strong>{{ activeTransfer.created_by_name || '-' }}</div>
         <div><strong>出库时间：</strong>{{ shortTime(activeTransfer.outbound_at) }}</div>
@@ -215,7 +144,6 @@
 </template>
 
 <script setup>
-import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/dialog/style/css'
 import 'element-plus/es/components/divider/style/css'
@@ -227,13 +155,13 @@ import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/radio/style/css'
 import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/switch/style/css'
 import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tag/style/css'
 import 'element-plus/es/components/tooltip/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
-import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDivider from 'element-plus/es/components/divider/index.mjs'
@@ -244,11 +172,13 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
 import ElRadio, { ElRadioGroup } from 'element-plus/es/components/radio/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
+import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
 
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import PageSection from '../../components/PageSection.vue'
 import PhotoAttachments from '../../components/PhotoAttachments.vue'
@@ -257,6 +187,7 @@ import { useAuthStore } from '../../stores/auth'
 import { formatNumber } from '../../utils/format'
 
 const auth = useAuthStore()
+const router = useRouter()
 
 const rows = ref([])
 const warehouses = ref([])
@@ -276,16 +207,9 @@ const createForm = reactive({
   material_id: null,
   packaging_config_id: null,
   quantity: 1,
+  requires_quality: false,
   remark: ''
 })
-
-const actionVisible = ref(false)
-const actionSubmitting = ref(false)
-const actionMode = ref('outbound')
-
-const qualityVisible = ref(false)
-const qualitySubmitting = ref(false)
-const qualityForm = reactive({ result: 'passed', reject_reason: '' })
 
 const detailVisible = ref(false)
 const activeTransfer = ref(null)
@@ -297,14 +221,15 @@ const statusOptions = [
   { value: 'pending_quality', label: '待质检' },
   { value: 'pending_inbound', label: '待入库' },
   { value: 'completed', label: '已完成' },
-  { value: 'returned', label: '已退回' }
+  { value: 'returned', label: '已退回' },
+  { value: 'quality_failed', label: '质检不通过' },
+  { value: 'outbound_rejected', label: '源仓出库已拒绝' },
+  { value: 'inbound_rejected', label: '目标仓入库已拒绝' }
 ]
 
 const canCreate = computed(() => auth.isRole('inventory'))
 const canOperate = computed(() => auth.isRole('inventory'))
 const canQuality = computed(() => auth.isRole('quality') || auth.isRole('inventory'))
-
-const actionTitle = computed(() => (actionMode.value === 'outbound' ? '确认出库' : '确认入库'))
 
 const filteredRows = computed(() => {
   if (!filters.status) return rows.value
@@ -326,7 +251,10 @@ function statusTag(status) {
     pending_quality: 'primary',
     pending_inbound: 'warning',
     completed: 'success',
-    returned: 'danger'
+    returned: 'danger',
+    quality_failed: 'danger',
+    outbound_rejected: 'danger',
+    inbound_rejected: 'danger'
   }
   return map[status] || 'info'
 }
@@ -368,6 +296,7 @@ async function openCreate() {
     material_id: null,
     packaging_config_id: null,
     quantity: 1,
+    requires_quality: false,
     remark: ''
   })
   itemType.value = 'product'
@@ -409,65 +338,16 @@ async function submitCreate() {
       material_id: itemType.value === 'material' ? createForm.material_id : null,
       packaging_config_id: itemType.value === 'packaging' ? createForm.packaging_config_id : null,
       quantity: Number(createForm.quantity),
+      requires_quality: createForm.requires_quality,
       remark: createForm.remark || null
     })
-    ElMessage.success('移库单已创建，请到「待出库」处理')
+    ElMessage.success('移库出库作业已生成，请在「库存状态」处理')
     createVisible.value = false
     await load()
   } catch (error) {
     ElMessage.error(error?.message || '创建失败')
   } finally {
     creating.value = false
-  }
-}
-
-function openAction(row, mode) {
-  activeTransfer.value = row
-  actionMode.value = mode
-  actionVisible.value = true
-}
-
-async function submitAction() {
-  if (!activeTransfer.value) return
-  actionSubmitting.value = true
-  try {
-    await post(`/api/inventory/transfers/${activeTransfer.value.id}/${actionMode.value}`, {})
-    ElMessage.success(actionMode.value === 'outbound' ? '已出库，等待目标仓库质检' : '已入库，移库完成')
-    actionVisible.value = false
-    await load()
-  } catch (error) {
-    ElMessage.error(error?.message || '操作失败')
-  } finally {
-    actionSubmitting.value = false
-  }
-}
-
-function openQuality(row) {
-  activeTransfer.value = row
-  qualityForm.result = 'passed'
-  qualityForm.reject_reason = ''
-  qualityVisible.value = true
-}
-
-async function submitQuality() {
-  if (!activeTransfer.value) return
-  if (qualityForm.result === 'failed' && !qualityForm.reject_reason.trim()) {
-    ElMessage.warning('请填写退回原因')
-    return
-  }
-  qualitySubmitting.value = true
-  try {
-    await post(`/api/inventory/transfers/${activeTransfer.value.id}/quality`, {
-      result: qualityForm.result,
-      reject_reason: qualityForm.reject_reason.trim() || null
-    })
-    ElMessage.success(qualityForm.result === 'passed' ? '质检通过，等待入库' : '已退回源仓库')
-    qualityVisible.value = false
-    await load()
-  } catch (error) {
-    ElMessage.error(error?.message || '质检提交失败')
-  } finally {
-    qualitySubmitting.value = false
   }
 }
 
@@ -481,6 +361,7 @@ onMounted(load)
 
 <style scoped>
 .transfer-page { display: flex; flex-direction: column; gap: 16px; }
+.quality-hint { margin-left: 12px; color: #909399; font-size: 12px; }
 .mb-12 { margin-bottom: 12px; }
 .mt-16 { margin-top: 16px; }
 .w-150 { width: 150px; }

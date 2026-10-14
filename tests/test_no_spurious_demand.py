@@ -1,13 +1,32 @@
-"""库存充足时不得生成"假补货需求"的回归用例。
+"""启动修复不得代替库管为客户订单提交补货需求。"""
 
-`_create_fulfillment_demands` 算可用量时若只看"实有 - 总占用",就会把
-审批时已为本单锁定的货算成别人的,凭空造出等量缺口。
+from decimal import Decimal
+from types import SimpleNamespace
 
-该函数会在每次应用启动的 repair_workflows 里被调用,一旦算错会持续生成假需求,
-而假需求又会压制安全库存告警,连带把置货缺口提示也一并静音。
-"""
+import pytest
+from fastapi import HTTPException
 
 from helpers import create_trade_product, uniq, warehouse_map
+
+
+def test_sales_actor_cannot_create_order_shortage_demand_directly():
+    from services.replenishment_service import create_sales_shortage_demand
+    from services.sales_service import _create_fulfillment_demands
+
+    sales = SimpleNamespace(role=SimpleNamespace(code="sales"))
+    inventory = SimpleNamespace(role=SimpleNamespace(code="inventory"))
+    with pytest.raises(HTTPException) as error:
+        _create_fulfillment_demands(None, order=None, current_user=sales, shortage_override={1: Decimal("1")})
+    assert error.value.status_code == 403
+    with pytest.raises(HTTPException) as error:
+        _create_fulfillment_demands(None, order=None, current_user=inventory)
+    assert error.value.status_code == 409
+    with pytest.raises(HTTPException) as error:
+        create_sales_shortage_demand(
+            None, order=None, order_item=None, product=None,
+            shortage_quantity=Decimal("1"), current_user=sales,
+        )
+    assert error.value.status_code == 403
 
 
 def _customer(client, login) -> int:
@@ -63,17 +82,15 @@ def test_no_demand_when_stock_fully_covers_order(client, login):
         f"/api/sales/orders/{order_id}/approve", json={"decision": "approved", "note": "pytest"}
     ).status_code == 200
 
-    # 直接调用启动修复所走的同一入口
+    # 启动修复只补齐置货队列/待办，不能生成 BH。
     from database import SessionLocal
-    from models import FulfillmentDemand, SalesOrder, User
-    from services.sales_service import ensure_sales_order_fulfillment_demands
+    from models import FulfillmentDemand
+    from services.workflow_repair import repair_sales_dispatch_workflows
     from sqlalchemy import select
 
     db = SessionLocal()
     try:
-        order = db.execute(select(SalesOrder).where(SalesOrder.id == order_id)).scalar_one()
-        user = db.execute(select(User).where(User.username == "sales01")).scalar_one()
-        ensure_sales_order_fulfillment_demands(db, order=order, current_user=user)
+        repair_sales_dispatch_workflows(db)
         db.commit()
         demands = db.execute(
             select(FulfillmentDemand).where(FulfillmentDemand.sales_order_id == order_id)
@@ -81,3 +98,51 @@ def test_no_demand_when_stock_fully_covers_order(client, login):
         assert not demands, f"库存充足却生成了 {len(demands)} 条假补货需求"
     finally:
         db.close()
+
+
+def test_shortage_demand_requires_inventory_submission(client, login):
+    pid = create_trade_product(client, login)
+    cid = _customer(client, login)
+    login("sales01")
+    resp = client.post(
+        "/api/sales/orders",
+        json={
+            "customer_id": cid,
+            "consignee": "张三",
+            "consignee_phone": "13900000000",
+            "delivery_address": "地址",
+            "payment_type": "货到付款",
+            "order_type": "normal",
+            "items": [{"product_id": pid, "quantity": 10, "unit_price": 100}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    order_id = resp.json()["data"]["id"]
+    assert client.post(f"/api/sales/orders/{order_id}/submit").status_code == 200
+    login("finance01")
+    assert client.post(
+        f"/api/sales/orders/{order_id}/approve", json={"decision": "approved", "note": "pytest"}
+    ).status_code == 200
+
+    from database import SessionLocal
+    from models import FulfillmentDemand, InventoryDispatchQueue, User
+    from services.workflow_repair import repair_sales_dispatch_workflows
+    from sqlalchemy import select
+
+    with SessionLocal() as db:
+        repair_sales_dispatch_workflows(db)
+        db.commit()
+        assert db.scalar(select(FulfillmentDemand.id).where(FulfillmentDemand.sales_order_id == order_id)) is None
+        queue_id = db.scalar(select(InventoryDispatchQueue.id).where(InventoryDispatchQueue.sales_order_id == order_id))
+        inventory_id = db.scalar(select(User.id).where(User.username == "inventory01"))
+
+    login("inventory01")
+    resp = client.post(
+        f"/api/inventory/queues/{queue_id}/replenishment-demands",
+        json={"items": [{"product_id": pid, "shortage_quantity": 10}]},
+    )
+    assert resp.status_code == 200, resp.text
+    with SessionLocal() as db:
+        demands = db.scalars(select(FulfillmentDemand).where(FulfillmentDemand.sales_order_id == order_id)).all()
+        assert len(demands) == 1
+        assert demands[0].created_by_id == inventory_id

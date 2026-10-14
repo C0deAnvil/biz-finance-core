@@ -53,7 +53,6 @@ from services.workflow import (
 )
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
-from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
 from services.inventory_availability import (
     placeable_of,
@@ -83,6 +82,12 @@ def _assigned_operation_request_ids(db: Session, current_user: User) -> list[int
 
 
 def _can_access_operation_request(db: Session, current_user: User, row: InventoryOperationRequest) -> bool:
+    if row.source_type == "stock_transfer" and current_user.role.code == "inventory":
+        warehouse = db.get(Warehouse, row.warehouse_id)
+        if warehouse and warehouse.manager_user_id:
+            return warehouse.manager_user_id == current_user.id
+        scope = get_inventory_scope_warehouse_ids(db, current_user)
+        return bool((scope is not None and row.warehouse_id in scope) or row.id in _assigned_operation_request_ids(db, current_user))
     if row.request_category == "production_material_issue" and current_user.role.code == "inventory":
         warehouse = db.get(Warehouse, row.warehouse_id)
         scope = get_inventory_scope_warehouse_ids(db, current_user)
@@ -979,6 +984,9 @@ def _transfer_status_label(status: str) -> str:
         "pending_inbound": "待入库",
         "completed": "已完成",
         "returned": "已退回",
+        "quality_failed": "质检不通过，待处置",
+        "outbound_rejected": "源仓出库已拒绝",
+        "inbound_rejected": "目标仓入库已拒绝，待处置",
     }.get(status, status)
 
 

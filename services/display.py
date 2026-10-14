@@ -191,6 +191,8 @@ TRANSACTION_TYPE_LABELS = {
     "quality_inbound": "质检入库",
     "manual_inbound": "手工入库",
     "manual_outbound": "手工出库",
+    "stock_transfer_out": "移库出库",
+    "stock_transfer_in": "移库入库",
     "inventory_exception_outbound": "库存异常出库",
     "stock_take_adjustment": "盘点调整",
 }
@@ -208,6 +210,8 @@ PAYMENT_STAGE_LABELS = {
 }
 
 INVENTORY_REQUEST_CATEGORY_LABELS = {
+    "stock_transfer_outbound": "移库源仓出库",
+    "stock_transfer_inbound": "移库目标仓入库",
     "manual_inbound_request": "手工入库",
     "manual_outbound_request": "手工出库",
     "production_material_issue": "生产领料出库",

@@ -62,6 +62,7 @@ class StockTransferCreateRequest(BaseModel):
     material_id: int | None = None
     packaging_config_id: int | None = None
     quantity: float = Field(..., gt=0)
+    requires_quality: bool = False
     remark: str | None = Field(default=None, max_length=500)
 
 
