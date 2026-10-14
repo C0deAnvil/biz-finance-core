@@ -53,7 +53,6 @@ from services.workflow import (
 )
 from services.time_utils import now_local
 from services.warehouse_lookup import get_finished_warehouse
-from services.sales_service import _create_fulfillment_demands, _sales_received_amount, ensure_sales_order_fulfillment_demands
 from services.document_status import sync_sales_order_process_status
 
 from api.routers.inventory._common import _transfer_status_label
@@ -92,8 +91,8 @@ def create_stock_transfer(
             Inventory.product_id == payload.product_id,
             Inventory.material_id == payload.material_id,
             Inventory.packaging_config_id == payload.packaging_config_id,
-        )
-    ).with_for_update().scalar_one_or_none()
+        ).with_for_update()
+    ).scalar_one_or_none()
     if inventory is None:
         raise HTTPException(status_code=404, detail="源仓库无对应库存")
     available_quantity = max(Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0), Decimal("0"))
@@ -113,7 +112,7 @@ def create_stock_transfer(
         remark=payload.remark,
     )
     db.add(transfer)
-    db.commit()
+    db.flush()
     write_operation_log(
         db,
         user_id=current_user.id,
@@ -122,6 +121,7 @@ def create_stock_transfer(
         content=f"发起移库 {transfer.transfer_no}({source_warehouse.name}→{target_warehouse.name} {float(quantity)})",
         after_data={"transfer_no": transfer.transfer_no, "status": transfer.status},
     )
+    db.commit()
     return api_response(data={"id": transfer.id, "transfer_no": transfer.transfer_no}, msg=f"移库单 {transfer.transfer_no} 已创建")
 
 
@@ -205,8 +205,8 @@ def confirm_transfer_outbound(
             Inventory.product_id == transfer.product_id,
             Inventory.material_id == transfer.material_id,
             Inventory.packaging_config_id == transfer.packaging_config_id,
-        )
-    ).with_for_update().scalar_one_or_none()
+        ).with_for_update()
+    ).scalar_one_or_none()
     if inventory is None:
         raise HTTPException(status_code=404, detail="源仓库无对应库存")
     available_quantity = max(Decimal(inventory.quantity or 0) - Decimal(inventory.reserved_quantity or 0), Decimal("0"))
@@ -260,8 +260,8 @@ def submit_transfer_quality(
                 Inventory.product_id == transfer.product_id,
                 Inventory.material_id == transfer.material_id,
                 Inventory.packaging_config_id == transfer.packaging_config_id,
-            )
-        ).with_for_update().scalar_one_or_none()
+            ).with_for_update()
+        ).scalar_one_or_none()
         apply_inventory_change(
             db,
             warehouse_id=transfer.source_warehouse_id,
@@ -310,8 +310,8 @@ def confirm_transfer_inbound(
             Inventory.product_id == transfer.product_id,
             Inventory.material_id == transfer.material_id,
             Inventory.packaging_config_id == transfer.packaging_config_id,
-        )
-    ).with_for_update().scalar_one_or_none()
+        ).with_for_update()
+    ).scalar_one_or_none()
     unit_cost = Decimal(source_inventory.avg_unit_cost or 0) if source_inventory else Decimal("0")
     apply_inventory_change(
         db,
