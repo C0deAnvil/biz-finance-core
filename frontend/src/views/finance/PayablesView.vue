@@ -188,7 +188,6 @@
             <template #default="scope">{{ scope.row.merge_no || '-' }}</template>
           </el-table-column>
           <el-table-column prop="purchase_order_no" label="采购单号" width="160" />
-          <el-table-column prop="payment_type_label" label="付款方式" width="140" />
           <el-table-column prop="status_label" label="付款状态" width="120">
             <template #default="scope">
               <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag>
@@ -262,14 +261,6 @@
         <el-form-item label="实际出账金额">
           <el-input-number v-model="paymentRegisterForm.actual_amount" :min="0.0001" :precision="4" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="付款方式">
-          <div class="method-select-line">
-            <el-select v-model="paymentRegisterForm.payment_method" filterable allow-create default-first-option style="width: 100%" placeholder="请选择或新增付款方式">
-              <el-option v-for="item in paymentMethodOptions" :key="item.id" :label="item.name" :value="item.name" />
-            </el-select>
-            <el-button @click="openPaymentMethodDialog">维护</el-button>
-          </div>
-        </el-form-item>
         <el-form-item label="付款时间">
           <el-date-picker v-model="paymentRegisterForm.paid_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
         </el-form-item>
@@ -335,14 +326,6 @@
       </el-table>
       <el-form class="mt-16" :model="mergedPaymentRequestForm" label-width="100px">
         <SettlementAccounts v-model:company-account-id="mergedPaymentRequestForm.company_account_id" v-model:counterparty-account-id="mergedPaymentRequestForm.counterparty_account_id" :party-id="mergedPaymentRequestForm.items[0]?.supplier_id" :counterparty-readonly="Boolean(mergedPaymentRequestForm.items[0]?.counterparty_account_id)" direction="payment" />
-        <el-form-item label="付款方式">
-          <div class="method-select-line">
-            <el-select v-model="mergedPaymentRequestForm.payment_method" filterable allow-create default-first-option style="width: 100%" placeholder="请选择或新增付款方式">
-              <el-option v-for="item in paymentMethodOptions" :key="item.id" :label="item.name" :value="item.name" />
-            </el-select>
-            <el-button @click="openPaymentMethodDialog">维护</el-button>
-          </div>
-        </el-form-item>
         <el-form-item label="付款时间">
           <el-date-picker v-model="mergedPaymentRequestForm.paid_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
         </el-form-item>
@@ -408,14 +391,6 @@
       </el-table>
       <el-form class="mt-16" :model="mergedRegisterForm" label-width="100px">
         <SettlementAccounts v-model:company-account-id="mergedRegisterForm.company_account_id" v-model:counterparty-account-id="mergedRegisterForm.counterparty_account_id" :party-id="mergedRegisterForm.supplier_id" direction="payment" />
-        <el-form-item label="付款方式">
-          <div class="method-select-line">
-            <el-select v-model="mergedRegisterForm.payment_method" filterable allow-create default-first-option style="width: 100%" placeholder="请选择或新增付款方式">
-              <el-option v-for="item in paymentMethodOptions" :key="item.id" :label="item.name" :value="item.name" />
-            </el-select>
-            <el-button @click="openPaymentMethodDialog">维护</el-button>
-          </div>
-        </el-form-item>
         <el-form-item label="付款时间">
           <el-date-picker v-model="mergedRegisterForm.paid_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
         </el-form-item>
@@ -433,32 +408,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="paymentMethodVisible" title="付款方式维护" width="640px">
-      <el-form :model="paymentMethodForm" inline>
-        <el-form-item label="方式名称">
-          <el-input v-model="paymentMethodForm.name" placeholder="如银行转账、现金、承兑等" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="savePaymentMethod">{{ paymentMethodForm.id ? '保存' : '新增' }}</el-button>
-          <el-button @click="resetPaymentMethodForm">清空</el-button>
-        </el-form-item>
-      </el-form>
-      <el-table :data="paymentMethodRows" border>
-        <el-table-column prop="name" label="付款方式" />
-        <el-table-column prop="is_active" label="启用" width="90">
-          <template #default="scope">{{ scope.row.is_active ? '是' : '否' }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="160">
-          <template #default="scope">
-            <el-button size="small" text type="primary" @click="editPaymentMethod(scope.row)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="deletePaymentMethod(scope.row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <template #footer>
-        <el-button @click="paymentMethodVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -488,14 +437,13 @@ import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
-import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { get, post, put, remove, upload } from '../../api/client'
+import { get, post, upload } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import DelayedActionButton from '../../components/DelayedActionButton.vue'
 import PageSection from '../../components/PageSection.vue'
@@ -516,10 +464,6 @@ const summary = reactive({})
 const pendingOrders = ref([])
 const paymentRequests = ref([])
 const records = ref([])
-const paymentMethodOptions = ref([])
-const paymentMethodRows = ref([])
-const paymentMethodVisible = ref(false)
-const paymentMethodForm = reactive({ id: null, name: '' })
 const focusedOrderId = ref(null)
 const focusedRecordId = ref(null)
 const focusedPaymentRequestId = ref(null)
@@ -533,7 +477,6 @@ const paymentRegisterForm = reactive({
   counterparty_account_id: null,
   actual_amount: 0,
   remark: '',
-  payment_method: '',
   bank_receipt_attachment_id: null,
   paid_at: ''
 })
@@ -543,7 +486,6 @@ const mergedRegisterForm = reactive({
   supplier_id: null,
   items: [],
   remark: '',
-  payment_method: '',
   bank_receipt_attachment_id: null,
   paid_at: ''
 })
@@ -552,7 +494,6 @@ const mergedPaymentRequestForm = reactive({
   counterparty_account_id: null,
   items: [],
   remark: '',
-  payment_method: '',
   bank_receipt_attachment_id: null,
   paid_at: ''
 })
@@ -655,63 +596,14 @@ function payablesUrl() {
 }
 
 async function load() {
-  const [data, methodData] = await Promise.all([
-    get(payablesUrl()),
-    get('/api/finance/payment-method-options?method_type=payment')
-  ])
+  const data = await get(payablesUrl())
   Object.assign(summary, data.summary || {})
   pendingOrders.value = data.pending_orders || []
   paymentRequests.value = data.payment_requests || []
   records.value = data.records || []
-  paymentMethodRows.value = methodData
-  paymentMethodOptions.value = methodData.filter((item) => item.is_active)
   selectedPendingOrders.value = []
 
   await applyFocus()
-}
-
-async function loadPaymentMethods() {
-  const rows = await get('/api/finance/payment-method-options?method_type=payment')
-  paymentMethodRows.value = rows
-  paymentMethodOptions.value = rows.filter((item) => item.is_active)
-}
-
-function openPaymentMethodDialog() {
-  resetPaymentMethodForm()
-  paymentMethodVisible.value = true
-}
-
-function resetPaymentMethodForm() {
-  paymentMethodForm.id = null
-  paymentMethodForm.name = ''
-}
-
-function editPaymentMethod(row) {
-  paymentMethodForm.id = row.id
-  paymentMethodForm.name = row.name
-}
-
-async function savePaymentMethod() {
-  const name = String(paymentMethodForm.name || '').trim()
-  if (!name) {
-    ElMessage.warning('请填写付款方式名称')
-    return
-  }
-  if (paymentMethodForm.id) {
-    await put(`/api/finance/payment-method-options/${paymentMethodForm.id}`, { name, is_active: true })
-    ElMessage.success('付款方式已更新')
-  } else {
-    await post('/api/finance/payment-method-options', { method_type: 'payment', name })
-    ElMessage.success('付款方式已新增')
-  }
-  resetPaymentMethodForm()
-  await loadPaymentMethods()
-}
-
-async function deletePaymentMethod(row) {
-  await remove(`/api/finance/payment-method-options/${row.id}`)
-  ElMessage.success('付款方式已删除')
-  await loadPaymentMethods()
 }
 
 function handlePendingSelectionChange(selection) {
@@ -773,7 +665,6 @@ function openPaymentRegister(row) {
   activePaymentRequest.value = row
   paymentRegisterForm.actual_amount = Number(row.requested_amount || row.actual_amount || 0)
   paymentRegisterForm.remark = row.payment_detail_remark_display || row.payment_detail_remark || ''
-  paymentRegisterForm.payment_method = row.payment_method || ''
   paymentRegisterForm.company_account_id = row.company_account_id || null
   paymentRegisterForm.counterparty_account_id = row.counterparty_account_id || null
   paymentRegisterForm.bank_receipt_attachment_id = row.bank_receipt_attachment_id || null
@@ -806,7 +697,6 @@ function openMergedRegisterDialog() {
     other_fee_amount: 0
   }))
   mergedRegisterForm.remark = ''
-  mergedRegisterForm.payment_method = ''
   mergedRegisterForm.company_account_id = null
   mergedRegisterForm.counterparty_account_id = null
   mergedRegisterForm.bank_receipt_attachment_id = null
@@ -837,7 +727,6 @@ async function submitPaymentRegister() {
       company_account_id: paymentRegisterForm.company_account_id,
       counterparty_account_id: paymentRegisterForm.counterparty_account_id,
       remark: paymentRegisterForm.remark,
-      payment_method: paymentRegisterForm.payment_method || null,
       bank_receipt_attachment_id: uploadedId || paymentRegisterForm.bank_receipt_attachment_id || null,
       paid_at: paymentRegisterForm.paid_at || null
     })
@@ -867,7 +756,6 @@ async function submitMergedRegister() {
       company_account_id: mergedRegisterForm.company_account_id,
       counterparty_account_id: mergedRegisterForm.counterparty_account_id,
       remark: mergedRegisterForm.remark,
-      payment_method: mergedRegisterForm.payment_method || null,
       bank_receipt_attachment_id: uploadedId || mergedRegisterForm.bank_receipt_attachment_id || null,
       paid_at: mergedRegisterForm.paid_at || null,
       items: mergedRegisterForm.items.map((item) => ({
@@ -881,7 +769,6 @@ async function submitMergedRegister() {
     mergedRegisterForm.supplier_id = null
     mergedRegisterForm.items = []
     mergedRegisterForm.remark = ''
-    mergedRegisterForm.payment_method = ''
     mergedRegisterForm.company_account_id = null
     mergedRegisterForm.counterparty_account_id = null
     mergedRegisterForm.bank_receipt_attachment_id = null
@@ -908,7 +795,6 @@ async function submitMergedPaymentRequestRegister() {
       company_account_id: mergedPaymentRequestForm.company_account_id,
       counterparty_account_id: mergedPaymentRequestForm.counterparty_account_id,
       remark: mergedPaymentRequestForm.remark,
-      payment_method: mergedPaymentRequestForm.payment_method || null,
       bank_receipt_attachment_id: uploadedId || mergedPaymentRequestForm.bank_receipt_attachment_id || null,
       paid_at: mergedPaymentRequestForm.paid_at || null,
       items: mergedPaymentRequestForm.items.map((item) => ({
@@ -956,6 +842,4 @@ watch(
 .mb-16 { margin-bottom: 16px; }
 .mt-16 { margin-top: 16px; }
 .page-stack :deep(.is-focused-row) > td { background: #fff8e1 !important; }
-.method-select-line { display: flex; gap: 8px; width: 100%; }
-.method-select-line .el-select { flex: 1; }
 </style>
