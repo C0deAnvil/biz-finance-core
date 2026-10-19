@@ -41,6 +41,7 @@ from schemas.inventory import InventoryManualOperationCreateRequest, InventoryOp
 from schemas.production import FulfillmentDemandManualCreateRequest, SalesOrderReplenishmentCreateRequest
 from schemas.sales import PlacementActionRequest, QueueActionRequest, SalesShipmentRequest
 from services.core import apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
+from services.inventory_cost import sync_sales_order_cost
 from services.replenishment_service import create_manual_fulfillment_demand, ensure_fulfillment_demand_routing, resolve_demand_progress
 from services.display import calculate_bag_count, clean_display_text, get_inventory_packaging_config, inventory_request_category_label, status_label, transaction_type_label
 from services.display import payment_type_label
@@ -702,6 +703,7 @@ def mark_shipment(
             transaction_type="sales_outbound",
             related_type="sales_order",
             related_id=order.id,
+            sales_order_item_id=order_item.id,
             created_by_id=current_user.id,
         )
         if packaging_ship_quantity > 0 and packaging is not None:
@@ -715,6 +717,7 @@ def mark_shipment(
                 transaction_type="sales_packaging_outbound",
                 related_type="sales_order",
                 related_id=order.id,
+                sales_order_item_id=order_item.id,
                 created_by_id=current_user.id,
             )
             packaging_release = min(packaging_ship_quantity, packaging_reserved_for_me)
@@ -742,6 +745,7 @@ def mark_shipment(
 
     all_shipped = all(Decimal(item.shipped_quantity or 0) >= Decimal(item.quantity or 0) for item in order.items)
     order.status = "shipped" if all_shipped else "pending_shipment"
+    sync_sales_order_cost(db, order)
     if all_shipped:
         order.shipped_at = now_local()
         queue.shipment_status = "completed"

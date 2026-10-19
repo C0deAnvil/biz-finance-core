@@ -681,7 +681,11 @@ class Inventory(TimestampMixin, Base):
     # 已删除 in_production / on_order / available 三个缓存列:它们是第 4 套"可用量"算法,
     # 与其他算法口径互相矛盾且前端从未使用。可用量统一由 services/inventory_availability 实时计算。
     ext_json = Column(JSON, nullable=True)
-    avg_unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
+    # cost_balance is authoritative; avg_unit_cost is its display/cache value.
+    cost_balance = Column(Numeric(20, 4), nullable=False, default=0)
+    avg_unit_cost = Column(Numeric(20, 8), nullable=False, default=0)
+    cost_status = Column(String(20), nullable=False, default="unpriced")
+    opening_cost_pending = Column(Boolean, nullable=False, default=False)
 
     warehouse = relationship("Warehouse")
     product = relationship("Product")
@@ -702,7 +706,7 @@ class InventoryBatch(TimestampMixin, Base):
     packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     batch_no = Column(String(80), nullable=False)
     quantity = Column(Numeric(18, 4), nullable=False, default=0)
-    unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
+    unit_cost = Column(Numeric(20, 8), nullable=False, default=0)
     quality_grade = Column(String(30), nullable=True)
     source_type = Column(String(50), nullable=True)
     source_id = Column(Integer, nullable=True)
@@ -720,11 +724,32 @@ class InventoryTransaction(TimestampMixin, Base):
     packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     batch_no = Column(String(80), nullable=True)
     quantity = Column(Numeric(18, 4), nullable=False)
-    unit_cost = Column(Numeric(18, 4), nullable=False, default=0)
-    total_cost = Column(Numeric(18, 4), nullable=False, default=0)
+    unit_cost = Column(Numeric(20, 8), nullable=False, default=0)
+    total_cost = Column(Numeric(20, 4), nullable=False, default=0)
+    cost_status = Column(String(20), nullable=False, default="unpriced")
     related_type = Column(String(50), nullable=True)
     related_id = Column(Integer, nullable=True)
+    sales_order_item_id = Column(Integer, ForeignKey("sales_order_items.id"), nullable=True, index=True)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class InventoryCostAdjustment(TimestampMixin, Base):
+    __tablename__ = "inventory_cost_adjustments"
+
+    id = Column(Integer, primary_key=True)
+    inventory_id = Column(Integer, ForeignKey("inventories.id"), nullable=False)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    old_unit_cost = Column(Numeric(20, 8), nullable=False)
+    new_unit_cost = Column(Numeric(20, 8), nullable=False)
+    old_cost_balance = Column(Numeric(20, 4), nullable=False)
+    new_cost_balance = Column(Numeric(20, 4), nullable=False)
+    old_cost_status = Column(String(20), nullable=False)
+    new_cost_status = Column(String(20), nullable=False)
+    reason = Column(String(500), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    inventory = relationship("Inventory")
+    created_by = relationship("User")
 
 
 class InventoryOperationRequest(TimestampMixin, Base):
@@ -840,6 +865,7 @@ class SalesOrder(TimestampMixin, Base):
     transport_fee = Column(Numeric(20, 4), nullable=False, default=0)
     packaging_fee = Column(Numeric(20, 4), nullable=False, default=0)
     cost_amount = Column(Numeric(20, 4), nullable=False, default=0)
+    cost_status = Column(String(20), nullable=False, default="unpriced")
     profit_amount = Column(Numeric(20, 4), nullable=False, default=0)
     order_remark = Column(Text, nullable=True)
     finance_edit_pending = Column(Boolean, nullable=False, default=False)
@@ -1293,6 +1319,8 @@ class ProductionTask(TimestampMixin, Base):
     planned_quantity = Column(Numeric(18, 4), nullable=False)
     produced_quantity = Column(Numeric(18, 4), nullable=False, default=0)
     scrap_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    direct_labor_cost = Column(Numeric(20, 4), nullable=False, default=0)
+    manufacturing_overhead_cost = Column(Numeric(20, 4), nullable=False, default=0)
     fluctuation_ratio = Column(Numeric(8, 4), nullable=False, default=0)
     requires_quality = Column(Boolean, nullable=False, default=True)
     status = Column(String(30), nullable=False, default="pending_material")

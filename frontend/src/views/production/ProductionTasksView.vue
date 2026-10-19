@@ -381,6 +381,9 @@
         <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="产出数量"><el-input-number v-model="completeForm.produced_quantity" :min="0.01" style="width: 100%" @change="syncScrapFromProduced" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="报废数量"><el-input-number v-model="completeForm.scrap_quantity" :min="0" style="width: 100%" @change="syncProducedFromScrap" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="直接人工"><el-input-number v-model="completeForm.direct_labor_cost" :min="0" :precision="4" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="制造费用"><el-input-number v-model="completeForm.manufacturing_overhead_cost" :min="0" :precision="4" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="24"><span class="toolbar-tip">金额不确定可暂填 0；成品成本会标记为暂估，后续可由财务在库存状态中调整。</span></el-col>
           <el-col :span="24"><el-form-item label="完工后质检"><el-switch v-model="completeForm.requires_quality" active-text="需要质检" inactive-text="无需质检" /></el-form-item></el-col>
           <!-- 这里不该指定质检员:质检与入库由目标仓库的质检员/库管接手,
                后端建质检任务时已用建任务时选定的 task.warehouse_id
@@ -461,6 +464,8 @@
         <el-descriptions-item label="目标入库仓">{{ taskDetail.finished_warehouse?.name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="完工记录人">{{ taskDetail.completion_recorded_by_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="完工时间">{{ taskDetail.completed_at ? formatDateTime(taskDetail.completed_at) : '-' }}</el-descriptions-item>
+        <el-descriptions-item label="直接人工成本">{{ formatNumber(taskDetail.direct_labor_cost) }}</el-descriptions-item>
+        <el-descriptions-item label="制造费用">{{ formatNumber(taskDetail.manufacturing_overhead_cost) }}</el-descriptions-item>
         <el-descriptions-item label="初步验收" :span="2">{{ taskDetail.preliminary_acceptance_note || '-' }}</el-descriptions-item>
         <el-descriptions-item label="流程进度" :span="2">
           <div class="flow-steps">
@@ -583,7 +588,7 @@ const createForm = reactive({ source_type: 'manual', sales_order_id: null, produ
 const finishedWarehouses = ref([])
 const purchaseRequestsPanel = ref(null)
 const materialRequestForm = reactive({ material_usages: [] })
-const completeForm = reactive({ produced_quantity: 0, scrap_quantity: 0, requires_quality: true, preliminary_acceptance_note: '', actual_usages: [] })
+const completeForm = reactive({ produced_quantity: 0, scrap_quantity: 0, direct_labor_cost: 0, manufacturing_overhead_cost: 0, requires_quality: true, preliminary_acceptance_note: '', actual_usages: [] })
 const cancelForm = reactive({ reason: '' })
 
 const baseRows = computed(() => rows.value)
@@ -1198,6 +1203,8 @@ async function openComplete(row) {
   await loadTaskDetail(row.id)
   completeForm.produced_quantity = Number(row.planned_quantity || 0)
   completeForm.scrap_quantity = 0
+  completeForm.direct_labor_cost = Number(taskDetail.value?.direct_labor_cost || 0)
+  completeForm.manufacturing_overhead_cost = Number(taskDetail.value?.manufacturing_overhead_cost || 0)
   completeForm.requires_quality = true
   completeForm.preliminary_acceptance_note = taskDetail.value?.preliminary_acceptance_note || ''
   completeForm.actual_usages = (taskDetail.value?.usages || []).map((item) => ({
@@ -1269,6 +1276,8 @@ async function completeTask() {
   await post(`/api/production/tasks/${activeTask.value.id}/complete`, {
     produced_quantity: completeForm.produced_quantity,
     scrap_quantity: completeForm.scrap_quantity,
+    direct_labor_cost: completeForm.direct_labor_cost,
+    manufacturing_overhead_cost: completeForm.manufacturing_overhead_cost,
     requires_quality: completeForm.requires_quality,
     preliminary_acceptance_note: completeForm.preliminary_acceptance_note,
     // 不需质检时不传指定质检员,避免无意义的指派

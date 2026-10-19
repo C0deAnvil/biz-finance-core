@@ -215,6 +215,7 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
             request_items.append(
                 {
                     "product_id": order_item.product_id,
+                    "sales_order_item_id": order_item.id,
                     "material_id": None,
                     "batch_no": f"{sales_return.return_no}-{item.batch_suffix or item.id}",
                     "quantity": float(item.quantity or 0),

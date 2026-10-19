@@ -1137,6 +1137,8 @@ def complete_task(
 
     task.produced_quantity = produced_quantity
     task.scrap_quantity = scrap_quantity
+    task.direct_labor_cost = Decimal(payload.direct_labor_cost or 0)
+    task.manufacturing_overhead_cost = Decimal(payload.manufacturing_overhead_cost or 0)
     task.requires_quality = bool(payload.requires_quality)
     task.status = "waiting_quality" if task.requires_quality else "ready_for_inbound"
     task.started_at = task.started_at or now_local()
@@ -1250,6 +1252,8 @@ def complete_task(
             "requires_quality": task.requires_quality,
             "produced_quantity": float(task.produced_quantity),
             "scrap_quantity": float(task.scrap_quantity),
+            "direct_labor_cost": float(task.direct_labor_cost or 0),
+            "manufacturing_overhead_cost": float(task.manufacturing_overhead_cost or 0),
             "raw_warehouse": raw_warehouse.name,
             "finished_warehouse": target_warehouse.name,
             "batch_no": task.batch_no,

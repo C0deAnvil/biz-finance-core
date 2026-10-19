@@ -1,10 +1,10 @@
 ﻿<template>
   <div class="page-stack">
     <el-row :gutter="12" class="summary-row">
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">库存条目</div><div class="summary-value">{{ filteredRows.length }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">库存金额</div><div class="summary-value">{{ formatNumber(summary.inventoryAmount) }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">低于安全库存</div><div class="summary-value text-danger">{{ summary.belowSafety }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">可置货量合计</div><div class="summary-value">{{ formatNumber(summary.availableQuantity) }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">本页库存条目</div><div class="summary-value">{{ filteredRows.length }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">本页库存金额</div><div class="summary-value">{{ formatNumber(summary.inventoryAmount) }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">本页低于安全库存</div><div class="summary-value text-danger">{{ summary.belowSafety }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">本页可置货量</div><div class="summary-value">{{ formatNumber(summary.availableQuantity) }}</div></el-card></el-col>
     </el-row>
 
     <PageSection title="库存状态">
@@ -75,8 +75,11 @@
           </template>
         </el-table-column>
         <el-table-column prop="safety_stock_qty" label="安全库存" width="120"><template #default="scope">{{ formatNumber(scope.row.safety_stock_qty) }}</template></el-table-column>
-        <el-table-column prop="avg_unit_cost" label="移动均价" width="120"><template #default="scope">{{ formatNumber(scope.row.avg_unit_cost) }}</template></el-table-column>
+        <el-table-column prop="avg_unit_cost" label="移动均价" width="120"><template #default="scope">{{ formatUnitCost(scope.row.avg_unit_cost) }}</template></el-table-column>
         <el-table-column prop="inventory_amount" label="库存金额" width="120"><template #default="scope">{{ formatNumber(scope.row.inventory_amount) }}</template></el-table-column>
+        <el-table-column label="成本状态" width="220">
+          <template #default="scope"><el-tag :type="scope.row.cost_status === 'actual' ? 'success' : scope.row.cost_status === 'estimated' ? 'warning' : 'danger'">{{ costStatusLabel(scope.row.cost_status) }}</el-tag><el-tag v-if="scope.row.opening_cost_pending" type="info" class="ml-4">待首采重估</el-tag></template>
+        </el-table-column>
         <el-table-column label="预警" width="100">
           <template #default="scope">
             <el-tag v-if="scope.row.below_safety_stock" type="danger">低库存</el-tag>
@@ -84,9 +87,10 @@
           </template>
         </el-table-column>
         <el-table-column prop="updated_at" label="更新时间" min-width="170"><template #default="scope">{{ formatDateTime(scope.row.updated_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" :width="canAdjustCost ? 170 : 120" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openTransactions(scope.row)">查看流水</el-button>
+            <el-button v-if="canAdjustCost && scope.row.id > 0" size="small" text type="warning" @click="openCostAdjustment(scope.row)">成本调整</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -190,12 +194,30 @@
         </el-table-column>
         <el-table-column prop="batch_no" label="批次号" min-width="150" />
         <el-table-column prop="quantity" label="数量" width="110"><template #default="scope">{{ formatNumber(scope.row.quantity) }}</template></el-table-column>
-        <el-table-column prop="unit_cost" label="单价" width="110"><template #default="scope">{{ formatNumber(scope.row.unit_cost) }}</template></el-table-column>
+        <el-table-column prop="unit_cost" label="单价" width="110"><template #default="scope">{{ formatUnitCost(scope.row.unit_cost) }}</template></el-table-column>
         <el-table-column prop="total_cost" label="总额" width="120"><template #default="scope">{{ formatNumber(scope.row.total_cost) }}</template></el-table-column>
+        <el-table-column label="成本状态" width="100"><template #default="scope">{{ costStatusLabel(scope.row.cost_status) }}</template></el-table-column>
         <el-table-column prop="related_type" label="关联业务" width="150" />
         <el-table-column prop="created_at" label="时间" min-width="170"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
       </el-table>
     </el-drawer>
+
+    <el-dialog v-model="costDialogVisible" title="库存成本调整" width="700px">
+      <p v-if="costStock" class="cost-note">{{ costStock.warehouse_name }} · {{ costStock.item_name }}（{{ costStock.item_code }}） · 当前数量 {{ formatNumber(costStock.quantity) }}。仅调整当前库存估值，不追改历史出入库流水。</p>
+      <el-form :model="costForm" label-width="110px">
+        <el-form-item label="当前移动均价"><span>{{ formatUnitCost(costStock?.avg_unit_cost) }} / {{ costStatusLabel(costStock?.cost_status) }}</span></el-form-item>
+        <el-form-item label="新单位成本" required><el-input-number v-model="costForm.unit_cost" :min="0" :precision="8" :step="0.0001" style="width: 240px" /></el-form-item>
+        <el-form-item label="调整原因" required><el-input v-model="costForm.reason" type="textarea" :rows="3" maxlength="500" show-word-limit placeholder="说明期初估价依据或后续调整原因" /></el-form-item>
+      </el-form>
+      <el-table :data="costHistory" max-height="200px" stripe>
+        <el-table-column prop="created_at" label="时间" width="170"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
+        <el-table-column prop="old_unit_cost" label="原单价" width="95"><template #default="scope">{{ formatUnitCost(scope.row.old_unit_cost) }}</template></el-table-column>
+        <el-table-column prop="new_unit_cost" label="新单价" width="95"><template #default="scope">{{ formatUnitCost(scope.row.new_unit_cost) }}</template></el-table-column>
+        <el-table-column prop="created_by_name" label="操作人" width="95" />
+        <el-table-column prop="reason" label="原因" min-width="180" show-overflow-tooltip />
+      </el-table>
+      <template #footer><el-button @click="costDialogVisible = false">取消</el-button><el-button type="primary" @click="submitCostAdjustment">保存暂估成本</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="operationDialogVisible" :title="operationDialogTitle" width="860px">
       <el-form v-if="activeOperation" :model="operationForm" label-width="100px">
@@ -413,6 +435,10 @@ const drawerVisible = ref(false)
 const operationDialogVisible = ref(false)
 const manualDialogVisible = ref(false)
 const rejectDialogVisible = ref(false)
+const costDialogVisible = ref(false)
+const costStock = ref(null)
+const costHistory = ref([])
+const costForm = reactive({ unit_cost: 0, reason: '' })
 const manualOperationType = ref('inbound')
 const activeStock = ref(null)
 const activeOperation = ref(null)
@@ -424,6 +450,9 @@ const operationForm = reactive({ items: [], handled_remark: '', adjust_reason: '
 const manualForm = reactive({ warehouse_id: null, source_no: '', remark: '', items: [] })
 const rejectForm = reactive({ reject_reason: '' })
 const canManualOperate = computed(() => auth.isRole('inventory'))
+const canAdjustCost = computed(() => ['finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
+const costStatusLabel = (status) => status === 'actual' ? '实际成本' : status === 'estimated' ? '暂估成本' : '待定价'
+const formatUnitCost = (value) => value == null ? '-' : Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 3, maximumFractionDigits: 8 })
 const canApproveInventoryOperation = (row) => Boolean(
   row && ['manager', 'system_admin'].includes(auth.user?.role_code) && row.status === 'pending_manager_approval'
 )
@@ -486,7 +515,7 @@ const sourceDetailEntries = computed(() => {
 })
 
 const sourceDetailItems = computed(() => activeOperation.value?.source_detail?.items || [])
-const hidePriceInOperation = computed(() => ['purchase_receipt_inbound', 'purchase_quality_inbound', 'sales_shipment'].includes(activeOperation.value?.request_category))
+const hidePriceInOperation = computed(() => activeOperation.value?.request_category !== 'manual_inbound')
 const expectedQuantityLabel = computed(() => activeOperation.value?.operation_type === 'inbound' ? '应到' : '应出')
 const actualQuantityLabel = computed(() => activeOperation.value?.operation_type === 'inbound' ? '实到' : '实出')
 const operationApprovalMode = computed(() => activeOperation.value?.status === 'pending_manager_approval' && canApproveInventoryOperation(activeOperation.value))
@@ -591,6 +620,31 @@ async function openTransactions(row) {
   drawerVisible.value = true
 }
 
+async function openCostAdjustment(row) {
+  costStock.value = row
+  costForm.unit_cost = Number(row.avg_unit_cost || 0)
+  costForm.reason = ''
+  costHistory.value = await get(`/api/inventory/stocks/${row.id}/cost-adjustments`)
+  costDialogVisible.value = true
+}
+
+async function submitCostAdjustment() {
+  if (!costStock.value || costForm.reason.trim().length < 3) {
+    ElMessage.warning('请填写至少三个字的调整原因')
+    return
+  }
+  try {
+    await post(`/api/inventory/stocks/${costStock.value.id}/cost-adjustments`, {
+      unit_cost: costForm.unit_cost, reason: costForm.reason.trim()
+    })
+    ElMessage.success('库存暂估成本已调整，并已记录操作日志')
+    costDialogVisible.value = false
+    await load({ skipRouteFocus: true })
+  } catch (error) {
+    ElMessage.error(error.message || '成本调整失败')
+  }
+}
+
 async function loadTransactionLedger() {
   const params = new URLSearchParams({
     page: String(transactionPagination.page),
@@ -637,6 +691,7 @@ async function handleStockPaginationChange({ page, pageSize }) {
 function buildOperationForm(row) {
   operationForm.items = (row.original_items || row.handled_items || []).map((item) => ({
     product_id: item.product_id || null,
+    sales_order_item_id: item.sales_order_item_id || null,
     material_id: item.material_id || null,
     packaging_config_id: item.packaging_config_id || null,
     batch_no: item.batch_no || '',

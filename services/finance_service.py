@@ -32,16 +32,8 @@ from schemas.finance import (
     SalesCostUpdate,
 )
 from services.core import _role_user_ids, complete_todos, create_cash_flow, create_notification, write_operation_log
+from services.inventory_cost import sync_sales_order_cost
 from services.time_utils import now_local
-
-
-def _recalculate_sales_profit(order: SalesOrder):
-    order.profit_amount = (
-        Decimal(order.total_amount or 0)
-        - Decimal(order.cost_amount or 0)
-        - Decimal(order.transport_fee or 0)
-        - Decimal(order.packaging_fee or 0)
-    )
 
 
 def _purchase_paid_amount(db: Session, order_id: int) -> Decimal:
@@ -315,13 +307,9 @@ def update_sales_cost(order_id: int, payload: SalesCostUpdate, current_user: Use
     )
     if order is None:
         raise HTTPException(status_code=404, detail="销售订单不存在")
-    total_cost = Decimal("0")
-    for item in order.items:
-        total_cost += Decimal(item.product.price or 0) * Decimal(item.quantity or 0)
-    order.cost_amount = total_cost
     order.transport_fee = payload.transport_fee
     order.packaging_fee = payload.packaging_fee
-    _recalculate_sales_profit(order)
+    sync_sales_order_cost(db, order)
     db.commit()
     return api_response(data={"profit_amount": float(order.profit_amount or 0)})
 

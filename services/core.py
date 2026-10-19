@@ -2,7 +2,7 @@
 
 import json
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -13,6 +13,7 @@ from models import (
     FinancialAccount,
     Inventory,
     InventoryBatch,
+    InventoryCostAdjustment,
     InventoryTransaction,
     Material,
     Notification,
@@ -326,6 +327,13 @@ def ensure_inventory_record(
         query = query.with_for_update()
     inventory = db.execute(query).scalar_one_or_none()
     if inventory is None:
+        if for_update:
+            # NULL 参与的 MySQL UNIQUE 不足以阻止同一物料的并发首次建账。
+            # 仅在缺行时串行化本仓首次创建；已有库存行仍只锁该库存行。
+            db.execute(select(Warehouse.id).where(Warehouse.id == warehouse_id).with_for_update()).scalar_one()
+            inventory = db.execute(query).scalar_one_or_none()
+            if inventory is not None:
+                return inventory
         inventory = Inventory(
             warehouse_id=warehouse_id,
             product_id=product_id,
@@ -334,6 +342,8 @@ def ensure_inventory_record(
             quantity=0,
             reserved_quantity=0,
             avg_unit_cost=0,
+            cost_balance=0,
+            cost_status="unpriced",
         )
         db.add(inventory)
         db.flush()
@@ -711,33 +721,90 @@ def apply_inventory_change(
     quantity: Decimal,
     transaction_type: str,
     unit_cost: Decimal = Decimal('0'),
+    total_cost: Decimal | None = None,
+    cost_status: str | None = None,
     batch_no: str | None = None,
     product_id: int | None = None,
     material_id: int | None = None,
     packaging_config_id: int | None = None,
     related_type: str | None = None,
     related_id: int | None = None,
+    sales_order_item_id: int | None = None,
+    replace_opening_estimate: bool = False,
     created_by_id: int | None = None,
 ):
-    # 扣减路径加行级锁,防止并发超卖(入库路径无需锁)
+    # 入库也必须锁住成本行，避免两张采购单并发入库时覆盖移动平均价。
     inventory = ensure_inventory_record(
         db,
         warehouse_id=warehouse_id,
         product_id=product_id,
         material_id=material_id,
         packaging_config_id=packaging_config_id,
-        for_update=quantity < 0,
+        for_update=True,
     )
+    quantity = Decimal(quantity)
     previous_qty = Decimal(inventory.quantity or 0)
-    previous_cost = Decimal(inventory.avg_unit_cost or 0)
+    previous_balance = Decimal(inventory.cost_balance or 0)
+    if previous_qty == 0:
+        previous_balance = Decimal("0")
+    if previous_qty > 0 and previous_balance == 0 and Decimal(inventory.avg_unit_cost or 0) > 0:
+        # ORM-created fixtures / pre-upgrade rows may not yet carry the balance.
+        previous_balance = (previous_qty * Decimal(inventory.avg_unit_cost)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    previous_status = inventory.cost_status or "unpriced"
     inventory.quantity = previous_qty + quantity
     if inventory.quantity < 0:
         raise ValueError('库存数量不能小于0')
 
-    if quantity > 0 and unit_cost >= 0:
-        total_cost_before = previous_qty * previous_cost
-        total_cost_after = total_cost_before + quantity * unit_cost
-        inventory.avg_unit_cost = (total_cost_after / inventory.quantity) if inventory.quantity else 0
+    money_quantum = Decimal("0.0001")
+    unit_quantum = Decimal("0.00000001")
+    if quantity > 0:
+        if Decimal(unit_cost) < 0 or (total_cost is not None and Decimal(total_cost) < 0):
+            raise ValueError("入库成本不能为负数")
+        movement_value = (Decimal(total_cost) if total_cost is not None else quantity * Decimal(unit_cost)).quantize(money_quantum, rounding=ROUND_HALF_UP)
+        movement_unit_cost = (movement_value / quantity).quantize(unit_quantum, rounding=ROUND_HALF_UP)
+        movement_status = cost_status or ("actual" if movement_value > 0 else "unpriced")
+        if replace_opening_estimate and inventory.opening_cost_pending and previous_qty > 0 and movement_value > 0:
+            # 首次真实采购仅重估尚在库的期初数量；历史出库流水保持原账面成本。
+            replacement_balance = (previous_qty * movement_unit_cost).quantize(money_quantum, rounding=ROUND_HALF_UP)
+            db.add(InventoryCostAdjustment(
+                inventory_id=inventory.id,
+                quantity=previous_qty,
+                old_unit_cost=inventory.avg_unit_cost or 0,
+                new_unit_cost=movement_unit_cost,
+                old_cost_balance=previous_balance,
+                new_cost_balance=replacement_balance,
+                old_cost_status=previous_status,
+                new_cost_status="actual",
+                reason="首次采购价替代剩余期初库存暂估价",
+                created_by_id=created_by_id,
+            ))
+            previous_balance = replacement_balance
+            previous_status = "actual"
+            inventory.opening_cost_pending = False
+        inventory.cost_balance = previous_balance + movement_value
+        inventory.cost_status = (
+            movement_status if previous_qty == 0 else
+            "unpriced" if "unpriced" in {previous_status, movement_status} else
+            "estimated" if "estimated" in {previous_status, movement_status} else
+            "actual"
+        )
+    elif quantity < 0:
+        if previous_qty <= 0:
+            raise ValueError("库存数量不足")
+        issue_value = previous_balance if inventory.quantity == 0 else (previous_balance * (-quantity) / previous_qty).quantize(money_quantum, rounding=ROUND_HALF_UP)
+        movement_value = -issue_value
+        movement_unit_cost = (issue_value / (-quantity)).quantize(unit_quantum, rounding=ROUND_HALF_UP)
+        movement_status = previous_status
+        inventory.cost_balance = previous_balance - issue_value
+        inventory.cost_status = previous_status if inventory.quantity else "unpriced"
+        if not inventory.quantity:
+            inventory.opening_cost_pending = False
+    else:
+        raise ValueError("库存变动数量不能为 0")
+    inventory.avg_unit_cost = (
+        (Decimal(inventory.cost_balance) / Decimal(inventory.quantity)).quantize(unit_quantum, rounding=ROUND_HALF_UP)
+        if inventory.quantity else Decimal("0")
+    )
 
     transaction = InventoryTransaction(
         transaction_no=next_business_no(db, 'KC'),
@@ -748,10 +815,12 @@ def apply_inventory_change(
         packaging_config_id=packaging_config_id,
         batch_no=batch_no,
         quantity=quantity,
-        unit_cost=unit_cost,
-        total_cost=quantity * unit_cost,
+        unit_cost=movement_unit_cost,
+        total_cost=movement_value,
+        cost_status=movement_status,
         related_type=related_type,
         related_id=related_id,
+        sales_order_item_id=sales_order_item_id,
         created_by_id=created_by_id,
     )
     db.add(transaction)
@@ -774,11 +843,11 @@ def apply_inventory_change(
                 packaging_config_id=packaging_config_id,
                 batch_no=batch_no,
                 quantity=0,
-                unit_cost=unit_cost,
+                unit_cost=movement_unit_cost,
             )
             db.add(batch)
         batch.quantity = Decimal(batch.quantity or 0) + quantity
-        batch.unit_cost = unit_cost
+        batch.unit_cost = movement_unit_cost
 
     db.flush()
     _sync_low_stock_alert_for_inventory(db, inventory, notify_on_recovery=True)

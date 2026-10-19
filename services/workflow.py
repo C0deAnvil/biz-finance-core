@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from models import (
     Inventory,
+    InventoryTransaction,
     InventoryDispatchQueue,
     InventoryOperationRequest,
     PayableRecord,
@@ -23,6 +24,7 @@ from models import (
     Role,
     SalesOrder,
     SalesReturn,
+    SalesReturnItem,
     TodoItem,
     User,
     Warehouse,
@@ -41,6 +43,7 @@ def _normalized_inventory_items(items: list[dict]) -> list[dict]:
         normalized.append(
             {
                 "product_id": item.get("product_id") or None,
+                "sales_order_item_id": item.get("sales_order_item_id") or None,
                 "material_id": item.get("material_id") or None,
                 "packaging_config_id": item.get("packaging_config_id") or None,
                 "batch_no": (item.get("batch_no") or None),
@@ -602,6 +605,7 @@ def complete_inventory_operation_request(
     handled_items = [
         {
             "product_id": item.product_id,
+            "sales_order_item_id": item.sales_order_item_id,
             "material_id": item.material_id,
             "packaging_config_id": item.packaging_config_id,
             "batch_no": item.batch_no,
@@ -610,6 +614,11 @@ def complete_inventory_operation_request(
         }
         for item in payload.items
     ]
+    if request.request_category in {"purchase_receipt_inbound", "purchase_quality_inbound"}:
+        original_costs = [Decimal(str(item.get("unit_cost") or 0)) for item in original_items]
+        handled_costs = [Decimal(str(item.get("unit_cost") or 0)) for item in handled_items]
+        if original_costs != handled_costs:
+            raise HTTPException(status_code=409, detail="采购入库成本必须与采购到货单一致；请在来源单据更正价格")
     changed = _normalized_inventory_items(handled_items) != _normalized_inventory_items(original_items)
     quantity_changed = _has_quantity_difference(original_items, handled_items)
     if changed and not (payload.adjust_reason or "").strip():
@@ -624,6 +633,10 @@ def complete_inventory_operation_request(
         "stock_transfer_out" if request.request_category == "stock_transfer_outbound" else
         "manual_inbound" if request.operation_type == "inbound" else "manual_outbound"
     )
+    transfer_outbound_cost = None
+    production_input_cost = None
+    return_origin_cost = None
+    return_origin_line_cost = None
     if request.source_type == "stock_transfer":
         from models import StockTransfer
         transfer = db.execute(select(StockTransfer).where(StockTransfer.id == request.source_id).with_for_update()).scalar_one_or_none()
@@ -647,22 +660,138 @@ def complete_inventory_operation_request(
             available = max(Decimal(stock.quantity or 0) - Decimal(stock.reserved_quantity or 0), Decimal("0")) if stock else Decimal("0")
             if Decimal(payload.items[0].quantity) > available:
                 raise HTTPException(status_code=409, detail=f"源仓库可用库存不足（可用 {available}）")
-    for item in payload.items:
+        else:
+            outbound_request = db.execute(select(InventoryOperationRequest).where(
+                InventoryOperationRequest.source_type == "stock_transfer",
+                InventoryOperationRequest.source_id == transfer.id,
+                InventoryOperationRequest.request_category == "stock_transfer_outbound",
+                InventoryOperationRequest.status == "completed",
+            )).scalar_one_or_none()
+            transfer_outbound_cost = db.execute(select(InventoryTransaction).where(
+                InventoryTransaction.related_type == "inventory_operation_request",
+                InventoryTransaction.related_id == (outbound_request.id if outbound_request else -1),
+                InventoryTransaction.transaction_type == "stock_transfer_out",
+            )).scalar_one_or_none()
+            if transfer_outbound_cost is None:
+                raise HTTPException(status_code=409, detail="未找到源仓出库成本，无法确定移库入库成本")
+    if request.request_category in {"production_finished_inbound", "production_quality_inbound"}:
+        task = db.execute(select(ProductionTask).where(ProductionTask.id == request.source_id).with_for_update()).scalar_one_or_none()
+        if task is None:
+            raise HTTPException(status_code=409, detail="未找到生产任务，不能计算成品入库成本")
+        prior_inbound_request_ids = db.execute(select(InventoryOperationRequest.id).where(
+            InventoryOperationRequest.source_id == task.id,
+            InventoryOperationRequest.source_type.in_(("production_task", "quality_inbound")),
+            InventoryOperationRequest.request_category.in_(("production_finished_inbound", "production_quality_inbound")),
+            InventoryOperationRequest.status == "completed",
+        )).scalars().all()
+        if prior_inbound_request_ids and db.execute(select(InventoryTransaction.id).where(
+            InventoryTransaction.related_type == "inventory_operation_request",
+            InventoryTransaction.related_id.in_(prior_inbound_request_ids),
+            InventoryTransaction.quantity > 0,
+        )).first():
+            raise HTTPException(status_code=409, detail="该生产任务已完成成品入库，不能重复结转领料成本")
+        usage_ids = db.execute(select(ProductionMaterialUsage.id).where(ProductionMaterialUsage.production_task_id == task.id)).scalars().all()
+        issue_requests = db.execute(select(InventoryOperationRequest.id).where(
+            InventoryOperationRequest.request_category == "production_material_issue",
+            InventoryOperationRequest.status == "completed",
+            ((InventoryOperationRequest.source_type == "production_task") & (InventoryOperationRequest.source_id == task.id))
+            | ((InventoryOperationRequest.source_type == "production_material_usage") & (InventoryOperationRequest.source_id.in_(usage_ids or [-1]))),
+        )).scalars().all()
+        input_rows = db.execute(select(InventoryTransaction).where(
+            InventoryTransaction.related_type == "inventory_operation_request",
+            InventoryTransaction.related_id.in_(issue_requests or [-1]),
+            InventoryTransaction.quantity < 0,
+        )).scalars().all()
+        if usage_ids and not input_rows:
+            raise HTTPException(status_code=409, detail="尚未找到已执行的生产领料出库，无法确认成品入库成本")
+        production_input_cost = (
+            -sum((Decimal(row.total_cost or 0) for row in input_rows), Decimal("0"))
+            + Decimal(task.direct_labor_cost or 0)
+            + Decimal(task.manufacturing_overhead_cost or 0)
+        )
+        if production_input_cost < 0:
+            raise HTTPException(status_code=409, detail="生产领料成本异常，请检查出库流水")
+        planned_output = sum((Decimal(str(row.get("quantity") or 0)) for row in original_items), Decimal("0"))
+        if planned_output <= 0:
+            raise HTTPException(status_code=409, detail="生产入库申请数量无效")
+        production_cost_status = "unpriced" if production_input_cost <= 0 or any(row.cost_status == "unpriced" for row in input_rows) else "estimated"
+    if request.request_category == "sales_return_inbound" and request.source_type == "sales_return":
+        sales_return = db.get(SalesReturn, request.source_id)
+        if sales_return is None:
+            raise HTTPException(status_code=409, detail="销售退货来源不存在")
+        sold_rows = db.execute(select(InventoryTransaction).where(
+            InventoryTransaction.related_type == "sales_order",
+            InventoryTransaction.related_id == sales_return.sales_order_id,
+            InventoryTransaction.transaction_type == "sales_outbound",
+        )).scalars().all()
+        approved_return_items = db.execute(select(SalesReturnItem).where(
+            SalesReturnItem.sales_return_id == sales_return.id,
+        )).scalars().all()
+        approved_line_product_ids = {
+            item.sales_order_item_id: next(
+                (row.product_id for row in sold_rows if row.sales_order_item_id == item.sales_order_item_id),
+                None,
+            )
+            for item in approved_return_items
+        }
+        for item in payload.items:
+            if item.sales_order_item_id is not None and approved_line_product_ids.get(item.sales_order_item_id) != item.product_id:
+                raise HTTPException(status_code=409, detail="退货明细不属于当前已审批退货单，或商品与原销售明细不一致")
+        return_origin_cost = {}
+        return_origin_line_cost = {}
+        for row in sold_rows:
+            entry = return_origin_cost.setdefault(row.product_id, {"quantity": Decimal("0"), "cost": Decimal("0"), "status": "actual"})
+            entry["quantity"] += -Decimal(row.quantity)
+            entry["cost"] += -Decimal(row.total_cost)
+            if row.cost_status == "unpriced" or (row.cost_status == "estimated" and entry["status"] != "unpriced"):
+                entry["status"] = row.cost_status
+            if row.sales_order_item_id is not None:
+                line_entry = return_origin_line_cost.setdefault(row.sales_order_item_id, {"quantity": Decimal("0"), "cost": Decimal("0"), "status": "actual"})
+                line_entry["quantity"] += -Decimal(row.quantity)
+                line_entry["cost"] += -Decimal(row.total_cost)
+                if row.cost_status == "unpriced" or (row.cost_status == "estimated" and line_entry["status"] != "unpriced"):
+                    line_entry["status"] = row.cost_status
+    for index, item in enumerate(payload.items):
         try:
-            apply_inventory_change(
+            return_cost = (
+                (return_origin_line_cost or {}).get(item.sales_order_item_id)
+                or (return_origin_cost or {}).get(item.product_id)
+            ) if return_origin_cost is not None else None
+            if return_origin_cost is not None and (return_cost is None or return_cost["quantity"] <= 0):
+                raise HTTPException(status_code=409, detail="找不到原销售发货成本，退货不能按当前库存均价入库")
+            production_total = (
+                (production_input_cost * Decimal(item.quantity) / planned_output).quantize(Decimal("0.0001"))
+                if production_input_cost is not None else None
+            )
+            return_total = (
+                (return_cost["cost"] * Decimal(item.quantity) / return_cost["quantity"]).quantize(Decimal("0.0001"))
+                if return_cost is not None else None
+            )
+            _, transaction = apply_inventory_change(
                 db,
                 warehouse_id=request.warehouse_id,
                 product_id=item.product_id,
                 material_id=item.material_id,
                 packaging_config_id=item.packaging_config_id,
                 quantity=Decimal(item.quantity) * sign,
-                unit_cost=Decimal(item.unit_cost or 0),
+                unit_cost=Decimal(transfer_outbound_cost.unit_cost if transfer_outbound_cost else item.unit_cost or 0),
+                total_cost=-Decimal(transfer_outbound_cost.total_cost) if transfer_outbound_cost else production_total if production_total is not None else return_total,
+                cost_status=(
+                    transfer_outbound_cost.cost_status if transfer_outbound_cost else
+                    production_cost_status if production_input_cost is not None else
+                    return_cost["status"] if return_cost is not None else
+                    "estimated" if request.request_category == "manual_inbound_request" and Decimal(item.unit_cost or 0) > 0 else
+                    None
+                ),
                 batch_no=item.batch_no,
                 transaction_type=transaction_type,
                 related_type="inventory_operation_request",
                 related_id=request.id,
+                sales_order_item_id=item.sales_order_item_id if return_cost is not None else None,
+                replace_opening_estimate=request.request_category in {"purchase_receipt_inbound", "purchase_quality_inbound"},
                 created_by_id=current_user.id,
             )
+            handled_items[index]["unit_cost"] = float(transaction.unit_cost)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

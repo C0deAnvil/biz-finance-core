@@ -24,6 +24,7 @@ class StockTakeCreate(BaseModel):
 
 class InventoryOperationItemInput(BaseModel):
     product_id: int | None = None
+    sales_order_item_id: int | None = None
     material_id: int | None = None
     packaging_config_id: int | None = None
     batch_no: str | None = None

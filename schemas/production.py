@@ -96,6 +96,8 @@ class SpecialMaterialApproval(BaseModel):
 class ProductionCompleteRequest(BaseModel):
     produced_quantity: Decimal = Field(..., ge=0)
     scrap_quantity: Decimal = Field(default=0, ge=0)
+    direct_labor_cost: Decimal = Field(default=0, ge=0, max_digits=20, decimal_places=4)
+    manufacturing_overhead_cost: Decimal = Field(default=0, ge=0, max_digits=20, decimal_places=4)
     requires_quality: bool = True
     preliminary_acceptance_note: str | None = Field(default=None, max_length=1000)
     actual_usages: list[MaterialUsageInput] = []

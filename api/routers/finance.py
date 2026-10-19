@@ -104,15 +104,6 @@ def list_assignable_finance_users(
     )
 
 
-def _recalculate_sales_profit(order: SalesOrder):
-    order.profit_amount = (
-        Decimal(order.total_amount or 0)
-        - Decimal(order.cost_amount or 0)
-        - Decimal(order.transport_fee or 0)
-        - Decimal(order.packaging_fee or 0)
-    )
-
-
 def _ensure_payment_method_options(db: Session) -> None:
     defaults = {
         "receipt": ["银行转账", "现金", "承兑汇票", "微信/支付宝", "其他"],
@@ -1525,8 +1516,14 @@ def report_summary(
     db: Session = Depends(get_db),
 ):
     today = date.today()
-    total_sales = db.execute(select(func.coalesce(func.sum(SalesOrder.total_amount), 0))).scalar_one()
-    total_profit = db.execute(select(func.coalesce(func.sum(SalesOrder.profit_amount), 0))).scalar_one()
+    shipped_statuses = ("shipped", "completed")
+    total_sales = db.execute(select(func.coalesce(func.sum(SalesOrder.total_amount), 0)).where(SalesOrder.status.in_(shipped_statuses))).scalar_one()
+    total_profit = db.execute(select(func.coalesce(func.sum(SalesOrder.profit_amount), 0)).where(
+        SalesOrder.status.in_(shipped_statuses), SalesOrder.cost_status != "unpriced",
+    )).scalar_one()
+    unpriced_sales_count = db.execute(select(func.count(SalesOrder.id)).where(
+        SalesOrder.status.in_(shipped_statuses), SalesOrder.cost_status == "unpriced",
+    )).scalar_one()
     total_purchase = db.execute(select(func.coalesce(func.sum(PurchaseOrder.total_amount), 0))).scalar_one()
     incoming = db.execute(select(func.coalesce(func.sum(CashFlowRecord.amount), 0)).where(CashFlowRecord.flow_type == "incoming")).scalar_one()
     outgoing = db.execute(select(func.coalesce(func.sum(CashFlowRecord.amount), 0)).where(CashFlowRecord.flow_type == "outgoing")).scalar_one()
@@ -1551,6 +1548,7 @@ def report_summary(
             "generated_at": today.isoformat(),
             "sales_total": float(total_sales or 0),
             "profit_total": float(total_profit or 0),
+            "unpriced_sales_order_count": unpriced_sales_count,
             "purchase_total": float(total_purchase or 0),
             "incoming_total": float(incoming or 0),
             "outgoing_total": float(outgoing or 0),
@@ -1608,12 +1606,14 @@ def _build_sales_profit_report_rows(
     ).unique().scalars().all()
     data = []
     for row in orders:
+        if row.status not in {'shipped', 'completed'}:
+            continue
         if customer_id is not None and row.customer_id != customer_id:
             continue
         matched_items = [item for item in row.items if product_id is None or item.product_id == product_id]
         if product_id is not None and not matched_items:
             continue
-        report_at = _first_report_datetime(row.completed_at, row.shipped_at, row.approved_at, row.created_at)
+        report_at = _first_report_datetime(row.shipped_at, row.completed_at)
         if not _in_date_range(report_at, date_from, date_to):
             continue
         display_items = matched_items or list(row.items)
@@ -1635,11 +1635,12 @@ def _build_sales_profit_report_rows(
                 'total_quantity': float(total_quantity),
                 'payment_type': row.payment_type,
                 'status': row.status,
+                'cost_status': row.cost_status or 'unpriced',
                 'sales_amount': float(Decimal(row.total_amount or 0)),
-                'cost_amount': float(Decimal(row.cost_amount or 0)),
+                'cost_amount': float(Decimal(row.cost_amount or 0)) if row.cost_status != 'unpriced' else None,
                 'transport_fee': float(Decimal(row.transport_fee or 0)),
                 'packaging_fee': float(Decimal(row.packaging_fee or 0)),
-                'profit_amount': float(Decimal(row.profit_amount or 0)),
+                'profit_amount': float(Decimal(row.profit_amount or 0)) if row.cost_status != 'unpriced' else None,
             }
         )
     return data
@@ -1781,7 +1782,8 @@ def _build_inventory_capital_report_rows(
                 'reserved_quantity': float(reserved_quantity),
                 'available_quantity': float(available_quantity),
                 'avg_unit_cost': float(avg_unit_cost),
-                'inventory_amount': float(quantity * avg_unit_cost),
+                'inventory_amount': float(row.cost_balance or 0),
+                'cost_status': row.cost_status or 'unpriced',
                 'safety_stock_qty': float(safety_stock_qty),
                 'below_safety_stock': available_quantity < safety_stock_qty,
             }
@@ -1841,7 +1843,8 @@ def report_detail(
             'summary': {
                 'sales_order_count': len(sales_profit_rows),
                 'sales_total': round(sum(row['sales_amount'] for row in sales_profit_rows), 4),
-                'profit_total': round(sum(row['profit_amount'] for row in sales_profit_rows), 4),
+                'profit_total': round(sum(row['profit_amount'] or 0 for row in sales_profit_rows), 4),
+                'unpriced_sales_order_count': sum(1 for row in sales_profit_rows if row['cost_status'] == 'unpriced'),
                 'purchase_payment_total': round(sum(row['amount'] for row in purchase_payment_rows), 4),
                 'incoming_total': round(incoming_total, 4),
                 'outgoing_total': round(outgoing_total, 4),

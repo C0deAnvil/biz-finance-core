@@ -43,7 +43,7 @@
       <el-row :gutter="16">
         <el-col :span="4"><el-statistic title="销售单数" :value="report.summary.sales_order_count || 0" /></el-col>
         <el-col :span="4"><el-statistic title="销售额" :value="report.summary.sales_total || 0" /></el-col>
-        <el-col :span="4"><el-statistic title="销售利润" :value="report.summary.profit_total || 0" /></el-col>
+        <el-col :span="4"><el-statistic title="已定价销售利润" :value="report.summary.profit_total || 0" /></el-col>
         <el-col :span="4"><el-statistic title="采购付款" :value="report.summary.purchase_payment_total || 0" /></el-col>
         <el-col :span="4"><el-statistic title="资金流入" :value="report.summary.incoming_total || 0" /></el-col>
         <el-col :span="4"><el-statistic title="资金流出" :value="report.summary.outgoing_total || 0" /></el-col>
@@ -53,7 +53,7 @@
       </el-row>
     </PageSection>
 
-    <PageSection title="月度销售盈利表" description="按订单查看销售额、成本、运包费和利润。">
+    <PageSection title="已发货销售盈利表" description="成本取实际出库流水；待定价订单不显示成本和利润，避免把未知成本当作零。">
       <template #actions>
         <el-button @click="exportSalesProfit">导出 Excel</el-button>
       </template>
@@ -70,8 +70,11 @@
         <el-table-column prop="sales_amount" label="销售额" width="120">
           <template #default="scope">{{ formatNumber(scope.row.sales_amount) }}</template>
         </el-table-column>
-        <el-table-column prop="cost_amount" label="生产成本" width="120">
+        <el-table-column prop="cost_amount" label="库存出库成本" width="130">
           <template #default="scope">{{ formatNumber(scope.row.cost_amount) }}</template>
+        </el-table-column>
+        <el-table-column prop="cost_status" label="成本状态" width="110">
+          <template #default="scope">{{ scope.row.cost_status === 'actual' ? '实际成本' : scope.row.cost_status === 'estimated' ? '暂估成本' : '待定价' }}</template>
         </el-table-column>
         <el-table-column prop="transport_fee" label="运输费" width="110">
           <template #default="scope">{{ formatNumber(scope.row.transport_fee) }}</template>

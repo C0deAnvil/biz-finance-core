@@ -1494,10 +1494,8 @@ def approve_inbound(
     ).unique().scalar_one()
     parent_task = db.execute(select(ProductionTask).where(ProductionTask.id == production_task.parent_task_id)).scalar_one_or_none() if production_task.parent_task_id else None
     if payload.decision == "approved":
-        total_cost = Decimal("0")
-        for usage in production_task.usages:
-            total_cost += Decimal(usage.actual_quantity or 0) * Decimal(usage.material.price if usage.material else 0)
-        unit_cost = total_cost / Decimal(production_task.produced_quantity or 1)
+        # 真实材料领用成本在库管执行入库时，从已过账的领料出库流水计算。
+        # 不再使用原料主数据的参考价格作为生产成本。
         create_inventory_operation_request(
             db,
             operation_type="inbound",
@@ -1514,7 +1512,7 @@ def approve_inbound(
                     "material_id": None,
                     "batch_no": quality_task.batch_no,
                     "quantity": float(production_task.produced_quantity),
-                    "unit_cost": float(unit_cost),
+                    "unit_cost": 0,
                 }
             ],
             remark=payload.remark,

@@ -138,7 +138,7 @@ METRIC_CALCULATION_LOGICS = {
     "sales_payment_type_distribution": "订单数 = 按客户订单 payment_type 分组后的订单记录数量。",
     "sales_receipt_stage_amount": "阶段回款金额 = Σ 回款记录 amount，按收款阶段分组。",
     "sales_return_type_amount": "退换货金额 = Σ 销售退换货 refund_amount，按退货/换货类型分组。",
-    "sales_cost_profit_monthly": "月收入 = Σ 订单金额；月成本 = Σ 明细成本；月利润 = 月收入 - 月成本 - 运包等费用。",
+    "sales_cost_profit_monthly": "按发货出库时间确认收入与库存成本；待定价的发货只计收入，不伪造利润。包装出库计入成本；运包费用沿用订单现有口径。",
     "purchase_order_status_count": "采购单数 = 按采购订单状态分组后的采购订单记录数量。",
     "purchase_amount_monthly": "月采购额 = Σ 当月采购订单 total_amount。",
     "purchase_top_suppliers_amount": "供应商采购额 = Σ 该供应商采购订单 total_amount，按金额倒序取 Top N。",
@@ -260,7 +260,7 @@ def _metric_definitions() -> list[AnalyticsMetricDefinition]:
             code="sales_cost_profit_monthly",
             name="销售收入/成本/利润月度对比",
             module="finance",
-            description="按月份对比客户订单收入、成本与利润，用于领导层观察经营质量。",
+            description="按实际发货月份对比收入、库存成本与利润；待定价出库单独提示。",
             departments=("sales", "finance"),
             default_chart_type="bar",
             supported_chart_types=("bar", "line", "area"),
@@ -1221,16 +1221,47 @@ def _sales_cost_profit_monthly(ctx: AnalyticsContext, metric: AnalyticsMetricDef
     months = _target_months(ctx.date_from, ctx.date_to)
     month_set = set(months)
     bucket: dict[date, dict[str, Decimal]] = defaultdict(lambda: {"sales": Decimal("0"), "cost": Decimal("0"), "profit": Decimal("0")})
-    for row in ctx.sales_orders:
-        report_at = _sales_report_datetime(row)
-        if not _date_in_range(report_at, ctx.date_from, ctx.date_to):
-            continue
-        month = _month_start(report_at)
-        if month not in month_set:
-            continue
-        bucket[month]["sales"] += Decimal(row.total_amount or 0)
-        bucket[month]["cost"] += Decimal(row.cost_amount or 0)
-        bucket[month]["profit"] += Decimal(row.profit_amount or 0)
+    orders = {row.id: row for row in ctx.sales_orders}
+    unknown_movements = 0
+    if orders:
+        movements = ctx.db.execute(select(InventoryTransaction).where(
+            InventoryTransaction.related_type == "sales_order",
+            InventoryTransaction.related_id.in_(list(orders)),
+            InventoryTransaction.transaction_type.in_(("sales_outbound", "sales_packaging_outbound")),
+        )).scalars().all()
+        for movement in movements:
+            if not _date_in_range(movement.created_at, ctx.date_from, ctx.date_to):
+                continue
+            month = _month_start(movement.created_at)
+            if month not in month_set:
+                continue
+            order = orders[movement.related_id]
+            shipped = -Decimal(movement.quantity or 0)
+            specific_line = next((item for item in order.items if item.id == movement.sales_order_item_id), None)
+            matching = [specific_line] if specific_line is not None else [item for item in order.items if item.product_id == movement.product_id]
+            if movement.transaction_type == "sales_outbound" and shipped > 0:
+                matching_quantity = sum((Decimal(item.quantity or 0) for item in matching), Decimal("0"))
+                total_quantity = sum((Decimal(item.quantity or 0) for item in order.items), Decimal("0"))
+                if matching_quantity > 0:
+                    line_revenue = sum((Decimal(item.total_amount or 0) for item in matching), Decimal("0"))
+                    bucket[month]["sales"] += shipped * line_revenue / matching_quantity
+                if total_quantity > 0:
+                    bucket[month]["sales"] += shipped * Decimal(order.transport_fee or 0) / total_quantity
+            if movement.cost_status == "unpriced":
+                unknown_movements += 1
+                continue
+            cost = -Decimal(movement.total_cost or 0)
+            bucket[month]["cost"] += cost
+            bucket[month]["profit"] += -cost
+            if movement.transaction_type == "sales_outbound" and shipped > 0:
+                matching_quantity = sum((Decimal(item.quantity or 0) for item in matching), Decimal("0"))
+                total_quantity = sum((Decimal(item.quantity or 0) for item in order.items), Decimal("0"))
+                if matching_quantity > 0:
+                    line_revenue = sum((Decimal(item.total_amount or 0) for item in matching), Decimal("0"))
+                    packaging_fee = sum((Decimal(item.packaging_fee or 0) for item in matching), Decimal("0"))
+                    bucket[month]["profit"] += shipped * (line_revenue - packaging_fee) / matching_quantity
+                # transport_fee is treated as a pass-through: order's existing profit
+                # calculation subtracts the same amount it includes in revenue.
     categories = [_month_bucket(month) for month in months]
     sales_values = [round(_float(bucket[month]["sales"]), 4) for month in months]
     cost_values = [round(_float(bucket[month]["cost"]), 4) for month in months]
@@ -1240,14 +1271,15 @@ def _sales_cost_profit_monthly(ctx: AnalyticsContext, metric: AnalyticsMetricDef
         categories,
         [
             {"name": "销售收入", "values": sales_values},
-            {"name": "销售成本", "values": cost_values},
-            {"name": "销售利润", "values": profit_values},
+            {"name": "已定价销售成本", "values": cost_values},
+            {"name": "已定价销售利润", "values": profit_values},
         ],
         chart_type=chart_type,
         summary=[
             {"label": "累计收入", "value": round(sum(sales_values), 4), "unit": "元"},
             {"label": "累计成本", "value": round(sum(cost_values), 4), "unit": "元"},
-            {"label": "累计利润", "value": round(sum(profit_values), 4), "unit": "元"},
+            {"label": "已定价利润", "value": round(sum(profit_values), 4), "unit": "元"},
+            {"label": "待定价出库笔数", "value": unknown_movements, "unit": "笔"},
         ],
         x_axis_label="月份",
         y_axis_label="金额（元）",
@@ -1330,7 +1362,7 @@ def _inventory_amount_by_warehouse(ctx: AnalyticsContext, metric: AnalyticsMetri
     bucket: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     for row in ctx.inventories:
         warehouse_name = row.warehouse.name if row.warehouse else "未命名仓库"
-        bucket[warehouse_name] += Decimal(row.quantity or 0) * Decimal(row.avg_unit_cost or 0)
+        bucket[warehouse_name] += Decimal(row.cost_balance or 0)
     rows = _distribution_rows(bucket)
     return _single_series_result(metric, rows, chart_type=chart_type, y_axis_label="库存金额（元）")
 
@@ -1338,8 +1370,8 @@ def _inventory_amount_by_warehouse(ctx: AnalyticsContext, metric: AnalyticsMetri
 def _inventory_item_type_amount(ctx: AnalyticsContext, metric: AnalyticsMetricDefinition, chart_type: str) -> dict:
     bucket: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     for row in ctx.inventories:
-        key = "产品库存" if row.product_id else "原料库存"
-        bucket[key] += Decimal(row.quantity or 0) * Decimal(row.avg_unit_cost or 0)
+        key = "产品库存" if row.product_id else ("原料库存" if row.material_id else "包装库存")
+        bucket[key] += Decimal(row.cost_balance or 0)
     rows = _distribution_rows(bucket)
     return _single_series_result(metric, rows, chart_type=chart_type, y_axis_label="库存金额（元）")
 
@@ -1391,40 +1423,33 @@ def _inventory_turnover_rate_monthly(ctx: AnalyticsContext, metric: AnalyticsMet
         return _multi_series_result(metric, [], [], chart_type=chart_type)
 
     earliest_month = _shift_month(target_months[0], -1)
-    latest_month = _month_start(date.today())
+    latest_month = max(_month_start(date.today()), target_months[-1])
     all_months = _month_sequence(earliest_month, latest_month)
     target_month_set = set(target_months)
     outbound_transaction_types = {"sales_outbound", "production_material_outbound"}
 
-    current_quantity_map: dict[tuple[int, int, int], Decimal] = {}
-    unit_cost_map: dict[tuple[int, int, int], Decimal] = {}
-    monthly_quantity_delta: dict[tuple[int, int, int], dict[date, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
+    current_balance_map: dict[tuple[int, int, int, int], Decimal] = {}
+    monthly_cost_delta: dict[tuple[int, int, int, int], dict[date, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
     outbound_cost_bucket: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
 
     for row in ctx.inventories:
-        key = (int(row.warehouse_id or 0), int(row.product_id or 0), int(row.material_id or 0))
-        current_quantity_map[key] = Decimal(row.quantity or 0)
-        unit_cost_map[key] = Decimal(row.avg_unit_cost or 0)
+        key = (int(row.warehouse_id or 0), int(row.product_id or 0), int(row.material_id or 0), int(row.packaging_config_id or 0))
+        current_balance_map[key] = Decimal(row.cost_balance or 0)
 
     for row in ctx.inventory_transactions:
-        key = (int(row.warehouse_id or 0), int(row.product_id or 0), int(row.material_id or 0))
+        key = (int(row.warehouse_id or 0), int(row.product_id or 0), int(row.material_id or 0), int(row.packaging_config_id or 0))
         month = _month_start(row.created_at)
-        monthly_quantity_delta[key][month] += Decimal(row.quantity or 0)
-        if key not in current_quantity_map:
-            current_quantity_map[key] = Decimal("0")
-        if key not in unit_cost_map or not unit_cost_map[key]:
-            unit_cost_map[key] = Decimal(row.unit_cost or 0)
+        monthly_cost_delta[key][month] += Decimal(row.total_cost or 0)
+        current_balance_map.setdefault(key, Decimal("0"))
         if month in target_month_set and row.transaction_type in outbound_transaction_types and Decimal(row.quantity or 0) < 0:
             outbound_cost_bucket[month] += abs(Decimal(row.total_cost or 0))
 
     closing_inventory_amount: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
-    for key, current_quantity in current_quantity_map.items():
-        quantity = Decimal(current_quantity or 0)
-        unit_cost = Decimal(unit_cost_map.get(key, Decimal("0")) or 0)
+    for key, current_balance in current_balance_map.items():
+        balance = Decimal(current_balance or 0)
         for month in reversed(all_months):
-            if quantity > 0 and unit_cost > 0:
-                closing_inventory_amount[month] += quantity * unit_cost
-            quantity = quantity - monthly_quantity_delta[key].get(month, Decimal("0"))
+            closing_inventory_amount[month] += balance
+            balance -= monthly_cost_delta[key].get(month, Decimal("0"))
 
     categories = []
     rate_values: list[float] = []

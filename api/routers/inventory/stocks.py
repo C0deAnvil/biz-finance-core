@@ -1,7 +1,8 @@
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -14,6 +15,7 @@ from models import (
     InventoryDispatchQueue,
     InventoryOperationRequest,
     InventoryTransaction,
+    InventoryCostAdjustment,
     Material,
     Product,
     ProductionMaterialUsage,
@@ -64,6 +66,87 @@ from api.routers.inventory._common import _apply_stock_take_submission, _assigne
 
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
+
+
+class InventoryCostAdjustmentPayload(BaseModel):
+    unit_cost: Decimal = Field(gt=0, max_digits=20, decimal_places=8)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@router.get("/stocks/{stock_id}/cost-adjustments")
+def list_inventory_cost_adjustments(
+    stock_id: int,
+    current_user: User = Depends(require_roles("finance", "finance_super", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    stock = db.get(Inventory, stock_id)
+    if stock is None:
+        raise HTTPException(status_code=404, detail="库存记录不存在")
+    rows = db.execute(
+        select(InventoryCostAdjustment, User)
+        .outerjoin(User, User.id == InventoryCostAdjustment.created_by_id)
+        .where(InventoryCostAdjustment.inventory_id == stock_id)
+        .order_by(InventoryCostAdjustment.created_at.desc(), InventoryCostAdjustment.id.desc())
+    ).all()
+    return api_response(data=[{
+        "id": adjustment.id,
+        "quantity": float(adjustment.quantity),
+        "old_unit_cost": float(adjustment.old_unit_cost),
+        "new_unit_cost": float(adjustment.new_unit_cost),
+        "old_cost_balance": float(adjustment.old_cost_balance),
+        "new_cost_balance": float(adjustment.new_cost_balance),
+        "old_cost_status": adjustment.old_cost_status,
+        "new_cost_status": adjustment.new_cost_status,
+        "reason": adjustment.reason,
+        "created_by_name": (user.full_name or user.username) if user else "系统",
+        "created_at": adjustment.created_at.isoformat() if adjustment.created_at else None,
+    } for adjustment, user in rows])
+
+
+@router.post("/stocks/{stock_id}/cost-adjustments")
+def adjust_inventory_cost(
+    stock_id: int,
+    payload: InventoryCostAdjustmentPayload,
+    current_user: User = Depends(require_roles("finance", "finance_super", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    stock = db.execute(select(Inventory).where(Inventory.id == stock_id).with_for_update()).scalar_one_or_none()
+    if stock is None:
+        raise HTTPException(status_code=404, detail="库存记录不存在")
+    quantity = Decimal(stock.quantity or 0)
+    if quantity <= 0:
+        raise HTTPException(status_code=409, detail="零库存无需设置期初成本；首次入库会自动形成移动均价")
+    if len(payload.reason.strip()) < 3:
+        raise HTTPException(status_code=422, detail="调整原因至少需要三个字")
+    unit_cost = Decimal(payload.unit_cost)
+    new_balance = (quantity * unit_cost).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if new_balance == Decimal(stock.cost_balance or 0) and stock.cost_status == "estimated":
+        raise HTTPException(status_code=409, detail="成本未发生变化")
+    adjustment = InventoryCostAdjustment(
+        inventory_id=stock.id,
+        quantity=quantity,
+        old_unit_cost=stock.avg_unit_cost or 0,
+        new_unit_cost=unit_cost,
+        old_cost_balance=stock.cost_balance or 0,
+        new_cost_balance=new_balance,
+        old_cost_status=stock.cost_status or "unpriced",
+        new_cost_status="estimated",
+        reason=payload.reason.strip(),
+        created_by_id=current_user.id,
+    )
+    db.add(adjustment)
+    stock.cost_balance = new_balance
+    stock.avg_unit_cost = (new_balance / quantity).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+    stock.cost_status = "estimated"
+    db.flush()
+    write_operation_log(
+        db, user_id=current_user.id, module="inventory", action="adjust_inventory_cost",
+        content=f"调整库存 #{stock.id} 单位成本；原因：{adjustment.reason}",
+        before_data={"unit_cost": str(adjustment.old_unit_cost), "cost_balance": str(adjustment.old_cost_balance)},
+        after_data={"unit_cost": str(stock.avg_unit_cost), "cost_balance": str(stock.cost_balance)},
+    )
+    db.commit()
+    return api_response(data={"id": adjustment.id, "inventory_id": stock.id, "avg_unit_cost": float(stock.avg_unit_cost), "inventory_amount": float(stock.cost_balance), "cost_status": stock.cost_status, "opening_cost_pending": bool(stock.opening_cost_pending)})
 
 
 @router.get("/stocks")
@@ -145,7 +228,7 @@ def list_stocks(
                         "available_quantity": 0,
                         # 该仓库尚无库存行:实有/占用/退货在途均为 0,补货可用量只剩采购在途
                         "expected_available_quantity": float(purchase_in_transit.get(stock_key(product_id=product.id), 0)),
-                        "avg_unit_cost": float(product.price or 0), "inventory_amount": 0,
+                        "avg_unit_cost": 0, "inventory_amount": 0, "cost_status": "unpriced",
                         "safety_stock_qty": float(product.safety_stock_qty or 0), "below_safety_stock": Decimal(product.safety_stock_qty or 0) > 0, "updated_at": None,
                     }
                 )
@@ -167,8 +250,9 @@ def list_stocks(
                     "available_quantity": 0,
                     # 同上:无库存行时补货可用量只剩采购在途
                     "expected_available_quantity": float(purchase_in_transit.get(stock_key(material_id=material.id), 0)),
-                    "avg_unit_cost": float(material.price or 0),
+                    "avg_unit_cost": 0,
                     "inventory_amount": 0,
+                    "cost_status": "unpriced",
                     "safety_stock_qty": float(material.safety_stock_qty or 0),
                     "below_safety_stock": Decimal(material.safety_stock_qty or 0) > 0,
                     "updated_at": None,
