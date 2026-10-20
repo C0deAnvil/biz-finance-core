@@ -42,7 +42,7 @@ from schemas.production import FulfillmentDemandManualCreateRequest, SalesOrderR
 from schemas.sales import PlacementActionRequest, QueueActionRequest, SalesShipmentRequest
 from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, sync_low_stock_alerts, write_operation_log
 from services.replenishment_service import create_manual_fulfillment_demand, ensure_fulfillment_demand_routing, resolve_demand_progress
-from services.display import calculate_bag_count, clean_display_text, get_inventory_packaging_config, inventory_request_category_label, status_label, transaction_type_label
+from services.display import calculate_bag_count, clean_display_text, get_inventory_packaging_config, inventory_request_category_label, product_specification_text, status_label, transaction_type_label
 from services.display import payment_type_label
 from services.organization import get_inventory_scope_warehouse_ids, user_in_scope, warehouse_in_scope
 from services.workflow import (
@@ -681,7 +681,7 @@ def _enrich_finance_edit_snapshot_data(db: Session, data: dict, order: SalesOrde
         if product is not None:
             enriched.setdefault("product_name", product.name)
             enriched.setdefault("product_code", product.product_code)
-            enriched.setdefault("display_specification", product.specification)
+            enriched.setdefault("display_specification", product_specification_text(product.specification))
         enriched_items.append(enriched)
     result["items"] = enriched_items
     return _redact_inventory_finance_edit_money(result)

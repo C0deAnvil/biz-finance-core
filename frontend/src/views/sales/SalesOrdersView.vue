@@ -234,10 +234,10 @@
           <el-button v-if="canEditOrderForm" size="small" @click="addItem">新增明细</el-button>
         </div>
         <el-table :data="form.items" border>
-          <el-table-column label="产品编号 - 名称 - 规格" min-width="340">
+          <el-table-column label="产品编号 - 名称 - 产品规格/等级" min-width="380">
             <template #default="scope">
               <el-select v-model="scope.row.product_id" filterable style="width: 100%" :disabled="!canEditOrderForm" @change="() => handleProductSelect(scope.row)">
-                <el-option v-for="item in products" :key="item.id" :label="[item.product_code, item.name, item.specification || '无规格'].join(' - ')" :value="item.id" />
+                <el-option v-for="item in products" :key="item.id" :label="[item.product_code, item.name, item.specification || '未设置产品规格'].join(' - ')" :value="item.id" />
               </el-select>
             </template>
           </el-table-column>
@@ -253,8 +253,11 @@
               </el-select>
             </template>
           </el-table-column>
-          <el-table-column label="规格" width="130">
-            <template #default="scope">{{ resolvePackagingRow(scope.row)?.packaging_name || productSpec(scope.row.product_id) }}</template>
+          <el-table-column label="产品规格/等级" width="150">
+            <template #default="scope">{{ productSpec(scope.row.product_id) }}</template>
+          </el-table-column>
+          <el-table-column label="包装规格" width="130">
+            <template #default="scope">{{ resolvePackagingRow(scope.row)?.kg_per_bag ? `${formatNumber(resolvePackagingRow(scope.row).kg_per_bag)} kg/袋` : '-' }}</template>
           </el-table-column>
           <el-table-column label="数量(kg)" width="140">
             <template #default="scope"><el-input-number v-model="scope.row.quantity" :min="0.0001" :precision="4" style="width: 100%" :disabled="!canEditOrderForm" /></template>
@@ -333,7 +336,7 @@
       <el-table v-if="detail?.finance_edit_snapshot" :data="detail.finance_edit_snapshot.before_data?.items || []" border class="mt-16">
         <el-table-column prop="product_name" label="商品" min-width="180" />
         <el-table-column prop="packaging_name" label="包装" min-width="140" />
-        <el-table-column prop="display_specification" label="规格" width="130" />
+        <el-table-column prop="display_specification" label="产品规格/等级" width="150" />
         <el-table-column prop="quantity" label="数量" width="110">
           <template #default="scope">{{ formatNumber(scope.row.quantity) }}</template>
         </el-table-column>
@@ -403,7 +406,7 @@
       <el-table :data="detail?.items || []" stripe class="mt-16">
         <el-table-column prop="product_name" label="产品" />
         <el-table-column prop="packaging_name" label="包装" width="140" />
-        <el-table-column prop="display_specification" label="规格" width="130" />
+        <el-table-column prop="display_specification" label="产品规格/等级" width="150" />
         <el-table-column prop="quantity" label="数量">
           <template #default="scope">{{ formatNumber(scope.row.quantity) }}</template>
         </el-table-column>

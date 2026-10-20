@@ -291,6 +291,18 @@ def packaging_spec_text(kg_per_bag: Decimal | float | int | None) -> str:
     return f"{format(amount, 'f')} kg/袋"
 
 
+_LEGACY_PRODUCT_PACKAGING_SPEC = re.compile(
+    r"^\s*\d+(?:\.\d+)?\s*(?:kg|公斤|千克)\s*/\s*(?:袋|包|桶)\s*$",
+    re.IGNORECASE,
+)
+
+
+def product_specification_text(value: str | None) -> str | None:
+    """旧产品规格曾被默认包装重量占用；不要把它当成产品等级展示。"""
+    text = (value or "").strip()
+    return text if text and not _LEGACY_PRODUCT_PACKAGING_SPEC.fullmatch(text) else None
+
+
 _PACKAGING_SPEC_NAME_PATTERN = re.compile(
     r"^\s*\d+(?:\.\d+)?\s*(?:kg|KG|公斤|千克)\s*/?\s*(?:袋|包|桶)?\s*$"
 )
@@ -521,7 +533,7 @@ def _repair_product_data(db: Session):
             )
         elif packaging_name_needs_repair(config.packaging_name):
             config.packaging_name = get_global_packaging_name(db, config.kg_per_bag) or config.packaging_name
-        row.specification = packaging_spec_text(config.kg_per_bag)
+        # 产品规格描述等级/纯度，默认包装维护在 PackagingConfig，不能覆盖它。
 
 
 def _repair_material_data(db: Session):

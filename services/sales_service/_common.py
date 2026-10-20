@@ -34,7 +34,7 @@ from models import (
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
-from services.display import calculate_bag_count, get_default_packaging_config, get_inventory_packaging_config, packaging_spec_text, payment_type_label
+from services.display import calculate_bag_count, get_default_packaging_config, get_inventory_packaging_config, payment_type_label, product_specification_text
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
@@ -80,7 +80,7 @@ from models import (
 from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
-from services.display import calculate_bag_count, get_default_packaging_config, get_inventory_packaging_config, packaging_spec_text, payment_type_label
+from services.display import calculate_bag_count, get_default_packaging_config, get_inventory_packaging_config, payment_type_label, product_specification_text
 from services.quality_workflow import create_return_reinspection_quality_task
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
@@ -296,7 +296,7 @@ def _build_order_items(
             bag_count=bag_count,
             packaging_unit_price=packaging_unit_price,
             packaging_fee=packaging_fee,
-            display_specification=packaging_spec_text(packaging.kg_per_bag) if packaging else product.specification,
+            display_specification=product_specification_text(product.specification),
             remark=remark,
             shipped_quantity=Decimal("0"),
         )

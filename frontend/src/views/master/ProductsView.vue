@@ -19,12 +19,14 @@
     <el-table :data="pagedRows" stripe>
       <el-table-column prop="product_code" label="产品编码" width="140" />
       <el-table-column prop="name" label="产品名称" min-width="180" />
-      <el-table-column prop="specification" label="规格" width="120" />
+      <el-table-column prop="specification" label="产品规格/等级" min-width="150">
+        <template #default="scope">{{ scope.row.specification || '未设置' }}</template>
+      </el-table-column>
       <el-table-column label="包装名称" min-width="120">
         <template #default="scope">{{ scope.row.packaging?.packaging_name || '-' }}</template>
       </el-table-column>
-      <el-table-column label="kg/袋" width="100">
-        <template #default="scope">{{ scope.row.packaging?.kg_per_bag || '-' }}</template>
+      <el-table-column prop="packaging_specification" label="包装规格" width="130">
+        <template #default="scope">{{ scope.row.packaging_specification || '-' }}</template>
       </el-table-column>
       <el-table-column label="成品仓可用库存" width="150">
         <template #default="scope">{{ formatNumber(scope.row.stock?.available_quantity) }}</template>
@@ -55,10 +57,19 @@
     />
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑产品' : '新增产品'" width="720px">
-      <el-form :model="form" label-width="100px">
+      <el-form :model="form" label-width="130px">
         <el-row :gutter="12">
           <el-col :span="12"><el-form-item label="产品编码"><el-input v-model="form.product_code" :disabled="!editingId" :placeholder="editingId ? '' : '保存时自动生成（CP 开头）'" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="产品名称"><el-input v-model="form.name" /></el-form-item></el-col>
+        </el-row>
+        <el-row :gutter="12">
+          <el-col :span="24">
+            <el-form-item label="产品规格/等级">
+              <el-select v-model="form.specification" filterable allow-create default-first-option clearable placeholder="选择等级或输入其他规格" style="width: 100%">
+                <el-option v-for="item in specificationOptions" :key="item" :label="item" :value="item" />
+              </el-select>
+            </el-form-item>
+          </el-col>
         </el-row>
         <el-row :gutter="12">
           <el-col :span="12">
@@ -68,7 +79,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12"><el-form-item label="kg/袋"><el-input-number v-model="form.kg_per_bag" :min="0.01" :precision="2" style="width: 100%" disabled /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="包装规格(kg/袋)"><el-input-number v-model="form.kg_per_bag" :min="0.01" :precision="2" style="width: 100%" disabled /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
           <el-col :span="12"><el-form-item label="标准单价"><el-input-number v-model="form.price" :min="0" :precision="4" style="width: 100%" /></el-form-item></el-col>
@@ -147,9 +158,11 @@ const pagination = reactive({ page: 1, pageSize: 10 })
 const total = ref(0)
 const pageSizes = [10, 20, 50, 100]
 const pagedRows = rows
+const specificationOptions = ['工业级', '农业级', '食品级', 'GR（优级纯）', 'AR（分析纯）', 'CR（化学纯）', 'LR（实验室纯）']
 const form = reactive({
   product_code: '',
   name: '',
+  specification: '',
   packaging_name: '25kg编织袋',
   kg_per_bag: 25,
   packaging_unit_price: 0,
@@ -165,6 +178,7 @@ function resetForm() {
   Object.assign(form, {
     product_code: '',
     name: '',
+    specification: '',
     packaging_name: '25kg编织袋',
     kg_per_bag: 25,
     packaging_unit_price: 0,
@@ -187,6 +201,7 @@ function openEdit(row) {
   Object.assign(form, {
     product_code: row.product_code,
     name: row.name,
+    specification: row.specification || '',
     packaging_name: row.packaging?.packaging_name || '25kg编织袋',
     kg_per_bag: Number(row.packaging?.kg_per_bag || 25),
     packaging_unit_price: Number(row.packaging?.unit_price || 0),
@@ -268,7 +283,7 @@ async function savePackaging(entityId) {
 async function submit() {
   const payload = {
     name: form.name,
-    specification: `${form.kg_per_bag} kg/袋`,
+    specification: form.specification?.trim() || null,
     unit: 'kg',
     price: form.price,
     fulfillment_mode: form.fulfillment_mode,

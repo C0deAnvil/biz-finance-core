@@ -12,7 +12,7 @@ from models import Customer, DocumentRelation, DocumentStatusSnapshot, order_typ
 from responses import api_response
 from services.financial_accounts import account_label, settlement_account_fields
 from schemas.sales import SalesApprovalRequest, SalesFinanceEditConfirmRequest, SalesMergedReceiptRequestCreate, SalesOrderDraftPayload, SalesOrderFinanceEditRequest, SalesOrderSubmitRequest, SalesOrderUpdate, SalesPriceApprovalRequest, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate
-from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, return_type_label, status_label
+from services.display import clean_display_text, format_legacy_remark, payment_stage_label, payment_type_label, product_specification_text, return_type_label, status_label
 from services.organization import get_scoped_user_ids, user_in_scope
 from services.document_status import (
     get_document_status_history,
@@ -124,7 +124,7 @@ def _enrich_finance_edit_snapshot_data(db: Session, data: dict, order: SalesOrde
         if product is not None:
             enriched.setdefault("product_name", product.name)
             enriched.setdefault("product_code", product.product_code)
-            enriched.setdefault("display_specification", product.specification)
+            enriched.setdefault("display_specification", product_specification_text(product.specification))
         quantity = Decimal(str(enriched.get("quantity") or 0))
         unit_price = Decimal(str(enriched.get("unit_price") or 0))
         if enriched.get("total_amount") is None:

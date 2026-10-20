@@ -41,7 +41,7 @@ from responses import api_response
 from schemas.master_data import CustomerComplaintCreate, CustomerComplaintUpdate, CustomerCreate, CustomerTransferCreate, MaterialCreate, PackagingConfigCreate, ProductCreate, StandardPriceUpdate, SupplierCatalogItemInput, SupplierCreate
 from services.core import _role_user_ids, create_notification, create_todo, next_business_no, write_operation_log
 from services.inventory_availability import placeable_of, replenishment_available_of, purchase_in_transit_map, stock_key
-from services.display import get_global_packaging_name, packaging_name_needs_repair, packaging_spec_text, upsert_default_packaging_config
+from services.display import get_global_packaging_name, packaging_name_needs_repair, packaging_spec_text, product_specification_text, upsert_default_packaging_config
 from services.customer_activity import register_customer_transfer
 from services.organization import get_department_path_names
 from services.tag_catalog import (
@@ -1078,7 +1078,8 @@ def list_products(
                 "price": float(row.price),
                 "fulfillment_mode": row.fulfillment_mode,
                 "fulfillment_mode_label": "生产型" if row.fulfillment_mode == "production" else "贸易型",
-                "specification": packaging_spec_text(packaging_map[row.id].kg_per_bag) if row.id in packaging_map else row.specification,
+                "specification": product_specification_text(row.specification),
+                "packaging_specification": packaging_spec_text(packaging_map[row.id].kg_per_bag) if row.id in packaging_map else None,
                 "unit": row.unit,
                 "safety_stock_qty": float(row.safety_stock_qty),
                 "purchase_threshold_qty": float(row.purchase_threshold_qty),
@@ -1115,7 +1116,7 @@ def list_standard_prices(current_user: User = Depends(get_current_user), db: Ses
                 "product_id": row.id,
                 "product_code": row.product_code,
                 "product_name": row.name,
-                "specification": row.specification,
+                "specification": product_specification_text(row.specification),
                 "unit": row.unit,
                 "standard_price": float(row.price or 0),
                 "is_active": row.is_active,
@@ -1488,7 +1489,8 @@ def upsert_packaging_config(
         unit_price=payload.unit_price,
         is_active=payload.is_active,
     )
-    entity.specification = packaging_spec_text(row.kg_per_bag)
+    if payload.entity_type == "material":
+        entity.specification = packaging_spec_text(row.kg_per_bag)
     entity.unit = "kg"
     db.commit()
     return api_response(data=_serialize_packaging(row))
@@ -1525,7 +1527,8 @@ def update_packaging_config(
     row.is_default = payload.is_default
     row.is_active = payload.is_active
     if entity is not None:
-        entity.specification = packaging_spec_text(row.kg_per_bag)
+        if payload.entity_type == "material":
+            entity.specification = packaging_spec_text(row.kg_per_bag)
         entity.unit = "kg"
     db.commit()
     return api_response(data=_serialize_packaging(row))
