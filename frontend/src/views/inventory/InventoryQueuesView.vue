@@ -48,6 +48,27 @@
                 <el-tag :type="stockStatusTag(scope.row.stock_status)" effect="dark" size="small">{{ stockStatusLabel(scope.row.stock_status) }}</el-tag>
               </template>
             </el-table-column>
+            <el-table-column label="打印状态" width="190">
+              <template #default="scope">
+                <el-tag :type="placementPrintStatusMeta(scope.row).type" size="small">
+                  {{ placementPrintStatusMeta(scope.row).label }}
+                </el-tag>
+                <el-button
+                  v-if="placementPrintStatus(scope.row) === 'submitted'"
+                  class="queue-confirm-print-action"
+                  size="small"
+                  type="success"
+                  link
+                  @click="confirmAutomaticPrint(scope.row)"
+                >确认出纸</el-button>
+                <div v-if="scope.row.placement_printed_at" class="queue-print-status-detail">
+                  {{ placementPrintMethodLabel(scope.row.placement_print_method) }} · {{ formatDateTime(scope.row.placement_printed_at) }}
+                  <span v-if="Number(scope.row.placement_print_count || 0) > 1">（{{ scope.row.placement_print_count }}次）</span>
+                </div>
+                <div v-else-if="placementPrintStatus(scope.row) === 'submitted'" class="queue-print-status-detail">设备已提交，等待核对</div>
+                <div v-else-if="placementPrintStatus(scope.row) === 'failed'" class="queue-print-status-detail">请检查打印机或重新打印</div>
+              </template>
+            </el-table-column>
             <el-table-column label="期望发货日期" width="130">
               <template #default="scope">{{ scope.row.expected_delivery_date || '-' }}</template>
             </el-table-column>
@@ -553,8 +574,77 @@ import { formatDateTime, formatNumber, statusLabel, statusType } from '../../uti
 
 const route = useRoute()
 const queues = reactive({ placement: [], shipment: [], salesOrders: [] })
+function placementPrintStatus(row) {
+  return row?.placement_print_status || (row?.placement_printed ? 'printed' : 'unprinted')
+}
+function placementPrintStatusMeta(row) {
+  return {
+    unprinted: { label: '未打印', type: 'info' },
+    printing: { label: '打印中', type: 'warning' },
+    submitted: { label: '已提交待确认', type: 'warning' },
+    failed: { label: '打印异常', type: 'danger' },
+    printed: { label: '已打印', type: 'success' }
+  }[placementPrintStatus(row)] || { label: '未打印', type: 'info' }
+}
+function placementPrintMethodLabel(method) {
+  if (method === 'manual') return '手动打印'
+  if (method === 'automatic_confirmed') return '自动提交·人工确认'
+  return '自动打印'
+}
 async function handlePrintPlacement(row) {
-  try { await printOrderPdf('placement', row.order_id) } catch (error) { ElMessage.error(error.message || '打印置货单失败') }
+  try {
+    await printOrderPdf('placement', row.order_id)
+  } catch (error) {
+    ElMessage.error(error.message || '打印置货单失败')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '请确认打印机已经实际出纸。确认后该置货单会标记为“已打印”；如果取消或没有出纸，请不要确认。',
+      '确认手动打印结果',
+      { confirmButtonText: '已成功打印', cancelButtonText: '未打印', type: 'warning' }
+    )
+  } catch {
+    ElMessage.info('未标记打印状态，可稍后重新打印')
+    return
+  }
+  try {
+    const result = await post(`/api/printing/placement-orders/${row.order_id}/mark-printed`, { source: 'manual' })
+    Object.assign(row, {
+      placement_printed: true,
+      placement_print_status: 'printed',
+      placement_printed_at: result.printed_at,
+      placement_print_method: result.print_method,
+      placement_print_count: result.print_count
+    })
+    ElMessage.success('已记录为手动打印')
+  } catch (error) {
+    ElMessage.error(error.message || '打印状态记录失败，请刷新后重试')
+  }
+}
+async function confirmAutomaticPrint(row) {
+  try {
+    await ElMessageBox.confirm(
+      `请确认置货单 ${row.order_no || ''} 已经实际出纸。只有亲眼看到纸张后才能确认。`,
+      '确认自动打印结果',
+      { confirmButtonText: '确认已出纸', cancelButtonText: '尚未出纸', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const result = await post(`/api/printing/placement-orders/${row.order_id}/mark-printed`, { source: 'automatic_confirmed' })
+    Object.assign(row, {
+      placement_printed: true,
+      placement_print_status: 'printed',
+      placement_printed_at: result.printed_at,
+      placement_print_method: result.print_method,
+      placement_print_count: result.print_count
+    })
+    ElMessage.success('已确认实际出纸')
+  } catch (error) {
+    ElMessage.error(error.message || '确认打印状态失败，请刷新后重试')
+  }
 }
 async function handleDownloadPlacement(row) {
   try { await downloadOrderPdf('placement', row.order_id, row.order_no) } catch (error) { ElMessage.error(error.message || '下载置货单失败') }
@@ -1100,6 +1190,8 @@ watch(() => [route.query.focusId, route.query.focusType], () => {
 .queue-action-line { display: flex; align-items: center; justify-content: center; gap: 6px; }
 .queue-action-line :deep(.el-button + .el-button) { margin-left: 0; }
 .queue-print-action { min-width: 0; padding: 4px 8px; font-weight: 400; }
+.queue-confirm-print-action { margin-left: 4px; padding: 0 2px; vertical-align: middle; }
+.queue-print-status-detail { margin-top: 4px; color: #909399; font-size: 12px; line-height: 1.35; white-space: normal; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
 .shipment-head { margin-bottom: 16px; color: #303133; }
 

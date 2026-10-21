@@ -26,7 +26,8 @@ def test_local_pdf_submission_uses_configured_printer_without_a_shell(tmp_path, 
     pdf.write_bytes(b"%PDF-1.4\n")
     monkeypatch.setenv("YECAI_PRINT_COMMAND_JSON", json.dumps(["printer.exe", "-silent", "{file}"]))
     with patch.object(agent.subprocess, "run") as run:
-        agent.submit_pdf_to_printer(pdf)
+        result = agent.submit_pdf_to_printer(pdf)
+    assert result == "submitted_only"
     run.assert_called_once_with(["printer.exe", "-silent", str(pdf)], check=True, timeout=180)
 
 
@@ -63,3 +64,51 @@ def test_agent_rejects_renamed_sumatra_installer(tmp_path, monkeypatch):
     with patch.object(agent.subprocess, "run") as run, pytest.raises(RuntimeError, match="改名后的安装包"):
         agent.submit_pdf_to_printer(pdf)
     run.assert_not_called()
+
+
+def test_startup_claim_requests_failed_job_recovery():
+    with patch.object(agent, "request", return_value=None) as request:
+        assert agent.run_once(recover_failed=True) is None
+    request.assert_called_once_with(
+        "/api/printing/agent/jobs/claim",
+        method="POST",
+        data={"recover_failed": True},
+    )
+
+
+@pytest.mark.parametrize("status,message", [
+    ("PaperOut", "缺纸"),
+    ("Offline", "离线"),
+    ("Error, UserIntervention", "错误"),
+    ("Jammed", "卡纸"),
+])
+def test_printer_problem_explains_windows_spooler_failure(status, message):
+    assert message in agent._printer_problem(status)
+
+
+def test_run_once_stops_backlog_when_driver_cannot_verify_output():
+    job = {"id": 7, "order_id": 8, "lease_token": "lease", "pdf_path": "/pdf"}
+    with patch.object(agent, "request", side_effect=[job, {"status": "submitted"}]) as request, \
+            patch.object(agent, "print_job", return_value="submitted_only"):
+        assert agent.run_once() is False
+    assert request.call_args_list[-1].kwargs["data"]["verification"] == "submitted_only"
+
+
+def test_spooler_verification_waits_until_observed_job_leaves_queue():
+    snapshots = [
+        {"printer_status": "", "jobs": {91: {"document": "placement.pdf", "status": "Printing"}}},
+        {"printer_status": "", "jobs": {}},
+    ]
+    with patch.object(agent, "_windows_spooler_snapshot", side_effect=snapshots), \
+            patch.object(agent.time, "sleep"):
+        assert agent._wait_for_windows_spooler("Test Printer", set()) == "spooler_completed"
+
+
+def test_spooler_verification_rejects_paper_out():
+    snapshot = {
+        "printer_status": "PaperOut",
+        "jobs": {91: {"document": "placement.pdf", "status": "PaperOut,UserIntervention"}},
+    }
+    with patch.object(agent, "_windows_spooler_snapshot", return_value=snapshot), \
+            pytest.raises(RuntimeError, match="缺纸"):
+        agent._wait_for_windows_spooler("Test Printer", set())

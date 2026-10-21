@@ -976,8 +976,14 @@ class InventoryDispatchQueue(TimestampMixin, Base):
     placement_marked_at = Column(DateTime, nullable=True)
     shipment_marked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     shipment_marked_at = Column(DateTime, nullable=True)
+    placement_printed_at = Column(DateTime, nullable=True, index=True)
+    placement_print_status = Column(String(20), nullable=False, default="unprinted", server_default="unprinted")
+    placement_print_method = Column(String(20), nullable=True)
+    placement_printed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    placement_print_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
 
     sales_order = relationship("SalesOrder")
+    placement_printed_by = relationship("User", foreign_keys=[placement_printed_by_id])
 
 
 class PlacementPrintAgent(TimestampMixin, Base):

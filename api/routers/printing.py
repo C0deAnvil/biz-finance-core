@@ -31,6 +31,15 @@ class JobResult(BaseModel):
     lease_token: str
     success: bool
     error: str | None = Field(default=None, max_length=500)
+    verification: str | None = Field(default=None, max_length=40)
+
+
+class JobClaim(BaseModel):
+    recover_failed: bool = False
+
+
+class PrintMark(BaseModel):
+    source: str = Field(default="manual", pattern="^(manual|automatic_confirmed)$")
 
 
 def _order(db: Session, order_id: int) -> SalesOrder:
@@ -142,14 +151,15 @@ def revoke_agent(agent_id: int, current_user: User = Depends(_system_admin), db:
 
 
 def _sync_new_jobs(db: Session, agent: PlacementPrintAgent) -> None:
-    # The first device registration is the activation boundary. Later replacement
-    # devices still catch jobs created while no device was active.
+    # The first registered device is the safe activation boundary: recover every
+    # unprinted queue after activation, but never mass-print unknown legacy work.
     activated_at = db.scalar(select(func.min(PlacementPrintAgent.created_at))) or agent.created_at
     queue_ids = db.scalars(
         select(InventoryDispatchQueue.id)
         .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
         .where(
             InventoryDispatchQueue.created_at >= activated_at,
+            InventoryDispatchQueue.placement_printed_at.is_(None),
             InventoryDispatchQueue.placement_status == "pending",
             SalesOrder.status.in_(["pending_confirmation", "pending_shipment"]),
             ~InventoryDispatchQueue.id.in_(select(PlacementPrintJob.queue_id)),
@@ -169,9 +179,26 @@ def _sync_new_jobs(db: Session, agent: PlacementPrintAgent) -> None:
 
 
 @router.post("/agent/jobs/claim")
-def claim_job(request: Request, x_print_agent_token: str | None = Header(default=None), db: Session = Depends(get_db)):
+def claim_job(payload: JobClaim, request: Request, x_print_agent_token: str | None = Header(default=None), db: Session = Depends(get_db)):
     agent = _agent(db, x_print_agent_token, request)
     _sync_new_jobs(db, agent)
+    if payload.recover_failed:
+        failed_jobs = db.scalars(
+            select(PlacementPrintJob)
+            .join(InventoryDispatchQueue, InventoryDispatchQueue.id == PlacementPrintJob.queue_id)
+            .where(
+                PlacementPrintJob.status == "failed",
+                InventoryDispatchQueue.placement_printed_at.is_(None),
+                InventoryDispatchQueue.placement_status == "pending",
+            )
+        ).all()
+        for failed_job in failed_jobs:
+            failed_job.status = "pending"
+            failed_job.attempts = 0
+            failed_job.last_error = None
+            failed_job.lease_token_hash = None
+            failed_job.lease_until = None
+        db.commit()
     now = now_local()
     job = db.execute(
         select(PlacementPrintJob)
@@ -196,6 +223,7 @@ def claim_job(request: Request, x_print_agent_token: str | None = Header(default
     job.claimed_by_agent_id = agent.id
     job.lease_token_hash = sha256(lease_token.encode()).hexdigest()
     job.lease_until = now + timedelta(minutes=5)
+    job.queue.placement_print_status = "printing"
     db.commit()
     order_id = db.scalar(select(InventoryDispatchQueue.sales_order_id).where(InventoryDispatchQueue.id == job.queue_id))
     return api_response(data={"id": job.id, "order_id": order_id, "lease_token": lease_token, "pdf_path": f"/api/printing/agent/jobs/{job.id}/pdf"})
@@ -220,13 +248,73 @@ def agent_job_pdf(job_id: int, request: Request, x_print_agent_token: str | None
 def complete_job(job_id: int, payload: JobResult, request: Request, x_print_agent_token: str | None = Header(default=None), db: Session = Depends(get_db)):
     agent = _agent(db, x_print_agent_token, request)
     job = _leased_job(db, job_id, agent, payload.lease_token)
-    job.status = "submitted" if payload.success else "failed" if job.attempts >= 5 else "pending"
-    job.printed_at = now_local() if payload.success else None
+    verified = payload.success and payload.verification == "spooler_completed"
+    job.status = "printed" if verified else "submitted" if payload.success else "failed" if job.attempts >= 5 else "pending"
+    job.printed_at = now_local() if verified else None
     job.last_error = None if payload.success else (payload.error or "打印机返回失败")[:500]
     job.lease_token_hash = None
     job.lease_until = None
+    if verified:
+        job.queue.placement_printed_at = job.printed_at
+        job.queue.placement_print_status = "printed"
+        job.queue.placement_print_method = "automatic"
+        job.queue.placement_printed_by_id = None
+        job.queue.placement_print_count = int(job.queue.placement_print_count or 0) + 1
+    elif payload.success:
+        # Some drivers acknowledge spooling but expose no reliable completion state.
+        # Never call this "printed" until a human confirms actual paper output.
+        job.queue.placement_print_status = "submitted"
+        job.queue.placement_print_method = "automatic"
+    else:
+        job.queue.placement_print_status = "failed" if job.status == "failed" else "unprinted"
+        job.queue.placement_print_method = "automatic"
     db.commit()
     return api_response(data={"id": job.id, "status": job.status})
+
+
+@router.post("/placement-orders/{order_id}/mark-printed")
+def mark_placement_order_printed(
+    order_id: int,
+    payload: PrintMark,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "manager", "chairman")),
+    db: Session = Depends(get_db),
+):
+    queue = db.scalar(
+        select(InventoryDispatchQueue)
+        .where(InventoryDispatchQueue.sales_order_id == order_id)
+        .with_for_update()
+    )
+    if queue is None:
+        raise HTTPException(status_code=404, detail="该订单没有置货需求")
+    now = now_local()
+    job = db.scalar(select(PlacementPrintJob).where(PlacementPrintJob.queue_id == queue.id).with_for_update())
+    if job and job.status == "leased" and job.lease_until and job.lease_until > now:
+        raise HTTPException(status_code=409, detail="自动打印设备正在处理这张置货单，请稍后刷新状态")
+    if job is None:
+        job = PlacementPrintJob(
+            queue_id=queue.id,
+            status="printed" if payload.source == "automatic_confirmed" else "manual_printed",
+            printed_at=now,
+        )
+        db.add(job)
+    else:
+        job.status = "printed" if payload.source == "automatic_confirmed" else "manual_printed"
+        job.printed_at = now
+        job.last_error = None
+        job.lease_token_hash = None
+        job.lease_until = None
+    queue.placement_printed_at = now
+    queue.placement_print_status = "printed"
+    queue.placement_print_method = payload.source
+    queue.placement_printed_by_id = current_user.id
+    queue.placement_print_count = int(queue.placement_print_count or 0) + 1
+    db.commit()
+    return api_response(data={
+        "printed": True,
+        "printed_at": now.isoformat(),
+        "print_method": payload.source,
+        "print_count": queue.placement_print_count,
+    }, msg="已确认实际出纸" if payload.source == "automatic_confirmed" else "已记录为手动打印")
 
 
 @router.get("/jobs")
@@ -242,10 +330,14 @@ def retry_job(job_id: int, current_user: User = Depends(_system_admin), db: Sess
         raise HTTPException(status_code=404, detail="打印任务不存在")
     if row.status == "leased" and row.lease_until and row.lease_until > now_local():
         raise HTTPException(status_code=409, detail="打印任务仍由设备处理")
+    if row.status not in {"failed", "submitted"}:
+        raise HTTPException(status_code=409, detail="仅打印异常或已提交待确认的任务可以重新排队")
     row.status = "pending"
     row.attempts = 0
     row.lease_token_hash = None
     row.lease_until = None
+    row.queue.placement_print_status = "unprinted"
+    row.queue.placement_printed_at = None
     db.commit()
     return api_response(msg="打印任务已重新排队")
 

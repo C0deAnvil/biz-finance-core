@@ -30,18 +30,21 @@ export async function printOrderPdf(kind, orderId) {
   const url = URL.createObjectURL(await loadPdf(path))
   const frame = document.createElement('iframe')
   frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'
-  frame.onload = () => {
-    window.setTimeout(() => {
-      try {
-        frame.contentWindow?.focus()
-        frame.contentWindow?.print()
-      } catch {
-        window.open(url, '_blank', 'noopener')
-      }
-    }, 300)
-  }
-  frame.src = url
-  document.body.appendChild(frame)
+  await new Promise((resolve) => {
+    frame.onload = () => {
+      window.setTimeout(() => {
+        try {
+          frame.contentWindow?.focus()
+          frame.contentWindow?.print()
+        } catch {
+          window.open(url, '_blank', 'noopener')
+        }
+        resolve()
+      }, 300)
+    }
+    frame.src = url
+    document.body.appendChild(frame)
+  })
   window.setTimeout(() => {
     frame.remove()
     URL.revokeObjectURL(url)

@@ -14,15 +14,15 @@
       </el-table>
     </PageSection>
 
-    <PageSection title="自动打印任务" description="成功表示任务已提交到设备打印程序；打印机实际出纸仍需现场核对。">
+    <PageSection title="自动打印任务" description="只有 Windows 打印队列确认完成后才记为已打印；驱动无法确认时显示待人工确认。">
       <el-table :data="jobs" stripe>
         <el-table-column prop="id" label="任务编号" width="110" />
         <el-table-column prop="order_id" label="订单 ID" width="110" />
-        <el-table-column prop="status" label="状态" width="110" />
+        <el-table-column label="状态" width="150"><template #default="scope"><el-tag :type="printJobStatus(scope.row.status).type">{{ printJobStatus(scope.row.status).label }}</el-tag></template></el-table-column>
         <el-table-column prop="attempts" label="尝试次数" width="100" />
         <el-table-column prop="last_error" label="错误" min-width="260" show-overflow-tooltip />
         <el-table-column label="创建时间" width="190"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="120"><template #default="scope"><el-button v-if="scope.row.status === 'failed'" text type="primary" @click="retry(scope.row)">重试</el-button></template></el-table-column>
+        <el-table-column label="操作" width="140"><template #default="scope"><el-button v-if="['failed', 'submitted'].includes(scope.row.status)" text type="primary" @click="retry(scope.row)">{{ scope.row.status === 'submitted' ? '重新打印' : '重试' }}</el-button></template></el-table-column>
       </el-table>
     </PageSection>
 
@@ -80,6 +80,17 @@ const tokenVisible = ref(false)
 const newName = ref('')
 const newToken = ref('')
 
+function printJobStatus(status) {
+  return {
+    pending: { label: '待打印', type: 'info' },
+    leased: { label: '打印处理中', type: 'warning' },
+    submitted: { label: '已提交待确认', type: 'warning' },
+    printed: { label: '队列已完成', type: 'success' },
+    manual_printed: { label: '已手动打印', type: 'success' },
+    failed: { label: '打印异常', type: 'danger' }
+  }[status] || { label: status || '-', type: 'info' }
+}
+
 async function load() {
   try {
     const [agentRows, jobRows, logRows] = await Promise.all([
@@ -109,6 +120,11 @@ async function revoke(row) {
   catch (error) { ElMessage.error(error.message || '停用失败') }
 }
 async function retry(row) {
+  if (row.status === 'submitted') {
+    try {
+      await ElMessageBox.confirm('仅在确认没有实际出纸时重新打印，否则可能产生重复单据。是否继续？', '重新打印', { type: 'warning' })
+    } catch { return }
+  }
   try { await post(`/api/printing/jobs/${row.id}/retry`, {}); ElMessage.success('已重新排队'); await load() }
   catch (error) { ElMessage.error(error.message || '重试失败') }
 }
