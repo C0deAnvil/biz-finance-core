@@ -1,9 +1,9 @@
 ﻿<template>
   <div class="page-stack">
     <el-row :gutter="12" class="summary-row">
-      <el-col :span="8"><el-card shadow="hover"><div class="summary-label">客户总数</div><div class="summary-value">{{ filteredRows.length }}</div></el-card></el-col>
-      <el-col :span="8"><el-card shadow="hover"><div class="summary-label">星级客户</div><div class="summary-value">{{ starCustomerCount }}</div></el-card></el-col>
-      <el-col :span="8"><el-card shadow="hover"><div class="summary-label">已有订单客户</div><div class="summary-value">{{ activeOrderCustomerCount }}</div></el-card></el-col>
+      <el-col :span="8"><el-card shadow="hover"><div class="summary-label">客户总数</div><div class="summary-value">{{ customerSummary.customer_count }}</div></el-card></el-col>
+      <el-col :span="8"><el-card shadow="hover"><div class="summary-label">星级客户</div><div class="summary-value">{{ customerSummary.star_customer_count }}</div></el-card></el-col>
+      <el-col :span="8"><el-card shadow="hover"><div class="summary-label">已有订单客户</div><div class="summary-value">{{ customerSummary.active_order_customer_count }}</div></el-card></el-col>
     </el-row>
 
     <PageSection title="客户基本信息">
@@ -557,10 +557,9 @@ function buildPayload() {
 const filteredRows = computed(() => rows.value)
 const pagination = reactive({ page: 1, pageSize: 10 })
 const total = ref(0)
+const customerSummary = reactive({ customer_count: 0, star_customer_count: 0, active_order_customer_count: 0 })
 const pageSizes = [10, 20, 50, 100]
 const pagedRows = rows
-const starCustomerCount = computed(() => filteredRows.value.filter((item) => item.star_level).length)
-const activeOrderCustomerCount = computed(() => filteredRows.value.filter((item) => Number(item.order_count || 0) > 0).length)
 
 function resetForm() {
   Object.assign(form, emptyForm())
@@ -604,6 +603,11 @@ async function load() {
   const data = await get(`/api/master-data/customers?${params.toString()}`)
   rows.value = data.items || []
   total.value = Number(data.pagination?.total || 0)
+  Object.assign(customerSummary, {
+    customer_count: Number(data.summary?.customer_count ?? data.pagination?.total ?? 0),
+    star_customer_count: Number(data.summary?.star_customer_count || 0),
+    active_order_customer_count: Number(data.summary?.active_order_customer_count || 0)
+  })
 }
 
 async function handleCustomerPaginationChange({ page, pageSize }) {

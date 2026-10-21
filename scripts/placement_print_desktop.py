@@ -28,9 +28,17 @@ from scripts.placement_print_config import (  # noqa: E402
 )
 
 SAMPLE_PDF = ROOT / "output" / "pdf" / "sample_placement_order.pdf"
-ADMIN_URL = "http://8.140.196.85/admin/print-agents"
+DEFAULT_SERVER_URL = "https://www.cphwchem.xyz:8001"
+ADMIN_URL = f"{DEFAULT_SERVER_URL}/admin/print-agents"
 SUMATRA_URL = "https://www.sumatrapdfreader.org/download-free-pdf-viewer"
 DEFAULT_PRINTER = "EPSONB8696A (L3250 Series)"
+LEGACY_SERVER_URLS = {"http://8.140.196.85", "http://8.140.196.85:8001"}
+
+
+def current_server_url(value):
+    """Move previously saved insecure server addresses to the deployed HTTPS endpoint."""
+    configured = str(value or "").strip().rstrip("/")
+    return DEFAULT_SERVER_URL if configured in LEGACY_SERVER_URLS or not configured else configured
 
 
 def list_installed_printers():
@@ -150,7 +158,11 @@ class PlacementPrintDesktop(tk.Tk):
                 configured_sumatra = corrected
                 load_warning = "原保存的 SumatraPDF 路径实际指向安装包，已改选安装目录中的打印程序；请重新保存配置。"
         self.sumatra = tk.StringVar(value=configured_sumatra)
-        self.server = tk.StringVar(value=saved.get("server") or os.environ.get("YECAI_SERVER_URL", "http://8.140.196.85"))
+        configured_server = saved.get("server") or os.environ.get("YECAI_SERVER_URL", DEFAULT_SERVER_URL)
+        migrated_server = current_server_url(configured_server)
+        if str(configured_server or "").strip().rstrip("/") in LEGACY_SERVER_URLS:
+            load_warning = f"原服务器地址为不安全的 HTTP，已切换为 {DEFAULT_SERVER_URL}；请保存配置。"
+        self.server = tk.StringVar(value=migrated_server)
         self.token = tk.StringVar(value=saved.get("token", ""))
         self.poll = tk.StringVar(value=str(saved.get("poll", 60)))
         self.autostart = tk.BooleanVar(value=is_autostart_enabled())

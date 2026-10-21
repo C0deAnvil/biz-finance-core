@@ -7,7 +7,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from scripts.placement_print_desktop import (
-    PlacementPrintDesktop, agent_environment, filter_printers, print_command, sumatra_is_printable,
+    DEFAULT_SERVER_URL, PlacementPrintDesktop, agent_environment, current_server_url,
+    filter_printers, print_command, sumatra_is_printable,
 )
 
 
@@ -15,6 +16,12 @@ def test_printer_search_is_case_insensitive_and_preserves_names():
     names = ["EPSONB8696A (L3250 Series)", "OneNote (Desktop)"]
     assert filter_printers(names, "l3250") == ["EPSONB8696A (L3250 Series)"]
     assert filter_printers(names, "  ") == names
+
+
+def test_old_http_server_is_migrated_to_current_https_endpoint():
+    assert current_server_url("http://8.140.196.85") == DEFAULT_SERVER_URL
+    assert current_server_url("") == DEFAULT_SERVER_URL
+    assert current_server_url("https://example.com/") == "https://example.com"
 
 
 def test_dropdown_filters_by_search_field_not_selected_printer():

@@ -13,7 +13,7 @@
 3. 通过设备本地安全环境变量配置以下值，并启动 `python scripts/placement_print_agent.py`。可用操作系统服务或任务计划程序保持常驻。
 
 ```text
-YECAI_SERVER_URL=https://your-server.example
+YECAI_SERVER_URL=https://www.cphwchem.xyz:8001
 YECAI_PRINT_AGENT_TOKEN=管理员生成的认证码
 YECAI_PRINT_POLL_SECONDS=60
 YECAI_PRINT_COMMAND_JSON=["lp","-d","warehouse-printer","{file}"]
@@ -33,7 +33,7 @@ venv\Scripts\pythonw.exe scripts\placement_print_desktop.py
 
 注意不要把下载的安装包复制并改名为项目根目录的 `SumatraPDF.exe`：缺少同目录的打印引擎 DLL 时，它只会启动安装界面，即使进程返回成功也没有打印。客户端会优先寻找真正安装目录中的程序，并拒绝这种错误文件；若旧配置指向该文件，下次打开会自动改选已安装程序，并提示重新保存。
 
-实际出纸正常后，填写 HTTPS 服务器地址和“打印设备与记录”创建时显示的认证码，点击“保存配置”。程序在当前用户的 `%LOCALAPPDATA%\YecaiPlacementPrinter\settings.json` 保存打印机、程序位置、服务器和轮询间隔；认证码使用 Windows DPAPI 绑定当前用户加密保存，配置文件中不含明文认证码。换电脑或换 Windows 用户后需要重新输入认证码。**已创建的认证码无法从管理页再次查看**，若未保存，需停用旧设备并创建新设备认证码。当前 `http://8.140.196.85` 地址不能安全传送设备认证码，须先配置可信 HTTPS；本地匿名试打印不受此限制。
+实际出纸正常后，服务器地址使用 `https://www.cphwchem.xyz:8001`，再填写“打印设备与记录”创建时显示的认证码并点击“保存配置”。程序在当前用户的 `%LOCALAPPDATA%\YecaiPlacementPrinter\settings.json` 保存打印机、程序位置、服务器和轮询间隔；认证码使用 Windows DPAPI 绑定当前用户加密保存，配置文件中不含明文认证码。换电脑或换 Windows 用户后需要重新输入认证码。**已创建的认证码无法从管理页再次查看**，若未保存，需停用旧设备并创建新设备认证码。旧版保存的 `http://8.140.196.85` 会自动迁移到当前 HTTPS 地址，并提示重新保存；本地匿名试打印不受此限制。
 
 点击“单次领取并打印”验证，再点击“开始自动打印”持续轮询。点窗口关闭按钮时，程序询问是否继续后台打印：选择“是”会最小化到任务栏并继续轮询（点击任务栏图标恢复），选择“否”会停止轮询并退出，选择“取消”保留窗口。若尚未启动轮询，选择“是”会先尝试启动；配置无效时不会悄悄隐藏。可勾选“登录 Windows 后自动启动并开始打印”，**再点击“保存配置”**；仅写入当前用户的 Windows 登录启动项，不需要管理员权限，不会在登录前启动。开机自动启动失败时保留可见窗口；后台轮询意外退出时会恢复窗口并提醒。修改已保存的配置后，若轮询正在运行，请先停止再重新开始以应用新值。
 
@@ -46,7 +46,7 @@ $env:YECAI_PRINT_COMMAND_JSON = '["C:\\Program Files\\SumatraPDF\\SumatraPDF.exe
 venv\Scripts\python.exe -m scripts.placement_print_agent --test-print .\output\pdf\sample_placement_order.pdf
 ```
 
-此试打印不连接服务器，也不需要设备认证码。命令正常退出仅表示已提交给本地打印程序，仍须目视确认出纸和版式。之后管理员在“打印设备与记录”创建认证码，在当前 PowerShell 会话中设置 `YECAI_PRINT_AGENT_TOKEN` 和 `YECAI_SERVER_URL`，再运行 `venv\Scripts\python.exe -m scripts.placement_print_agent --once` 试领一次任务；确认后不带 `--once` 常驻轮询。正式服务器必须使用 HTTPS；仅本机 `http://127.0.0.1` 或 `http://[::1]` 可用于不经过公网的本地调试。当前若使用 `http://8.140.196.85`，必须先启用 HTTPS 才能安全连接打印客户端，不应为了测试把认证码通过公网明文 HTTP 发送。
+此试打印不连接服务器，也不需要设备认证码。命令正常退出仅表示已提交给本地打印程序，仍须目视确认出纸和版式。之后管理员在“打印设备与记录”创建认证码，在当前 PowerShell 会话中设置 `YECAI_PRINT_AGENT_TOKEN` 和 `YECAI_SERVER_URL=https://www.cphwchem.xyz:8001`，再运行 `venv\Scripts\python.exe -m scripts.placement_print_agent --once` 试领一次任务；确认后不带 `--once` 常驻轮询。正式服务器必须使用 HTTPS；仅本机 `http://127.0.0.1` 或 `http://[::1]` 可用于不经过公网的本地调试。
 
 设备每分钟 `POST /api/printing/agent/jobs/claim` 领取任务，然后用 `GET /api/printing/agent/jobs/{id}/pdf` 下载 PDF，并通过 `POST /api/printing/agent/jobs/{id}/complete` 回报结果。所有设备接口使用 `X-Print-Agent-Token` 请求头，PDF 下载还需 `X-Print-Lease-Token`。设备程序只接受 HTTPS，正式启用前应先给网站配置有效 TLS 证书。同一置货队列只有一个自动打印任务；失败最多自动重试五次，之后管理员可在页面手动重排。领取租约五分钟超时后可重新领取，因此打印机已接收作业但回报失败的极端情况下可能重复出纸；管理员应结合页面记录核对。
 

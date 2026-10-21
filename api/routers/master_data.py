@@ -520,8 +520,25 @@ def list_customers(
     if end_date:
         query = query.where(Customer.created_at < datetime.combine(end_date, datetime.max.time()))
     total = None
+    summary = None
     if page is not None:
-        total = db.execute(select(func.count()).select_from(query.order_by(None).subquery())).scalar_one()
+        filtered_customers = query.order_by(None).subquery()
+        total = db.execute(select(func.count()).select_from(filtered_customers)).scalar_one()
+        star_customer_count = db.execute(
+            select(func.count()).select_from(filtered_customers).where(
+                func.length(func.trim(func.coalesce(filtered_customers.c.star_level, ""))) > 0
+            )
+        ).scalar_one()
+        active_order_customer_count = db.execute(
+            select(func.count(func.distinct(SalesOrder.customer_id))).where(
+                SalesOrder.customer_id.in_(select(filtered_customers.c.id))
+            )
+        ).scalar_one()
+        summary = {
+            "customer_count": total,
+            "star_customer_count": star_customer_count,
+            "active_order_customer_count": active_order_customer_count,
+        }
         query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
     customer_ids = [row.id for row in rows]
@@ -535,7 +552,11 @@ def list_customers(
     items = [_serialize_customer(row, order_counts.get(row.id, 0), tag_map.get(row.id, [])) for row in rows]
     if page is None:
         return api_response(data=items)
-    return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}})
+    return api_response(data={
+        "items": items,
+        "pagination": {"page": page, "page_size": page_size, "total": total},
+        "summary": summary,
+    })
 
 
 @router.post("/customers")
