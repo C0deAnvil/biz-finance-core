@@ -21,6 +21,7 @@ from api.routers.realtime import router as realtime_router
 from api.routers.reimbursements import router as reimbursements_router
 from api.routers.sales import router as sales_router
 from api.routers.supplier_ai import router as supplier_ai_router
+from api.routers.supplier_samples import router as supplier_samples_router
 
 
 api_router = APIRouter()
@@ -31,6 +32,7 @@ api_router.include_router(supplier_ai_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(approvals_router)
 api_router.include_router(master_data_router)
+api_router.include_router(supplier_samples_router)
 api_router.include_router(sales_router)
 for _r in inventory_router_list:
     api_router.include_router(_r)

@@ -1,0 +1,804 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 46;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		5D1A78C521E1AC02004E89AB /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78BD21E1AC02004E89AB /* Constants.swift */; };
+		5D1A78C621E1AC02004E89AB /* CBService+LightBlue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78BE21E1AC02004E89AB /* CBService+LightBlue.swift */; };
+		5D1A78C721E1AC02004E89AB /* CBCharacteristic+LightBlue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78BF21E1AC02004E89AB /* CBCharacteristic+LightBlue.swift */; };
+		5D1A78C821E1AC02004E89AB /* BluetoothManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78C021E1AC02004E89AB /* BluetoothManager.swift */; };
+		5D1A78C921E1AC02004E89AB /* CBAdvertisementData+LightBlue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78C121E1AC02004E89AB /* CBAdvertisementData+LightBlue.swift */; };
+		5D1A78CA21E1AC02004E89AB /* CBCharacteristicProperties+LightBlue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78C221E1AC02004E89AB /* CBCharacteristicProperties+LightBlue.swift */; };
+		5D1A78CB21E1AC02004E89AB /* CBUUID+LightBlue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78C321E1AC02004E89AB /* CBUUID+LightBlue.swift */; };
+		5D1A78CC21E1AC02004E89AB /* BluetoothDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78C421E1AC02004E89AB /* BluetoothDelegate.swift */; };
+		5D1A78D321E1ACD9004E89AB /* NewPeripheralCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78CE21E1ACD9004E89AB /* NewPeripheralCell.swift */; };
+		5D1A78D421E1ACD9004E89AB /* Characteristic2BtnsCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78CF21E1ACD9004E89AB /* Characteristic2BtnsCell.swift */; };
+		5D1A78D521E1ACD9004E89AB /* NearbyPeripheralCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78D021E1ACD9004E89AB /* NearbyPeripheralCell.swift */; };
+		5D1A78D621E1ACD9004E89AB /* VirtualPeripheralCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78D121E1ACD9004E89AB /* VirtualPeripheralCell.swift */; };
+		5D1A78D721E1ACD9004E89AB /* Characteristic2BtnsCell.xib in Resources */ = {isa = PBXBuildFile; fileRef = 5D1A78D221E1ACD9004E89AB /* Characteristic2BtnsCell.xib */; };
+		5D1A78E621E1ACED004E89AB /* String+LightBlue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78E421E1ACED004E89AB /* String+LightBlue.swift */; };
+		5D1A78E721E1ACED004E89AB /* UIApplication+LightBlue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78E521E1ACED004E89AB /* UIApplication+LightBlue.swift */; };
+		5D1A78EB21E1AD49004E89AB /* Preferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78E921E1AD49004E89AB /* Preferences.swift */; };
+		5D1A78EC21E1AD49004E89AB /* VirtualPeripheral.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78EA21E1AD49004E89AB /* VirtualPeripheral.swift */; };
+		5D1A78F121E1AD70004E89AB /* VirtualPeripheralStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78EE21E1AD70004E89AB /* VirtualPeripheralStore.swift */; };
+		5D1A78F221E1AD70004E89AB /* LogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78EF21E1AD70004E89AB /* LogStore.swift */; };
+		5D1A78F321E1AD70004E89AB /* PreferencesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1A78F021E1AD70004E89AB /* PreferencesStore.swift */; };
+		5D1FE09221EC30E500686479 /* EditCharacteristicViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1FE09021EC30E500686479 /* EditCharacteristicViewController.swift */; };
+		5D1FE09321EC30E500686479 /* EditCharacteristicViewController.xib in Resources */ = {isa = PBXBuildFile; fileRef = 5D1FE09121EC30E500686479 /* EditCharacteristicViewController.xib */; };
+		5D1FE09921EC30E500686479 /* EditCharacteristicPropertyTableViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1FE09821EC30E500686479 /* EditCharacteristicPropertyTableViewController.swift */; };
+		5D1FE09C21EC30E500686479 /* EditValueViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1FE09A21EC30E500686479 /* EditValueViewController.swift */; };
+		5D1FE09D21EC30E500686479 /* EditValueViewController.xib in Resources */ = {isa = PBXBuildFile; fileRef = 5D1FE09B21EC30E500686479 /* EditValueViewController.xib */; };
+		5D227D2B21DF6605006BE6DB /* LogViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D227D2921DF6605006BE6DB /* LogViewController.swift */; };
+		5D227D2C21DF6605006BE6DB /* LogViewController.xib in Resources */ = {isa = PBXBuildFile; fileRef = 5D227D2A21DF6605006BE6DB /* LogViewController.xib */; };
+		5D7211B021E59624008CB20C /* ServiceTableViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D7211AF21E59624008CB20C /* ServiceTableViewController.swift */; };
+		5DBAA11D21DCC9AE00FE075F /* VirtualPeripheralViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DBAA11B21DCC9AE00FE075F /* VirtualPeripheralViewController.swift */; };
+		5DBAA11E21DCC9AE00FE075F /* VirtualPeripheralViewController.xib in Resources */ = {isa = PBXBuildFile; fileRef = 5DBAA11C21DCC9AE00FE075F /* VirtualPeripheralViewController.xib */; };
+		5DC750B821DF64A90012B16C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5DC750B721DF64A90012B16C /* Assets.xcassets */; };
+		5DC750BC21DF67320012B16C /* FilterViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DC750BB21DF67320012B16C /* FilterViewController.swift */; };
+		5DC750C021DF6B440012B16C /* InfoViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DC750BF21DF6B440012B16C /* InfoViewController.swift */; };
+		5DC750C221DF6BF60012B16C /* AboutMeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DC750C121DF6BF60012B16C /* AboutMeViewController.swift */; };
+		6C130A2C1C6139E200E827B1 /* EditValueController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C130A2A1C6139E200E827B1 /* EditValueController.swift */; };
+		6C130A2D1C6139E200E827B1 /* EditValueController.xib in Resources */ = {isa = PBXBuildFile; fileRef = 6C130A2B1C6139E200E827B1 /* EditValueController.xib */; };
+		6C130A311C614ECF00E827B1 /* MRHexKeyboard.m in Sources */ = {isa = PBXBuildFile; fileRef = 6C130A301C614ECF00E827B1 /* MRHexKeyboard.m */; };
+		6C130A331C614ED900E827B1 /* deleteButton@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 6C130A321C614ED900E827B1 /* deleteButton@2x.png */; };
+		6C195EB11C57C2BC00AEF1DA /* CharacteristicController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C195EB01C57C2BC00AEF1DA /* CharacteristicController.swift */; };
+		6C195EB31C57C2D200AEF1DA /* CharacteristicController.xib in Resources */ = {isa = PBXBuildFile; fileRef = 6C195EB21C57C2D200AEF1DA /* CharacteristicController.xib */; };
+		6C7526111C397A93009445CE /* RootController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C7526101C397A93009445CE /* RootController.swift */; };
+		6CB464B21C3CCFD100D16277 /* UnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB464B11C3CCFD100D16277 /* UnavailableView.swift */; };
+		6CB465581C3D788300D16277 /* NewVirtualPeripheralController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB465571C3D788300D16277 /* NewVirtualPeripheralController.swift */; };
+		6CB4656A1C3E253200D16277 /* ConnectingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB465691C3E253200D16277 /* ConnectingView.swift */; };
+		6CB655D91C438F1E00128BC6 /* PeripheralController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB655D71C438F1E00128BC6 /* PeripheralController.swift */; };
+		6CB655DA1C438F1E00128BC6 /* PeripheralController.xib in Resources */ = {isa = PBXBuildFile; fileRef = 6CB655D81C438F1E00128BC6 /* PeripheralController.xib */; };
+		6CDD91601C35964400DBC2E2 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDD915F1C35964400DBC2E2 /* AppDelegate.swift */; };
+		6CDD91621C35964400DBC2E2 /* MainController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDD91611C35964400DBC2E2 /* MainController.swift */; };
+		6CDD91651C35964400DBC2E2 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 6CDD91631C35964400DBC2E2 /* Main.storyboard */; };
+		6CDD916A1C35964400DBC2E2 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 6CDD91681C35964400DBC2E2 /* LaunchScreen.storyboard */; };
+		6CDD91751C35964400DBC2E2 /* Swift_LightBlueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDD91741C35964400DBC2E2 /* Swift_LightBlueTests.swift */; };
+		6CDD91801C35964400DBC2E2 /* Swift_LightBlueUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDD917F1C35964400DBC2E2 /* Swift_LightBlueUITests.swift */; };
+		6CFFE93E1C44923100D061ED /* AlertUtil.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CFFE93D1C44923100D061ED /* AlertUtil.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		6CDD91711C35964400DBC2E2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6CDD91541C35964400DBC2E2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6CDD915B1C35964400DBC2E2;
+			remoteInfo = "Swift-LightBlue";
+		};
+		6CDD917C1C35964400DBC2E2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6CDD91541C35964400DBC2E2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6CDD915B1C35964400DBC2E2;
+			remoteInfo = "Swift-LightBlue";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		5D1A78BD21E1AC02004E89AB /* Constants.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
+		5D1A78BE21E1AC02004E89AB /* CBService+LightBlue.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "CBService+LightBlue.swift"; sourceTree = "<group>"; };
+		5D1A78BF21E1AC02004E89AB /* CBCharacteristic+LightBlue.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "CBCharacteristic+LightBlue.swift"; sourceTree = "<group>"; };
+		5D1A78C021E1AC02004E89AB /* BluetoothManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = BluetoothManager.swift; sourceTree = "<group>"; };
+		5D1A78C121E1AC02004E89AB /* CBAdvertisementData+LightBlue.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "CBAdvertisementData+LightBlue.swift"; sourceTree = "<group>"; };
+		5D1A78C221E1AC02004E89AB /* CBCharacteristicProperties+LightBlue.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "CBCharacteristicProperties+LightBlue.swift"; sourceTree = "<group>"; };
+		5D1A78C321E1AC02004E89AB /* CBUUID+LightBlue.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "CBUUID+LightBlue.swift"; sourceTree = "<group>"; };
+		5D1A78C421E1AC02004E89AB /* BluetoothDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = BluetoothDelegate.swift; sourceTree = "<group>"; };
+		5D1A78CE21E1ACD9004E89AB /* NewPeripheralCell.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NewPeripheralCell.swift; sourceTree = "<group>"; };
+		5D1A78CF21E1ACD9004E89AB /* Characteristic2BtnsCell.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Characteristic2BtnsCell.swift; sourceTree = "<group>"; };
+		5D1A78D021E1ACD9004E89AB /* NearbyPeripheralCell.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NearbyPeripheralCell.swift; sourceTree = "<group>"; };
+		5D1A78D121E1ACD9004E89AB /* VirtualPeripheralCell.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VirtualPeripheralCell.swift; sourceTree = "<group>"; };
+		5D1A78D221E1ACD9004E89AB /* Characteristic2BtnsCell.xib */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.xib; path = Characteristic2BtnsCell.xib; sourceTree = "<group>"; };
+		5D1A78E421E1ACED004E89AB /* String+LightBlue.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "String+LightBlue.swift"; sourceTree = "<group>"; };
+		5D1A78E521E1ACED004E89AB /* UIApplication+LightBlue.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "UIApplication+LightBlue.swift"; sourceTree = "<group>"; };
+		5D1A78E921E1AD49004E89AB /* Preferences.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Preferences.swift; sourceTree = "<group>"; };
+		5D1A78EA21E1AD49004E89AB /* VirtualPeripheral.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VirtualPeripheral.swift; sourceTree = "<group>"; };
+		5D1A78EE21E1AD70004E89AB /* VirtualPeripheralStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VirtualPeripheralStore.swift; sourceTree = "<group>"; };
+		5D1A78EF21E1AD70004E89AB /* LogStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = LogStore.swift; sourceTree = "<group>"; };
+		5D1A78F021E1AD70004E89AB /* PreferencesStore.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PreferencesStore.swift; sourceTree = "<group>"; };
+		5D1FE09021EC30E500686479 /* EditCharacteristicViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditCharacteristicViewController.swift; sourceTree = "<group>"; };
+		5D1FE09121EC30E500686479 /* EditCharacteristicViewController.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = EditCharacteristicViewController.xib; sourceTree = "<group>"; };
+		5D1FE09821EC30E500686479 /* EditCharacteristicPropertyTableViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditCharacteristicPropertyTableViewController.swift; sourceTree = "<group>"; };
+		5D1FE09A21EC30E500686479 /* EditValueViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditValueViewController.swift; sourceTree = "<group>"; };
+		5D1FE09B21EC30E500686479 /* EditValueViewController.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = EditValueViewController.xib; sourceTree = "<group>"; };
+		5D227D2921DF6605006BE6DB /* LogViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViewController.swift; sourceTree = "<group>"; };
+		5D227D2A21DF6605006BE6DB /* LogViewController.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = LogViewController.xib; sourceTree = "<group>"; };
+		5D7211AF21E59624008CB20C /* ServiceTableViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceTableViewController.swift; sourceTree = "<group>"; };
+		5DBAA11B21DCC9AE00FE075F /* VirtualPeripheralViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VirtualPeripheralViewController.swift; sourceTree = "<group>"; };
+		5DBAA11C21DCC9AE00FE075F /* VirtualPeripheralViewController.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = VirtualPeripheralViewController.xib; sourceTree = "<group>"; };
+		5DC750B721DF64A90012B16C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		5DC750BB21DF67320012B16C /* FilterViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterViewController.swift; sourceTree = "<group>"; };
+		5DC750BF21DF6B440012B16C /* InfoViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoViewController.swift; sourceTree = "<group>"; };
+		5DC750C121DF6BF60012B16C /* AboutMeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutMeViewController.swift; sourceTree = "<group>"; };
+		6C130A2A1C6139E200E827B1 /* EditValueController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = EditValueController.swift; sourceTree = "<group>"; };
+		6C130A2B1C6139E200E827B1 /* EditValueController.xib */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.xib; path = EditValueController.xib; sourceTree = "<group>"; };
+		6C130A2E1C614ECE00E827B1 /* Swift-LightBlue-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Swift-LightBlue-Bridging-Header.h"; sourceTree = "<group>"; };
+		6C130A2F1C614ECF00E827B1 /* MRHexKeyboard.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MRHexKeyboard.h; sourceTree = "<group>"; };
+		6C130A301C614ECF00E827B1 /* MRHexKeyboard.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = MRHexKeyboard.m; sourceTree = "<group>"; };
+		6C130A321C614ED900E827B1 /* deleteButton@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "deleteButton@2x.png"; sourceTree = "<group>"; };
+		6C195EB01C57C2BC00AEF1DA /* CharacteristicController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CharacteristicController.swift; sourceTree = "<group>"; };
+		6C195EB21C57C2D200AEF1DA /* CharacteristicController.xib */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.xib; path = CharacteristicController.xib; sourceTree = "<group>"; };
+		6C7526101C397A93009445CE /* RootController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = RootController.swift; sourceTree = "<group>"; };
+		6CB464B11C3CCFD100D16277 /* UnavailableView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = UnavailableView.swift; path = View/UnavailableView.swift; sourceTree = "<group>"; };
+		6CB465571C3D788300D16277 /* NewVirtualPeripheralController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NewVirtualPeripheralController.swift; sourceTree = "<group>"; };
+		6CB465691C3E253200D16277 /* ConnectingView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ConnectingView.swift; path = View/ConnectingView.swift; sourceTree = "<group>"; };
+		6CB655D71C438F1E00128BC6 /* PeripheralController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PeripheralController.swift; sourceTree = "<group>"; };
+		6CB655D81C438F1E00128BC6 /* PeripheralController.xib */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.xib; path = PeripheralController.xib; sourceTree = "<group>"; };
+		6CDD915C1C35964400DBC2E2 /* Swift-LightBlue.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Swift-LightBlue.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		6CDD915F1C35964400DBC2E2 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		6CDD91611C35964400DBC2E2 /* MainController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainController.swift; sourceTree = "<group>"; };
+		6CDD91641C35964400DBC2E2 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
+		6CDD91691C35964400DBC2E2 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		6CDD916B1C35964400DBC2E2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		6CDD91701C35964400DBC2E2 /* Swift-LightBlueTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Swift-LightBlueTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		6CDD91741C35964400DBC2E2 /* Swift_LightBlueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Swift_LightBlueTests.swift; sourceTree = "<group>"; };
+		6CDD91761C35964400DBC2E2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		6CDD917B1C35964400DBC2E2 /* Swift-LightBlueUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Swift-LightBlueUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		6CDD917F1C35964400DBC2E2 /* Swift_LightBlueUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Swift_LightBlueUITests.swift; sourceTree = "<group>"; };
+		6CDD91811C35964400DBC2E2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		6CFFE93D1C44923100D061ED /* AlertUtil.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = AlertUtil.swift; path = Utils/AlertUtil.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		6CDD91591C35964400DBC2E2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CDD916D1C35964400DBC2E2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CDD91781C35964400DBC2E2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5D1A78BC21E1AC02004E89AB /* Source */ = {
+			isa = PBXGroup;
+			children = (
+				5D1A78BD21E1AC02004E89AB /* Constants.swift */,
+				5D1A78BE21E1AC02004E89AB /* CBService+LightBlue.swift */,
+				5D1A78BF21E1AC02004E89AB /* CBCharacteristic+LightBlue.swift */,
+				5D1A78C021E1AC02004E89AB /* BluetoothManager.swift */,
+				5D1A78C121E1AC02004E89AB /* CBAdvertisementData+LightBlue.swift */,
+				5D1A78C221E1AC02004E89AB /* CBCharacteristicProperties+LightBlue.swift */,
+				5D1A78C321E1AC02004E89AB /* CBUUID+LightBlue.swift */,
+				5D1A78C421E1AC02004E89AB /* BluetoothDelegate.swift */,
+			);
+			path = Source;
+			sourceTree = "<group>";
+		};
+		5D1A78CD21E1ACD9004E89AB /* Cell */ = {
+			isa = PBXGroup;
+			children = (
+				5D1A78CE21E1ACD9004E89AB /* NewPeripheralCell.swift */,
+				5D1A78CF21E1ACD9004E89AB /* Characteristic2BtnsCell.swift */,
+				5D1A78D021E1ACD9004E89AB /* NearbyPeripheralCell.swift */,
+				5D1A78D121E1ACD9004E89AB /* VirtualPeripheralCell.swift */,
+				5D1A78D221E1ACD9004E89AB /* Characteristic2BtnsCell.xib */,
+			);
+			path = Cell;
+			sourceTree = "<group>";
+		};
+		5D1A78E321E1ACED004E89AB /* Extension */ = {
+			isa = PBXGroup;
+			children = (
+				5D1A78E421E1ACED004E89AB /* String+LightBlue.swift */,
+				5D1A78E521E1ACED004E89AB /* UIApplication+LightBlue.swift */,
+			);
+			path = Extension;
+			sourceTree = "<group>";
+		};
+		5D1A78E821E1AD49004E89AB /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				5D1A78E921E1AD49004E89AB /* Preferences.swift */,
+				5D1A78EA21E1AD49004E89AB /* VirtualPeripheral.swift */,
+			);
+			path = Model;
+			sourceTree = "<group>";
+		};
+		5D1A78ED21E1AD70004E89AB /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				5D1A78EE21E1AD70004E89AB /* VirtualPeripheralStore.swift */,
+				5D1A78EF21E1AD70004E89AB /* LogStore.swift */,
+				5D1A78F021E1AD70004E89AB /* PreferencesStore.swift */,
+			);
+			path = Store;
+			sourceTree = "<group>";
+		};
+		6CB464B01C3CCF5600D16277 /* View */ = {
+			isa = PBXGroup;
+			children = (
+				6C130A2F1C614ECF00E827B1 /* MRHexKeyboard.h */,
+				6C130A301C614ECF00E827B1 /* MRHexKeyboard.m */,
+				6C130A321C614ED900E827B1 /* deleteButton@2x.png */,
+				6CB464B11C3CCFD100D16277 /* UnavailableView.swift */,
+				6CB465691C3E253200D16277 /* ConnectingView.swift */,
+				6C130A2E1C614ECE00E827B1 /* Swift-LightBlue-Bridging-Header.h */,
+			);
+			name = View;
+			sourceTree = "<group>";
+		};
+		6CDD91531C35964400DBC2E2 = {
+			isa = PBXGroup;
+			children = (
+				5D1A78BC21E1AC02004E89AB /* Source */,
+				6CDD915E1C35964400DBC2E2 /* Swift-LightBlue */,
+				6CDD91731C35964400DBC2E2 /* Swift-LightBlueTests */,
+				6CDD917E1C35964400DBC2E2 /* Swift-LightBlueUITests */,
+				6CDD915D1C35964400DBC2E2 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		6CDD915D1C35964400DBC2E2 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6CDD915C1C35964400DBC2E2 /* Swift-LightBlue.app */,
+				6CDD91701C35964400DBC2E2 /* Swift-LightBlueTests.xctest */,
+				6CDD917B1C35964400DBC2E2 /* Swift-LightBlueUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6CDD915E1C35964400DBC2E2 /* Swift-LightBlue */ = {
+			isa = PBXGroup;
+			children = (
+				5DC750C121DF6BF60012B16C /* AboutMeViewController.swift */,
+				6CDD915F1C35964400DBC2E2 /* AppDelegate.swift */,
+				5DC750B721DF64A90012B16C /* Assets.xcassets */,
+				5D1A78CD21E1ACD9004E89AB /* Cell */,
+				6C195EB01C57C2BC00AEF1DA /* CharacteristicController.swift */,
+				6C195EB21C57C2D200AEF1DA /* CharacteristicController.xib */,
+				6C130A2A1C6139E200E827B1 /* EditValueController.swift */,
+				6C130A2B1C6139E200E827B1 /* EditValueController.xib */,
+				5D1A78E321E1ACED004E89AB /* Extension */,
+				5DC750BB21DF67320012B16C /* FilterViewController.swift */,
+				6CDD916B1C35964400DBC2E2 /* Info.plist */,
+				5DC750BF21DF6B440012B16C /* InfoViewController.swift */,
+				6CDD91681C35964400DBC2E2 /* LaunchScreen.storyboard */,
+				5D227D2921DF6605006BE6DB /* LogViewController.swift */,
+				5D227D2A21DF6605006BE6DB /* LogViewController.xib */,
+				6CDD91631C35964400DBC2E2 /* Main.storyboard */,
+				6CDD91611C35964400DBC2E2 /* MainController.swift */,
+				5D1A78E821E1AD49004E89AB /* Model */,
+				6CB465571C3D788300D16277 /* NewVirtualPeripheralController.swift */,
+				6CB655D71C438F1E00128BC6 /* PeripheralController.swift */,
+				6CB655D81C438F1E00128BC6 /* PeripheralController.xib */,
+				6C7526101C397A93009445CE /* RootController.swift */,
+				5D1A78ED21E1AD70004E89AB /* Store */,
+				6CFFE93C1C44920C00D061ED /* Utils */,
+				6CB464B01C3CCF5600D16277 /* View */,
+				5DBAA11B21DCC9AE00FE075F /* VirtualPeripheralViewController.swift */,
+				5DBAA11C21DCC9AE00FE075F /* VirtualPeripheralViewController.xib */,
+				5D1FE09021EC30E500686479 /* EditCharacteristicViewController.swift */,
+				5D1FE09121EC30E500686479 /* EditCharacteristicViewController.xib */,
+				5D1FE09821EC30E500686479 /* EditCharacteristicPropertyTableViewController.swift */,
+				5D1FE09A21EC30E500686479 /* EditValueViewController.swift */,
+				5D1FE09B21EC30E500686479 /* EditValueViewController.xib */,
+				5D7211AF21E59624008CB20C /* ServiceTableViewController.swift */,
+			);
+			path = "Swift-LightBlue";
+			sourceTree = "<group>";
+		};
+		6CDD91731C35964400DBC2E2 /* Swift-LightBlueTests */ = {
+			isa = PBXGroup;
+			children = (
+				6CDD91741C35964400DBC2E2 /* Swift_LightBlueTests.swift */,
+				6CDD91761C35964400DBC2E2 /* Info.plist */,
+			);
+			path = "Swift-LightBlueTests";
+			sourceTree = "<group>";
+		};
+		6CDD917E1C35964400DBC2E2 /* Swift-LightBlueUITests */ = {
+			isa = PBXGroup;
+			children = (
+				6CDD917F1C35964400DBC2E2 /* Swift_LightBlueUITests.swift */,
+				6CDD91811C35964400DBC2E2 /* Info.plist */,
+			);
+			path = "Swift-LightBlueUITests";
+			sourceTree = "<group>";
+		};
+		6CFFE93C1C44920C00D061ED /* Utils */ = {
+			isa = PBXGroup;
+			children = (
+				6CFFE93D1C44923100D061ED /* AlertUtil.swift */,
+			);
+			name = Utils;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		6CDD915B1C35964400DBC2E2 /* Swift-LightBlue */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6CDD91841C35964400DBC2E2 /* Build configuration list for PBXNativeTarget "Swift-LightBlue" */;
+			buildPhases = (
+				6CDD91581C35964400DBC2E2 /* Sources */,
+				6CDD91591C35964400DBC2E2 /* Frameworks */,
+				6CDD915A1C35964400DBC2E2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Swift-LightBlue";
+			productName = "Swift-LightBlue";
+			productReference = 6CDD915C1C35964400DBC2E2 /* Swift-LightBlue.app */;
+			productType = "com.apple.product-type.application";
+		};
+		6CDD916F1C35964400DBC2E2 /* Swift-LightBlueTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6CDD91871C35964400DBC2E2 /* Build configuration list for PBXNativeTarget "Swift-LightBlueTests" */;
+			buildPhases = (
+				6CDD916C1C35964400DBC2E2 /* Sources */,
+				6CDD916D1C35964400DBC2E2 /* Frameworks */,
+				6CDD916E1C35964400DBC2E2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6CDD91721C35964400DBC2E2 /* PBXTargetDependency */,
+			);
+			name = "Swift-LightBlueTests";
+			productName = "Swift-LightBlueTests";
+			productReference = 6CDD91701C35964400DBC2E2 /* Swift-LightBlueTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		6CDD917A1C35964400DBC2E2 /* Swift-LightBlueUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6CDD918A1C35964400DBC2E2 /* Build configuration list for PBXNativeTarget "Swift-LightBlueUITests" */;
+			buildPhases = (
+				6CDD91771C35964400DBC2E2 /* Sources */,
+				6CDD91781C35964400DBC2E2 /* Frameworks */,
+				6CDD91791C35964400DBC2E2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6CDD917D1C35964400DBC2E2 /* PBXTargetDependency */,
+			);
+			name = "Swift-LightBlueUITests";
+			productName = "Swift-LightBlueUITests";
+			productReference = 6CDD917B1C35964400DBC2E2 /* Swift-LightBlueUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		6CDD91541C35964400DBC2E2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 0720;
+				LastUpgradeCheck = 1010;
+				ORGANIZATIONNAME = "Pluto-y";
+				TargetAttributes = {
+					6CDD915B1C35964400DBC2E2 = {
+						CreatedOnToolsVersion = 7.2;
+						DevelopmentTeam = 4R7J4L6EG2;
+						LastSwiftMigration = 1010;
+					};
+					6CDD916F1C35964400DBC2E2 = {
+						CreatedOnToolsVersion = 7.2;
+						LastSwiftMigration = 1010;
+						TestTargetID = 6CDD915B1C35964400DBC2E2;
+					};
+					6CDD917A1C35964400DBC2E2 = {
+						CreatedOnToolsVersion = 7.2;
+						LastSwiftMigration = 1010;
+						TestTargetID = 6CDD915B1C35964400DBC2E2;
+					};
+				};
+			};
+			buildConfigurationList = 6CDD91571C35964400DBC2E2 /* Build configuration list for PBXProject "Swift-LightBlue" */;
+			compatibilityVersion = "Xcode 3.2";
+			developmentRegion = English;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 6CDD91531C35964400DBC2E2;
+			productRefGroup = 6CDD915D1C35964400DBC2E2 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				6CDD915B1C35964400DBC2E2 /* Swift-LightBlue */,
+				6CDD916F1C35964400DBC2E2 /* Swift-LightBlueTests */,
+				6CDD917A1C35964400DBC2E2 /* Swift-LightBlueUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6CDD915A1C35964400DBC2E2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6CDD916A1C35964400DBC2E2 /* LaunchScreen.storyboard in Resources */,
+				6CB655DA1C438F1E00128BC6 /* PeripheralController.xib in Resources */,
+				6C195EB31C57C2D200AEF1DA /* CharacteristicController.xib in Resources */,
+				6C130A2D1C6139E200E827B1 /* EditValueController.xib in Resources */,
+				6CDD91651C35964400DBC2E2 /* Main.storyboard in Resources */,
+				5DC750B821DF64A90012B16C /* Assets.xcassets in Resources */,
+				5D1FE09D21EC30E500686479 /* EditValueViewController.xib in Resources */,
+				5D227D2C21DF6605006BE6DB /* LogViewController.xib in Resources */,
+				5DBAA11E21DCC9AE00FE075F /* VirtualPeripheralViewController.xib in Resources */,
+				5D1A78D721E1ACD9004E89AB /* Characteristic2BtnsCell.xib in Resources */,
+				5D1FE09321EC30E500686479 /* EditCharacteristicViewController.xib in Resources */,
+				6C130A331C614ED900E827B1 /* deleteButton@2x.png in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CDD916E1C35964400DBC2E2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CDD91791C35964400DBC2E2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6CDD91581C35964400DBC2E2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5D1A78C621E1AC02004E89AB /* CBService+LightBlue.swift in Sources */,
+				6CDD91621C35964400DBC2E2 /* MainController.swift in Sources */,
+				5D1A78D521E1ACD9004E89AB /* NearbyPeripheralCell.swift in Sources */,
+				5D1FE09221EC30E500686479 /* EditCharacteristicViewController.swift in Sources */,
+				6C130A311C614ECF00E827B1 /* MRHexKeyboard.m in Sources */,
+				6CB655D91C438F1E00128BC6 /* PeripheralController.swift in Sources */,
+				5D1FE09C21EC30E500686479 /* EditValueViewController.swift in Sources */,
+				5D1A78EB21E1AD49004E89AB /* Preferences.swift in Sources */,
+				5D1A78CA21E1AC02004E89AB /* CBCharacteristicProperties+LightBlue.swift in Sources */,
+				5D1A78D621E1ACD9004E89AB /* VirtualPeripheralCell.swift in Sources */,
+				6CB465581C3D788300D16277 /* NewVirtualPeripheralController.swift in Sources */,
+				6CFFE93E1C44923100D061ED /* AlertUtil.swift in Sources */,
+				5D1A78C521E1AC02004E89AB /* Constants.swift in Sources */,
+				5DC750C221DF6BF60012B16C /* AboutMeViewController.swift in Sources */,
+				5D1A78C721E1AC02004E89AB /* CBCharacteristic+LightBlue.swift in Sources */,
+				5D1A78E721E1ACED004E89AB /* UIApplication+LightBlue.swift in Sources */,
+				6CDD91601C35964400DBC2E2 /* AppDelegate.swift in Sources */,
+				6C130A2C1C6139E200E827B1 /* EditValueController.swift in Sources */,
+				5D7211B021E59624008CB20C /* ServiceTableViewController.swift in Sources */,
+				5D1A78E621E1ACED004E89AB /* String+LightBlue.swift in Sources */,
+				6CB4656A1C3E253200D16277 /* ConnectingView.swift in Sources */,
+				5D1A78D321E1ACD9004E89AB /* NewPeripheralCell.swift in Sources */,
+				5DC750BC21DF67320012B16C /* FilterViewController.swift in Sources */,
+				5D1A78F321E1AD70004E89AB /* PreferencesStore.swift in Sources */,
+				5D227D2B21DF6605006BE6DB /* LogViewController.swift in Sources */,
+				6C195EB11C57C2BC00AEF1DA /* CharacteristicController.swift in Sources */,
+				5D1FE09921EC30E500686479 /* EditCharacteristicPropertyTableViewController.swift in Sources */,
+				5D1A78EC21E1AD49004E89AB /* VirtualPeripheral.swift in Sources */,
+				6C7526111C397A93009445CE /* RootController.swift in Sources */,
+				5D1A78C821E1AC02004E89AB /* BluetoothManager.swift in Sources */,
+				5D1A78D421E1ACD9004E89AB /* Characteristic2BtnsCell.swift in Sources */,
+				5D1A78F221E1AD70004E89AB /* LogStore.swift in Sources */,
+				5D1A78F121E1AD70004E89AB /* VirtualPeripheralStore.swift in Sources */,
+				5D1A78CC21E1AC02004E89AB /* BluetoothDelegate.swift in Sources */,
+				5DBAA11D21DCC9AE00FE075F /* VirtualPeripheralViewController.swift in Sources */,
+				5D1A78CB21E1AC02004E89AB /* CBUUID+LightBlue.swift in Sources */,
+				5D1A78C921E1AC02004E89AB /* CBAdvertisementData+LightBlue.swift in Sources */,
+				6CB464B21C3CCFD100D16277 /* UnavailableView.swift in Sources */,
+				5DC750C021DF6B440012B16C /* InfoViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CDD916C1C35964400DBC2E2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6CDD91751C35964400DBC2E2 /* Swift_LightBlueTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CDD91771C35964400DBC2E2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6CDD91801C35964400DBC2E2 /* Swift_LightBlueUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		6CDD91721C35964400DBC2E2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6CDD915B1C35964400DBC2E2 /* Swift-LightBlue */;
+			targetProxy = 6CDD91711C35964400DBC2E2 /* PBXContainerItemProxy */;
+		};
+		6CDD917D1C35964400DBC2E2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6CDD915B1C35964400DBC2E2 /* Swift-LightBlue */;
+			targetProxy = 6CDD917C1C35964400DBC2E2 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		6CDD91631C35964400DBC2E2 /* Main.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				6CDD91641C35964400DBC2E2 /* Base */,
+			);
+			name = Main.storyboard;
+			sourceTree = "<group>";
+		};
+		6CDD91681C35964400DBC2E2 /* LaunchScreen.storyboard */ = {
+			isa = PBXVariantGroup;
+			children = (
+				6CDD91691C35964400DBC2E2 /* Base */,
+			);
+			name = LaunchScreen.storyboard;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		6CDD91821C35964400DBC2E2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++0x";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu99;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
+				MTL_ENABLE_DEBUG_INFO = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		6CDD91831C35964400DBC2E2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++0x";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu99;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		6CDD91851C35964400DBC2E2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				INFOPLIST_FILE = "Swift-LightBlue/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.pluto-y.Swift-LightBlue";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE = "";
+				SWIFT_OBJC_BRIDGING_HEADER = "Swift-LightBlue/Swift-LightBlue-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_SWIFT3_OBJC_INFERENCE = Default;
+				SWIFT_VERSION = 4.2;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		6CDD91861C35964400DBC2E2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				INFOPLIST_FILE = "Swift-LightBlue/Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.pluto-y.Swift-LightBlue";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE = "";
+				SWIFT_OBJC_BRIDGING_HEADER = "Swift-LightBlue/Swift-LightBlue-Bridging-Header.h";
+				SWIFT_SWIFT3_OBJC_INFERENCE = Default;
+				SWIFT_VERSION = 4.2;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		6CDD91881C35964400DBC2E2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				INFOPLIST_FILE = "Swift-LightBlueTests/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.pluto-y.Swift-LightBlueTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_SWIFT3_OBJC_INFERENCE = On;
+				SWIFT_VERSION = 4.2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Swift-LightBlue.app/Swift-LightBlue";
+			};
+			name = Debug;
+		};
+		6CDD91891C35964400DBC2E2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				INFOPLIST_FILE = "Swift-LightBlueTests/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.pluto-y.Swift-LightBlueTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_SWIFT3_OBJC_INFERENCE = On;
+				SWIFT_VERSION = 4.2;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Swift-LightBlue.app/Swift-LightBlue";
+			};
+			name = Release;
+		};
+		6CDD918B1C35964400DBC2E2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INFOPLIST_FILE = "Swift-LightBlueUITests/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.pluto-y.Swift-LightBlueUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_SWIFT3_OBJC_INFERENCE = On;
+				SWIFT_VERSION = 4.2;
+				TEST_TARGET_NAME = "Swift-LightBlue";
+				USES_XCTRUNNER = YES;
+			};
+			name = Debug;
+		};
+		6CDD918C1C35964400DBC2E2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INFOPLIST_FILE = "Swift-LightBlueUITests/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.pluto-y.Swift-LightBlueUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_SWIFT3_OBJC_INFERENCE = On;
+				SWIFT_VERSION = 4.2;
+				TEST_TARGET_NAME = "Swift-LightBlue";
+				USES_XCTRUNNER = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		6CDD91571C35964400DBC2E2 /* Build configuration list for PBXProject "Swift-LightBlue" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6CDD91821C35964400DBC2E2 /* Debug */,
+				6CDD91831C35964400DBC2E2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6CDD91841C35964400DBC2E2 /* Build configuration list for PBXNativeTarget "Swift-LightBlue" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6CDD91851C35964400DBC2E2 /* Debug */,
+				6CDD91861C35964400DBC2E2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6CDD91871C35964400DBC2E2 /* Build configuration list for PBXNativeTarget "Swift-LightBlueTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6CDD91881C35964400DBC2E2 /* Debug */,
+				6CDD91891C35964400DBC2E2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6CDD918A1C35964400DBC2E2 /* Build configuration list for PBXNativeTarget "Swift-LightBlueUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6CDD918B1C35964400DBC2E2 /* Debug */,
+				6CDD918C1C35964400DBC2E2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 6CDD91541C35964400DBC2E2 /* Project object */;
+}

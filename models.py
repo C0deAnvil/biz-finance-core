@@ -532,6 +532,38 @@ class SupplierCatalogItem(TimestampMixin, Base):
     material = relationship("Material")
 
 
+class SupplierSample(TimestampMixin, Base):
+    """供应商送检样品；不参与库存数量、成本或出入库流水。"""
+    __tablename__ = "supplier_samples"
+
+    id = Column(Integer, primary_key=True)
+    sample_no = Column(String(60), nullable=False, unique=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
+    quantity = Column(Numeric(18, 4), nullable=False)
+    received_quantity = Column(Numeric(18, 4), nullable=True)
+    unit = Column(String(30), nullable=False)
+    batch_no = Column(String(80), nullable=False)
+    storage_location = Column(String(150), nullable=True)
+    receipt_remark = Column(Text, nullable=True)
+    status = Column(String(30), nullable=False, default="pending_receipt")
+    remark = Column(Text, nullable=True)
+    requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    received_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    received_at = Column(DateTime, nullable=True)
+    quality_task_id = Column(Integer, ForeignKey("quality_tasks.id"), nullable=True, unique=True)
+
+    supplier = relationship("Supplier")
+    product = relationship("Product")
+    material = relationship("Material")
+    warehouse = relationship("Warehouse")
+    requested_by = relationship("User", foreign_keys=[requested_by_id])
+    received_by = relationship("User", foreign_keys=[received_by_id])
+    quality_task = relationship("QualityTask", foreign_keys=[quality_task_id])
+
+
 class StandardPriceChangeLog(TimestampMixin, Base):
     __tablename__ = "standard_price_change_logs"
 

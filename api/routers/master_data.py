@@ -33,6 +33,7 @@ from models import (
     StandardPriceChangeLog,
     Supplier,
     SupplierCatalogItem,
+    SupplierSample,
     SupplierTag,
     User,
     Warehouse,
@@ -1023,6 +1024,7 @@ def _supplier_has_relations(db: Session, supplier_id: int) -> bool:
     return (
         db.execute(select(PurchaseOrder.id).where(PurchaseOrder.supplier_id == supplier_id)).first() is not None
         or db.execute(select(FinancialAccount.id).where(FinancialAccount.supplier_id == supplier_id)).first() is not None
+        or db.execute(select(SupplierSample.id).where(SupplierSample.supplier_id == supplier_id)).first() is not None
     )
 
 

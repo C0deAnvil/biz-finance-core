@@ -75,8 +75,8 @@ def repair_quality_workflows(db: Session) -> int:
     } if tasks else {}
 
     for task in tasks:
-        if task.stock_transfer_id:
-            continue  # 移库质检只通知目标仓质检员，不能由通用修复广播给全部质检员。
+        if task.stock_transfer_id or task.source_category == "supplier_sample":
+            continue  # 仓库专属质检不能由通用修复广播给全部质检员。
         try:
             production_task = production_tasks.get(task.production_task_id)
             task_no = production_task.task_no if production_task else str(task.production_task_id)

@@ -30,6 +30,7 @@ items = [
     ),
 ]
 order = Row(
+    id=123,
     order_no="XS20260924001", order_type="urgent", created_at=datetime(2026, 9, 24, 10, 30),
     customer=Row(name="示例客户有限公司"), sales_user=Row(full_name="示例销售", username="sales"),
     operator_user=Row(full_name="示例经办人", username="operator"),

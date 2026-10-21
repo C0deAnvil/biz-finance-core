@@ -1610,7 +1610,12 @@ def _quality_source_distribution(ctx: AnalyticsContext, metric: AnalyticsMetricD
     for row in ctx.quality_tasks:
         if not _date_in_range(row.created_at, ctx.date_from, ctx.date_to):
             continue
-        source_label = "采购来料" if row.source_category == "purchase" else "生产任务"
+        source_label = {
+            "purchase": "采购来料",
+            "supplier_sample": "供应商样品",
+            "stock_transfer": "移库质检",
+            "return": "退换货复检",
+        }.get(row.source_category, "生产任务")
         bucket[source_label] += 1
     rows = _distribution_rows(bucket)
     return _single_series_result(metric, rows, chart_type=chart_type)

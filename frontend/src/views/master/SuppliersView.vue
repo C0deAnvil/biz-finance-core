@@ -163,7 +163,7 @@
       />
 
       <div class="detail-toolbar">
-        <span>商品名录</span>
+        <span>可供货名录 · 样品质检矩阵</span>
         <div>
           <el-button v-if="canManageCatalog" size="small" @click="addCatalogRow">新增条目</el-button>
           <el-button v-if="canManageCatalog" size="small" type="primary" @click="saveCatalog">保存名录</el-button>
@@ -194,12 +194,24 @@
         <el-table-column label="规格" min-width="120">
           <template #default="scope">{{ catalogSpec(scope.row) }}</template>
         </el-table-column>
+        <el-table-column label="最新样品质检" min-width="190">
+          <template #default="scope">
+            <template v-if="latestSample(scope.row)">
+              <el-tag :type="sampleTagType(latestSample(scope.row))" size="small">{{ sampleStatusText(latestSample(scope.row)) }}</el-tag>
+              <el-tag v-if="pendingSample(scope.row) && pendingSample(scope.row).id !== latestSample(scope.row).id" type="warning" size="small">新样品待处理</el-tag>
+              <span class="sample-meta">{{ latestSample(scope.row).sample_no }}</span>
+            </template>
+            <span v-else class="sample-meta">未收样</span>
+          </template>
+        </el-table-column>
         <el-table-column label="备注" min-width="180">
           <template #default="scope"><el-input v-model="scope.row.remark" :disabled="!canManageCatalog" /></template>
         </el-table-column>
-        <el-table-column label="操作" width="160">
+        <el-table-column label="操作" width="270">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openPriceHistory(scope.row)">价格详情</el-button>
+            <el-button size="small" text type="primary" @click="openSampleHistory(scope.row)">样品记录</el-button>
+            <el-button v-if="canManageCatalog && scope.row.id" size="small" text type="success" @click="openSampleCreate(scope.row)">登记收样</el-button>
             <el-button v-if="canManageCatalog" size="small" text type="danger" @click="removeCatalogRow(scope.$index)">删除</el-button>
           </template>
         </el-table-column>
@@ -207,6 +219,44 @@
 
       <el-empty v-if="!catalogRows.length" description="暂无可供货商品名录" class="mt-16" />
     </el-drawer>
+
+    <el-dialog v-model="sampleCreateVisible" title="登记供应商待收样" width="600px">
+      <el-form :model="sampleForm" label-width="105px">
+        <el-form-item label="供应商"><el-input :model-value="catalogSupplier?.name || '-'" disabled /></el-form-item>
+        <el-form-item label="产品/原料"><el-input :model-value="sampleTarget ? catalogItemName(sampleTarget) : '-'" disabled /></el-form-item>
+        <el-form-item label="接收仓库" required>
+          <el-select v-model="sampleForm.warehouse_id" placeholder="选择负责收样的仓库" style="width: 100%">
+            <el-option v-for="item in warehouses" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="样品数量" required><el-input-number v-model="sampleForm.quantity" :min="0.0001" :precision="4" style="width: 100%" /></el-form-item>
+        <el-form-item label="批次号"><el-input v-model="sampleForm.batch_no" placeholder="留空则使用样品单号；库管收样时可修改" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="sampleForm.remark" type="textarea" :rows="3" placeholder="送样用途、检验要求等" /></el-form-item>
+      </el-form>
+      <p class="sample-meta">登记后由目标仓库库管确认收样，再自动生成质检任务。样品不计入可用库存。</p>
+      <template #footer><el-button @click="sampleCreateVisible = false">取消</el-button><el-button type="primary" @click="submitSample">提交待收样</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="sampleHistoryVisible" :title="sampleHistoryTitle" width="980px">
+      <el-table :data="sampleHistoryRows" stripe>
+        <el-table-column prop="sample_no" label="样品单号" width="145" />
+        <el-table-column prop="warehouse_name" label="接收仓库" width="130" />
+        <el-table-column prop="batch_no" label="批次号" min-width="130" />
+        <el-table-column label="数量" width="110"><template #default="scope">{{ formatNumber(scope.row.quantity) }} {{ scope.row.unit }}</template></el-table-column>
+        <el-table-column label="实收" width="110"><template #default="scope">{{ scope.row.received_quantity == null ? '-' : formatNumber(scope.row.received_quantity) }} {{ scope.row.received_quantity == null ? '' : scope.row.unit }}</template></el-table-column>
+        <el-table-column prop="storage_location" label="存放位置" min-width="120" />
+        <el-table-column label="质检结果" width="135"><template #default="scope"><el-tag :type="sampleTagType(scope.row)">{{ sampleStatusText(scope.row) }}</el-tag></template></el-table-column>
+        <el-table-column prop="report_summary" label="报告摘要" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="120"><template #default="scope"><el-button v-if="scope.row.inspection_id" text type="primary" @click="openSampleReport(scope.row)">查看报告</el-button></template></el-table-column>
+      </el-table>
+      <el-empty v-if="!sampleHistoryRows.length" description="该品项暂无样品记录" />
+    </el-dialog>
+
+    <el-dialog v-model="sampleReportVisible" title="样品质检报告与附件" width="800px">
+      <p>{{ sampleReport?.result_text || '-' }}</p>
+      <p>报告摘要：{{ sampleReport?.report_summary || '-' }}</p>
+      <AttachmentUploader v-if="sampleReport?.inspection_id" business-type="quality_inspection" :business-id="sampleReport.inspection_id" readonly />
+    </el-dialog>
 
     <el-dialog v-model="priceHistoryVisible" :title="priceHistoryTitle" width="760px">
       <div v-if="priceHistorySummary" class="price-summary">
@@ -275,6 +325,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { get, post, put, remove } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
+import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import CounterpartyAccountsPanel from '../../components/CounterpartyAccountsPanel.vue'
 import PageSection from '../../components/PageSection.vue'
 import { useLocalPagination } from '../../composables/useLocalPagination'
@@ -315,6 +366,16 @@ function emptyForm() {
 
 const form = reactive(emptyForm())
 const catalogRows = ref([])
+const warehouses = ref([])
+const samples = ref([])
+const sampleTarget = ref(null)
+const sampleCreateVisible = ref(false)
+const sampleHistoryVisible = ref(false)
+const sampleReportVisible = ref(false)
+const sampleHistoryRows = ref([])
+const sampleHistoryTitle = ref('样品记录')
+const sampleReport = ref(null)
+const sampleForm = reactive({ warehouse_id: null, quantity: 1, batch_no: '', remark: '' })
 const priceHistoryVisible = ref(false)
 const priceHistoryRows = ref([])
 const priceHistoryTitle = ref('历史供价详情')
@@ -443,10 +504,78 @@ function openEdit(row) {
 
 async function openCatalog(row) {
   await loadCatalogOptions()
-  const detail = await get(`/api/master-data/suppliers/${row.id}/catalog`)
+  const [detail, sampleRows] = await Promise.all([
+    get(`/api/master-data/suppliers/${row.id}/catalog`),
+    get(`/api/supplier-samples?supplier_id=${row.id}`, { force: true })
+  ])
   catalogSupplier.value = detail.supplier
   catalogRows.value = normalizeCatalogRows(detail.items)
+  samples.value = sampleRows || []
   catalogVisible.value = true
+}
+
+function samplesFor(row) {
+  const targetId = Number(row.target_id || row.product_id || row.material_id)
+  return samples.value.filter((sample) => sample.item_type === row.item_type && Number(sample.product_id || sample.material_id) === targetId)
+}
+
+function latestSample(row) {
+  const rows = samplesFor(row)
+  return rows.find((sample) => sample.status === 'completed') || rows[0] || null
+}
+
+function pendingSample(row) {
+  return samplesFor(row).find((sample) => sample.status !== 'completed') || null
+}
+
+function sampleStatusText(row) {
+  if (!row) return '未收样'
+  if (row.status === 'pending_receipt') return '待库管收样'
+  if (row.status === 'pending_quality') return '待质检'
+  return row.is_passed ? `合格 · ${row.grade || '-'}` : `不合格 · ${row.grade || '-'}`
+}
+
+function sampleTagType(row) {
+  if (row.status === 'completed') return row.is_passed ? 'success' : 'danger'
+  return 'warning'
+}
+
+async function openSampleCreate(row) {
+  if (!row.id) {
+    ElMessage.warning('请先保存名录条目，再登记收样')
+    return
+  }
+  sampleTarget.value = row
+  warehouses.value = await get('/api/master-data/warehouses')
+  Object.assign(sampleForm, { warehouse_id: null, quantity: 1, batch_no: '', remark: '' })
+  sampleCreateVisible.value = true
+}
+
+async function submitSample() {
+  if (!catalogSupplier.value || !sampleTarget.value || !sampleForm.warehouse_id || Number(sampleForm.quantity) <= 0) {
+    ElMessage.warning('请选择接收仓库并填写正确的样品数量')
+    return
+  }
+  await post('/api/supplier-samples', {
+    supplier_id: catalogSupplier.value.id,
+    product_id: sampleTarget.value.item_type === 'product' ? sampleTarget.value.target_id : null,
+    material_id: sampleTarget.value.item_type === 'material' ? sampleTarget.value.target_id : null,
+    ...sampleForm
+  })
+  ElMessage.success('待收样任务已提交给目标仓库库管')
+  sampleCreateVisible.value = false
+  await openCatalog(catalogSupplier.value)
+}
+
+function openSampleHistory(row) {
+  sampleHistoryTitle.value = `${catalogSupplier.value?.name || ''} · ${catalogItemName(row)} · 样品记录`
+  sampleHistoryRows.value = samplesFor(row)
+  sampleHistoryVisible.value = true
+}
+
+function openSampleReport(row) {
+  sampleReport.value = row
+  sampleReportVisible.value = true
 }
 
 function addCatalogRow() {
@@ -600,6 +729,7 @@ onMounted(async () => {
 .drawer-meta-full { grid-column: 1 / -1; }
 .tag-chip { margin-right: 6px; margin-bottom: 4px; }
 .account-hint { color: #909399; font-size: 13px; }
+.sample-meta { color: #909399; font-size: 12px; margin-left: 6px; }
 .w-260 { width: 260px; }
 .w-200 { width: 200px; }
 .w-160 { width: 160px; }

@@ -104,6 +104,34 @@
       />
     </PageSection>
 
+    <PageSection v-if="auth.isRole('inventory')" title="供应商样品待接收" description="核对实物后确认收样；自动生成目标仓库质检任务。样品单独留存，不计入正常库存。">
+      <el-table :data="pendingSamples" stripe>
+        <el-table-column prop="sample_no" label="样品单号" width="155" />
+        <el-table-column prop="supplier_name" label="供应商" min-width="160" />
+        <el-table-column prop="item_name" label="产品/原料" min-width="160" />
+        <el-table-column prop="warehouse_name" label="接收仓库" width="130" />
+        <el-table-column prop="batch_no" label="批次" width="145" />
+        <el-table-column label="数量" width="120"><template #default="scope">{{ formatNumber(scope.row.quantity) }} {{ scope.row.unit }}</template></el-table-column>
+        <el-table-column prop="remark" label="送样说明" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="requested_by_name" label="登记人" width="110" />
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="scope"><el-button size="small" type="primary" @click="openReceiveSample(scope.row)">确认收样</el-button></template>
+        </el-table-column>
+      </el-table>
+    </PageSection>
+
+    <el-dialog v-model="sampleReceiveVisible" title="确认供应商样品收样" width="560px">
+      <p v-if="activeSample">{{ activeSample.supplier_name }} · {{ activeSample.item_name }} · {{ activeSample.warehouse_name }}</p>
+      <el-form :model="sampleReceiveForm" label-width="105px">
+        <el-form-item label="实收数量" required><el-input-number v-model="sampleReceiveForm.received_quantity" :min="0.0001" :precision="4" style="width: 100%" /></el-form-item>
+        <el-form-item label="实收批次"><el-input v-model="sampleReceiveForm.batch_no" /></el-form-item>
+        <el-form-item label="存放位置"><el-input v-model="sampleReceiveForm.storage_location" placeholder="如：样品柜 A1" /></el-form-item>
+        <el-form-item label="收样备注"><el-input v-model="sampleReceiveForm.receipt_remark" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <p>确认后会生成质检任务；样品不增加可用库存，也不生成常规入库流水。</p>
+      <template #footer><el-button @click="sampleReceiveVisible = false">取消</el-button><el-button type="primary" @click="receiveSample">确认收样</el-button></template>
+    </el-dialog>
+
     <PageSection title="库存作业请求" description="所有生产领料、采购到货、质检放行、销售发货、退货回库等库存动作，统一由库管在此手工完成。">
       <div class="inventory-table-scroll inventory-operation-table-scroll">
       <el-table class="inventory-operation-table" :data="operationRequests" stripe :fit="false">
@@ -431,6 +459,10 @@ const transactions = ref([])
 const transactionLedgerRows = ref([])
 const transactionTotal = ref(0)
 const operationRequests = ref([])
+const pendingSamples = ref([])
+const sampleReceiveVisible = ref(false)
+const activeSample = ref(null)
+const sampleReceiveForm = reactive({ received_quantity: 1, batch_no: '', storage_location: '', receipt_remark: '' })
 const drawerVisible = ref(false)
 const operationDialogVisible = ref(false)
 const manualDialogVisible = ref(false)
@@ -554,12 +586,33 @@ async function load({ skipRouteFocus = false } = {}) {
     loadTransactionLedger()
   ])
   operationRequests.value = operationRows
+  if (auth.isRole('inventory')) {
+    const sampleRows = await get('/api/supplier-samples?status=pending_receipt', { force: true })
+    pendingSamples.value = (sampleRows || []).filter((row) => row.status === 'pending_receipt')
+  }
   if (route.query.focusType === 'low_stock_alert') {
     filters.alertOnly = true
   }
   if (!skipRouteFocus) {
     await applyRouteFocus()
   }
+}
+
+function openReceiveSample(row) {
+  activeSample.value = row
+  Object.assign(sampleReceiveForm, { received_quantity: Number(row.quantity), batch_no: row.batch_no || '', storage_location: '', receipt_remark: '' })
+  sampleReceiveVisible.value = true
+}
+
+async function receiveSample() {
+  if (!activeSample.value || Number(sampleReceiveForm.received_quantity) <= 0) {
+    ElMessage.warning('请填写正确的实收数量')
+    return
+  }
+  await post(`/api/supplier-samples/${activeSample.value.id}/receive`, sampleReceiveForm)
+  ElMessage.success('已收样，质检任务已发送给目标仓库质检员')
+  sampleReceiveVisible.value = false
+  await load()
 }
 
 function resetManualForm() {

@@ -177,6 +177,7 @@
         <el-descriptions-item label="质检任务号">{{ detail.quality_no }}</el-descriptions-item>
         <el-descriptions-item label="来源">{{ detail.source_label || '-' }}</el-descriptions-item>
         <el-descriptions-item v-if="detail.stock_transfer_no" label="移库单号">{{ detail.stock_transfer_no }}</el-descriptions-item>
+        <el-descriptions-item v-if="detail.supplier_sample_no" label="供应商样品单号">{{ detail.supplier_sample_no }}</el-descriptions-item>
         <el-descriptions-item label="采购订单">{{ detail.purchase_order_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="到货单">{{ detail.purchase_receipt_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="供应商">{{ detail.supplier_name || '-' }}</el-descriptions-item>
@@ -425,7 +426,7 @@ function openInspection(row) {
   inspectionForm.result_text = ''
   inspectionForm.grade = 'A'
   inspectionForm.is_passed = true
-  inspectionForm.inspected_quantity = 1
+  inspectionForm.inspected_quantity = row.source_type === 'supplier_sample' ? Number(row.sample_quantity || 1) : 1
   inspectionForm.sample_consumption_qty = 0
   inspectionForm.report_summary = ''
   inspectionVisible.value = true

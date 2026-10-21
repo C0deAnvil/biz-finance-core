@@ -25,6 +25,7 @@ from models import (
     Role,
     SalesReturn,
     StockTransfer,
+    SupplierSample,
     User,
     Warehouse,
 )
@@ -139,6 +140,7 @@ def _serialize_quality_task(
     quality_cost: QualityCostRecord | None = None,
     related_task_map: dict[int, ProductionTask] | None = None,
     warehouse_name: str | None = None,
+    sample: SupplierSample | None = None,
 ) -> dict:
     passed_tests = sum(1 for item in inspections if item.is_passed)
     latest_grade = inspections[-1].grade if inspections else None
@@ -150,16 +152,20 @@ def _serialize_quality_task(
     transfer = task.stock_transfer if task.stock_transfer_id else None
     if transfer:
         source_type = "stock_transfer"
+    if sample:
+        source_type = "supplier_sample"
     return_meta = parse_return_quality_meta(production_task)
     source_label = (
         return_meta.get("source_label")
         if return_meta
-        else "移库质检" if transfer else "采购来料" if source_type == "purchase_quality" else "返工任务" if source_type == "rework" else "生产任务"
+        else "供应商样品" if sample else "移库质检" if transfer else "采购来料" if source_type == "purchase_quality" else "返工任务" if source_type == "rework" else "生产任务"
     )
     purchase_meta = parse_purchase_quality_meta(production_task)
     item_name = return_meta.get("item_label") or purchase_meta.get("item_name") or (production_task.product.name if production_task and production_task.product else None)
     if transfer:
         item_name = transfer.product.name if transfer.product else (transfer.material.name if transfer.material else (transfer.packaging_config.packaging_name if transfer.packaging_config else None))
+    if sample:
+        item_name = sample.product.name if sample.product else sample.material.name if sample.material else None
     return {
         "id": task.id,
         "quality_no": task.quality_no,
@@ -168,13 +174,16 @@ def _serialize_quality_task(
         "production_task_no": production_task.task_no if production_task else None,
         "stock_transfer_id": transfer.id if transfer else None,
         "stock_transfer_no": transfer.transfer_no if transfer else None,
+        "supplier_sample_id": sample.id if sample else None,
+        "supplier_sample_no": sample.sample_no if sample else None,
+        "sample_quantity": float(sample.received_quantity or sample.quantity) if sample else None,
         "source_type": source_type,
         "source_label": source_label,
-        "product_id": transfer.product_id if transfer else (production_task.product_id if production_task else None),
+        "product_id": sample.product_id if sample else transfer.product_id if transfer else (production_task.product_id if production_task else None),
         "product_name": item_name,
         "item_name": item_name,
-        "item_type": ("product" if transfer.product_id else "material" if transfer.material_id else "packaging") if transfer else purchase_meta.get("item_type"),
-        "item_code": purchase_meta.get("item_code"),
+        "item_type": ("product" if sample.product_id else "material") if sample else ("product" if transfer.product_id else "material" if transfer.material_id else "packaging") if transfer else purchase_meta.get("item_type"),
+        "item_code": (sample.product.product_code if sample.product else sample.material.material_code) if sample else purchase_meta.get("item_code"),
         "purchase_order_id": purchase_meta.get("purchase_order_id"),
         "purchase_order_no": purchase_meta.get("purchase_order_no"),
         "purchase_receipt_id": purchase_meta.get("purchase_receipt_id"),
@@ -182,9 +191,9 @@ def _serialize_quality_task(
         "return_business_type": return_meta.get("business_type"),
         "return_business_id": return_meta.get("business_id"),
         "return_business_no": return_meta.get("business_no"),
-        "supplier_name": purchase_meta.get("supplier_name"),
-        "warehouse_id": transfer.target_warehouse_id if transfer else purchase_meta.get("warehouse_id") or (production_task.warehouse_id if production_task else None),
-        "warehouse_name": (task.target_warehouse.name if task.target_warehouse else None) if transfer else purchase_meta.get("warehouse_name") or warehouse_name,
+        "supplier_name": sample.supplier.name if sample else purchase_meta.get("supplier_name"),
+        "warehouse_id": sample.warehouse_id if sample else transfer.target_warehouse_id if transfer else purchase_meta.get("warehouse_id") or (production_task.warehouse_id if production_task else None),
+        "warehouse_name": sample.warehouse.name if sample else (task.target_warehouse.name if task.target_warehouse else None) if transfer else purchase_meta.get("warehouse_name") or warehouse_name,
         "display_specification": purchase_meta.get("display_specification"),
         "required_tests": task.required_tests,
         # 指定质检员(派给谁检)与归属仓库,供前端展示与权限提示
@@ -220,11 +229,13 @@ def _serialize_quality_task(
         "quality_cost_status": quality_cost.status if quality_cost else None,
         "quality_cost_status_label": status_label(quality_cost.status) if quality_cost else None,
         "can_record_inspection": status not in {"completed", "rejected", "scrapped", "rework_created"},
-        "can_rework": status == "pending_disposition" and not transfer,
-        "can_scrap": status == "pending_disposition" and not transfer,
-        "can_allow_inbound": status == "ready_for_inbound" and not transfer,
-        "can_apply_inbound": status == "ready_for_inbound" and source_type not in {"purchase_quality", "stock_transfer"},
+        "can_rework": status == "pending_disposition" and not transfer and not sample,
+        "can_scrap": status == "pending_disposition" and not transfer and not sample,
+        "can_allow_inbound": status == "ready_for_inbound" and not transfer and not sample,
+        "can_apply_inbound": status == "ready_for_inbound" and source_type not in {"purchase_quality", "stock_transfer", "supplier_sample"},
         "workflow_hint": (
+            ("请录入样品质检结果并上传报告；完成后自动归档至供应商可供货名录，不生成库存入库。" if status == "pending" else "样品质检完成；结果已归档，不生成库存入库。")
+            if sample else
             "继续录入质检结果，达到规定次数后自动进入后续处理。"
             if status in {"pending", "inspecting"}
             else "存在不合格结果，请处理返工或报废。"
@@ -430,7 +441,8 @@ def list_quality_tasks(current_user: User = Depends(get_current_user), db: Sessi
         if scoped_warehouse_ids is None:
             tasks = [
                 task for task in tasks
-                if not task.stock_transfer_id or task.assigned_inspector_id == current_user.id
+                if (not task.stock_transfer_id and task.source_category != "supplier_sample")
+                or task.assigned_inspector_id == current_user.id
             ]
         else:
             scoped_set = set(scoped_warehouse_ids)
@@ -447,7 +459,7 @@ def list_quality_tasks(current_user: User = Depends(get_current_user), db: Sessi
                 if task.assigned_inspector_id == current_user.id:
                     filtered.append(task)
                     continue
-                if task.stock_transfer_id and task.assigned_inspector_id:
+                if (task.stock_transfer_id or task.source_category == "supplier_sample") and task.assigned_inspector_id:
                     continue
                 pt = pt_map.get(task.production_task_id)
                 meta = parse_purchase_quality_meta(pt) if pt else {}
@@ -461,6 +473,15 @@ def list_quality_tasks(current_user: User = Depends(get_current_user), db: Sessi
                     filtered.append(task)
             tasks = filtered
     task_ids = [row.id for row in tasks]
+    sample_map = {
+        row.quality_task_id: row
+        for row in db.execute(
+            select(SupplierSample).options(
+                joinedload(SupplierSample.supplier), joinedload(SupplierSample.product),
+                joinedload(SupplierSample.material), joinedload(SupplierSample.warehouse),
+            ).where(SupplierSample.quality_task_id.in_(task_ids))
+        ).scalars().all()
+    } if task_ids else {}
     production_task_ids = [row.production_task_id for row in tasks]
 
     production_tasks = {
@@ -520,6 +541,7 @@ def list_quality_tasks(current_user: User = Depends(get_current_user), db: Sessi
                     (production_tasks.get(task.production_task_id).warehouse_id if production_tasks.get(task.production_task_id) else None)
                     or 0
                 ),
+                sample_map.get(task.id),
             )
             for task in tasks
         ]
@@ -706,6 +728,14 @@ def get_quality_task_detail(task_id: int, current_user: User = Depends(get_curre
         scoped = get_inventory_scope_warehouse_ids(db, current_user)
         if task.assigned_inspector_id != current_user.id and (scoped is None or task.target_warehouse_id not in scoped):
             raise HTTPException(status_code=403, detail="仅目标仓库质检员可查看此移库质检任务")
+    sample = db.scalar(select(SupplierSample).options(
+        joinedload(SupplierSample.supplier), joinedload(SupplierSample.product),
+        joinedload(SupplierSample.material), joinedload(SupplierSample.warehouse),
+    ).where(SupplierSample.quality_task_id == task.id))
+    if sample and current_user.role.code == "quality":
+        scoped = get_inventory_scope_warehouse_ids(db, current_user)
+        if task.assigned_inspector_id != current_user.id and sample.warehouse_id not in (scoped or []) and sample.warehouse.qc_user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="仅目标仓库质检员可查看此样品质检任务")
     production_task = db.execute(
         select(ProductionTask).options(joinedload(ProductionTask.product)).where(ProductionTask.id == task.production_task_id)
     ).scalar_one_or_none()
@@ -728,7 +758,7 @@ def get_quality_task_detail(task_id: int, current_user: User = Depends(get_curre
             related_task_map[related_task.id] = related_task
     return api_response(
         data={
-            **_serialize_quality_task(task, production_task, inspections, inbound, disposition, quality_cost, related_task_map),
+            **_serialize_quality_task(task, production_task, inspections, inbound, disposition, quality_cost, related_task_map, sample=sample),
             "inspections": [_serialize_inspection(item) for item in inspections],
             "inbound_application": {
                 "id": inbound.id,
@@ -762,6 +792,19 @@ def create_inspection(
         raise HTTPException(status_code=404, detail="质检任务不存在")
     if task.status in {"completed", "rejected", "scrapped", "rework_created"}:
         raise HTTPException(status_code=409, detail="当前质检任务状态不允许继续录入")
+    sample = db.scalar(select(SupplierSample).where(SupplierSample.quality_task_id == task.id))
+    if sample:
+        if sample.status != "pending_quality":
+            raise HTTPException(status_code=409, detail="样品尚未收样或已完成质检")
+        if current_user.role.code == "quality":
+            scoped = get_inventory_scope_warehouse_ids(db, current_user)
+            warehouse = db.get(Warehouse, sample.warehouse_id)
+            if task.assigned_inspector_id != current_user.id and sample.warehouse_id not in (scoped or []) and (not warehouse or warehouse.qc_user_id != current_user.id):
+                raise HTTPException(status_code=403, detail="仅目标仓库质检员可处理此样品")
+        if Decimal(payload.inspected_quantity) > Decimal(sample.received_quantity or sample.quantity):
+            raise HTTPException(status_code=409, detail="检验数量不能大于收样数量")
+        if Decimal(payload.sample_consumption_qty) > Decimal(sample.received_quantity or sample.quantity):
+            raise HTTPException(status_code=409, detail="样品耗用不能大于收样数量")
     if task.stock_transfer_id:
         if task.status != "pending":
             raise HTTPException(status_code=409, detail="移库质检已处理")
@@ -807,6 +850,20 @@ def create_inspection(
     )
     db.add(inspection)
     db.flush()
+    if sample:
+        task.status = "completed"
+        sample.status = "completed"
+        complete_todos(db, business_type="quality_task", business_id=task.id)
+        create_notification(
+            db, title="供应商样品质检已完成",
+            content=f"{sample.sample_no} 质检结果：{'合格' if passed else '不合格'}（{inspection.grade}）。请到供应商名录查看报告。",
+            module="quality", recipient_user_ids=[sample.requested_by_id],
+            created_by_id=current_user.id, category="success" if passed else "warning",
+        )
+        write_operation_log(db, user_id=current_user.id, module="quality", action="inspect_supplier_sample",
+                            content=f"供应商样品质检 {sample.sample_no}", after_data={"sample_id": sample.id, "passed": passed, "inspection_id": inspection.id})
+        db.commit()
+        return api_response(data={"id": inspection.id, "status": task.status})
     if task.stock_transfer_id:
         sync_transfer_inspection(
             db, task, current_user,
@@ -870,6 +927,8 @@ def create_rework_task(
     task = db.execute(select(QualityTask).where(QualityTask.id == task_id)).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="质检任务不存在")
+    if task.source_category == "supplier_sample":
+        raise HTTPException(status_code=409, detail="供应商样品质检不参与生产返工流程")
     inspections = db.execute(select(QualityInspection).where(QualityInspection.quality_task_id == task.id)).scalars().all()
     _ensure_failed_task(task, inspections)
     existing = db.execute(select(QualityDisposition).where(QualityDisposition.quality_task_id == task.id)).scalar_one_or_none()
@@ -1021,6 +1080,8 @@ def create_scrap_record(
     task = db.execute(select(QualityTask).where(QualityTask.id == task_id)).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="质检任务不存在")
+    if task.source_category == "supplier_sample":
+        raise HTTPException(status_code=409, detail="供应商样品质检不参与库存报废流程")
     inspections = db.execute(select(QualityInspection).where(QualityInspection.quality_task_id == task.id)).scalars().all()
     _ensure_failed_task(task, inspections)
     existing = db.execute(select(QualityDisposition).where(QualityDisposition.quality_task_id == task.id)).scalar_one_or_none()
@@ -1133,6 +1194,8 @@ def allow_inbound(
     task = db.execute(select(QualityTask).where(QualityTask.id == task_id)).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="质检任务不存在")
+    if task.source_category == "supplier_sample":
+        raise HTTPException(status_code=409, detail="供应商样品不计入库存，不能准许入库")
     if task.status != "ready_for_inbound":
         raise HTTPException(status_code=409, detail="当前质检任务未达到准许入库条件")
 
@@ -1305,6 +1368,8 @@ def create_inbound_application(
     task = db.execute(select(QualityTask).options(joinedload(QualityTask.inspections)).where(QualityTask.id == payload.quality_task_id)).unique().scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="质检任务不存在")
+    if task.source_category == "supplier_sample":
+        raise HTTPException(status_code=409, detail="供应商样品不计入库存，不能申请入库")
     production_task = db.execute(select(ProductionTask).where(ProductionTask.id == task.production_task_id)).scalar_one_or_none()
     if production_task and (production_task.source_type == "purchase_quality" or task.source_category == "purchase"):
         raise HTTPException(status_code=409, detail="采购来料质检请直接执行“准许入库”，无需再发起入库申请")

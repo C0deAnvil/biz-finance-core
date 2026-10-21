@@ -49,6 +49,7 @@ APPROVAL_TODO_TYPES = {
 }
 
 TODO_ROUTE_BY_BUSINESS_TYPE = {
+    "supplier_sample": "/inventory/stocks",
     "inventory_operation_request": "/inventory/stocks",
     "inventory_exception": "/inventory/exceptions",
     "fulfillment_demand": "/sales/orders",
