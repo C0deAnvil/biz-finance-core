@@ -129,7 +129,7 @@
         <el-form-item label="收样备注"><el-input v-model="sampleReceiveForm.receipt_remark" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <p>确认后会生成质检任务；样品不增加可用库存，也不生成常规入库流水。</p>
-      <template #footer><el-button @click="sampleReceiveVisible = false">取消</el-button><el-button type="primary" @click="receiveSample">确认收样</el-button></template>
+      <template #footer><el-button @click="sampleReceiveVisible = false">取消</el-button><el-button type="primary" :loading="sampleReceiveSubmitting" @click="receiveSample">确认收样</el-button></template>
     </el-dialog>
 
     <PageSection title="库存作业请求" description="所有生产领料、采购到货、质检放行、销售发货、退货回库等库存动作，统一由库管在此手工完成。">
@@ -461,6 +461,7 @@ const transactionTotal = ref(0)
 const operationRequests = ref([])
 const pendingSamples = ref([])
 const sampleReceiveVisible = ref(false)
+const sampleReceiveSubmitting = ref(false)
 const activeSample = ref(null)
 const sampleReceiveForm = reactive({ received_quantity: 1, batch_no: '', storage_location: '', receipt_remark: '' })
 const drawerVisible = ref(false)
@@ -609,10 +610,25 @@ async function receiveSample() {
     ElMessage.warning('请填写正确的实收数量')
     return
   }
-  await post(`/api/supplier-samples/${activeSample.value.id}/receive`, sampleReceiveForm)
-  ElMessage.success('已收样，质检任务已发送给目标仓库质检员')
+  if (sampleReceiveSubmitting.value) return
+  sampleReceiveSubmitting.value = true
+  try {
+    await post(`/api/supplier-samples/${activeSample.value.id}/receive`, sampleReceiveForm)
+  } catch (error) {
+    ElMessage.error(error?.message || '确认收样失败，请稍后重试')
+    return
+  } finally {
+    sampleReceiveSubmitting.value = false
+  }
+  ElMessage.success('已收样，质检任务已发送给质检人员')
   sampleReceiveVisible.value = false
-  await load()
+  activeSample.value = null
+  try {
+    // 当前 URL 仍可能带有 supplier_sample 定位参数，刷新列表时不要再次打开已处理样品。
+    await load({ skipRouteFocus: true })
+  } catch (error) {
+    ElMessage.warning(`收样已成功，但列表刷新失败：${error?.message || '请手动刷新页面'}`)
+  }
 }
 
 function resetManualForm() {
@@ -657,7 +673,18 @@ function stockRowClassName({ row }) {
 async function applyRouteFocus() {
   const focusId = Number(route.query.focusId || 0)
   const focusType = String(route.query.focusType || '')
-  if (!focusId || focusType !== 'inventory_operation_request') return
+  if (!focusId) return
+  if (focusType === 'supplier_sample') {
+    const target = pendingSamples.value.find((item) => item.id === focusId)
+    if (!target) {
+      ElMessage.info('该样品已确认收样，或当前账号没有目标仓库的收样权限')
+      return
+    }
+    await nextTick()
+    openReceiveSample(target)
+    return
+  }
+  if (focusType !== 'inventory_operation_request') return
   const target = operationRequests.value.find((item) => item.id === focusId)
   await nextTick()
   await openOperationRequest(target || { id: focusId }, route.query.mode === 'execute')

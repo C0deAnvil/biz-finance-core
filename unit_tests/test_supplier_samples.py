@@ -95,3 +95,36 @@ def test_supplier_sample_receipt_quality_and_no_inventory_movement():
         assert latest["sample_no"] == second["data"]["sample_no"]
         assert latest["status"] == "completed" and latest["is_passed"] is False
         assert db.scalars(select(Inventory)).all() == []
+
+        # 兼容旧仓库数据：未指定专属质检员、质检部门也未维护仓库范围时，
+        # 收样不能静默失败，应正常生成任务并通知全部在岗质检人员。
+        warehouse.qc_user_id = None
+        db.commit()
+        fallback_sample = create_sample(
+            SampleCreate(
+                supplier_id=supplier.id,
+                material_id=material.id,
+                warehouse_id=warehouse.id,
+                quantity=Decimal("0.5"),
+                batch_no="B-FALLBACK",
+            ),
+            current_user=purchaser,
+            db=db,
+        )
+        fallback_task_id = receive_sample(
+            fallback_sample["data"]["id"],
+            SampleReceive(received_quantity=Decimal("0.5")),
+            current_user=keeper,
+            db=db,
+        )["data"]["quality_task_id"]
+        fallback_task = db.get(QualityTask, fallback_task_id)
+        assert fallback_task.assigned_inspector_id is None
+        assert {
+            row.assigned_user_id
+            for row in db.scalars(
+                select(TodoItem).where(
+                    TodoItem.business_type == "quality_task",
+                    TodoItem.business_id == fallback_task_id,
+                )
+            )
+        } == {inspector.id, other_inspector.id}

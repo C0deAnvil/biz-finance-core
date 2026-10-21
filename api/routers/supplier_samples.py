@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import require_roles
-from models import Material, Product, QualityInspection, QualityTask, Supplier, SupplierCatalogItem, SupplierSample, User, Warehouse
+from models import Material, Product, QualityInspection, QualityTask, Role, Supplier, SupplierCatalogItem, SupplierSample, User, Warehouse
 from responses import api_response
 from services.core import complete_todos, create_notification, create_todo, next_business_no, write_operation_log
 from services.organization import get_inventory_scope_warehouse_ids
@@ -195,14 +195,24 @@ def receive_sample(
         raise HTTPException(status_code=403, detail="仅目标仓库库管可以确认收样")
     recipients = resolve_quality_recipients_for_warehouse(db, warehouse_id=warehouse.id, fallback_user_ids=[])
     if not recipients:
-        raise HTTPException(status_code=409, detail=f"{warehouse.name}未配置在岗质检员，不能确认收样")
+        # 供应商收样是新增流程，旧仓库通常还没有维护 qc_user_id 或质检部门仓库范围。
+        # 只对该流程兼容回退到在岗质检人员，避免影响采购/生产现有的仓库质检分配规则。
+        recipients = list(db.scalars(
+            select(User.id).join(Role, User.role_id == Role.id).where(
+                Role.code.in_(["quality", "quality_super"]),
+                User.is_active.is_(True),
+            )
+        ))
+    if not recipients:
+        raise HTTPException(status_code=409, detail="系统没有在岗质检人员，不能确认收样；请先启用质检账号")
     if warehouse.qc_user_id in recipients:
         recipients = [warehouse.qc_user_id]
+    assigned_inspector_id = recipients[0] if len(recipients) == 1 else None
     task = QualityTask(
         quality_no=next_business_no(db, "ZJY"), batch_no=sample.batch_no,
         source_category="supplier_sample", required_tests=1, status="pending",
         submitted_by_id=current_user.id, target_warehouse_id=warehouse.id,
-        assigned_inspector_id=warehouse.qc_user_id if warehouse.qc_user_id in recipients else None,
+        assigned_inspector_id=assigned_inspector_id,
     )
     db.add(task)
     db.flush()
