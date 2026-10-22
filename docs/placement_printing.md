@@ -4,7 +4,7 @@
 
 ## 部署
 
-后端需安装新增依赖 `reportlab`，然后运行 `alembic upgrade head`，重启后端并重新构建前端。迁移创建打印设备、打印任务和三天保留的调用审计表。项目随附的 Noto Sans SC 字体会嵌入 PDF，部署时必须保留 `assets/fonts`。部署前按现有流程备份数据库。
+后端及打印电脑的项目虚拟环境需安装 `requirements.txt` 中的依赖（包括 `reportlab` 和浏览器兼容 HTTPS 客户端 `curl_cffi`），然后运行 `alembic upgrade head`，重启后端并重新构建前端。迁移创建打印设备、打印任务和三天保留的调用审计表。项目随附的 Noto Sans SC 字体会嵌入 PDF，部署时必须保留 `assets/fonts`。部署前按现有流程备份数据库。
 
 ## 自动打印设备
 

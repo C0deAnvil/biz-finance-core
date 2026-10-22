@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from api.routers.quality import create_inbound_application, create_inspection, list_quality_tasks
 from api.routers.supplier_samples import SampleCreate, SampleReceive, create_sample, list_samples, receive_sample
-from models import Base, Inventory, Material, QualityInspection, QualityTask, Role, Supplier, SupplierCatalogItem, SupplierSample, TodoItem, User, Warehouse
+from models import Base, Inventory, Material, PackagingConfig, QualityInspection, QualityTask, Role, Supplier, SupplierCatalogItem, SupplierSample, TodoItem, User, Warehouse
 from schemas.quality import InspectionCreate, QualityInboundCreate
 
 
@@ -38,7 +38,13 @@ def test_supplier_sample_receipt_quality_and_no_inventory_movement():
         material = Material(material_code="SAMPLE_MAT", name="样品原料", unit="kg")
         db.add_all([warehouse, supplier, material])
         db.flush()
-        db.add(SupplierCatalogItem(supplier_id=supplier.id, material_id=material.id))
+        packaging = PackagingConfig(entity_type="global", entity_id=0, packaging_name="样品桶", kg_per_bag=25, is_active=True)
+        db.add(packaging)
+        db.flush()
+        db.add_all([
+            SupplierCatalogItem(supplier_id=supplier.id, material_id=material.id),
+            SupplierCatalogItem(supplier_id=supplier.id, packaging_config_id=packaging.id),
+        ])
         db.commit()
 
         created = create_sample(SampleCreate(supplier_id=supplier.id, material_id=material.id,
@@ -82,6 +88,34 @@ def test_supplier_sample_receipt_quality_and_no_inventory_movement():
         assert rows[0]["report_summary"] == "符合样品检验标准"
         assert rows[0]["received_quantity"] == 2.4
         assert rows[0]["storage_location"] == "样品柜 A1"
+
+        packaging_created = create_sample(
+            SampleCreate(
+                supplier_id=supplier.id,
+                packaging_config_id=packaging.id,
+                warehouse_id=warehouse.id,
+                quantity=Decimal("2"),
+                batch_no="PKG-1",
+            ),
+            current_user=purchaser,
+            db=db,
+        )
+        packaging_sample = db.get(SupplierSample, packaging_created["data"]["id"])
+        assert packaging_sample.packaging_config_id == packaging.id
+        assert packaging_sample.unit == "件"
+        packaging_task_id = receive_sample(
+            packaging_sample.id,
+            SampleReceive(received_quantity=Decimal("2")),
+            current_user=keeper,
+            db=db,
+        )["data"]["quality_task_id"]
+        packaging_tasks = list_quality_tasks(current_user=inspector, db=db)["data"]
+        assert any(
+            row["id"] == packaging_task_id
+            and row["item_type"] == "packaging"
+            and row["item_name"] == "样品桶"
+            for row in packaging_tasks
+        )
 
         second = create_sample(SampleCreate(supplier_id=supplier.id, material_id=material.id,
                                             warehouse_id=warehouse.id, quantity=Decimal("1"), batch_no="B-2"),

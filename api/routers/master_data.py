@@ -27,6 +27,7 @@ from models import (
     ProductionTask,
     PurchaseOrder,
     PurchaseOrderItem,
+    QualityInspection,
     Role,
     SalesOrder,
     SalesOrderItem,
@@ -297,6 +298,8 @@ def _latest_supplier_catalog_price_map(db: Session, supplier_id: int) -> dict[tu
             key = ("product", item.product_id)
         elif item.material_id:
             key = ("material", item.material_id)
+        elif item.packaging_config_id:
+            key = ("packaging", item.packaging_config_id)
         else:
             continue
         if key in result:
@@ -310,8 +313,9 @@ def _latest_supplier_catalog_price_map(db: Session, supplier_id: int) -> dict[tu
 
 
 def _serialize_supplier_catalog_item(row: SupplierCatalogItem, latest_price_map: dict[tuple[str, int], dict] | None = None) -> dict:
-    item_type = "product" if row.product_id else "material"
-    item_id = row.product_id or row.material_id
+    item_type = "product" if row.product_id else "material" if row.material_id else "packaging"
+    item_id = row.product_id or row.material_id or row.packaging_config_id
+    packaging = row.packaging_config
     latest = (latest_price_map or {}).get((item_type, item_id), {})
     return {
         "id": row.id,
@@ -322,9 +326,13 @@ def _serialize_supplier_catalog_item(row: SupplierCatalogItem, latest_price_map:
         "material_id": row.material_id,
         "material_name": row.material.name if row.material else None,
         "material_code": row.material.material_code if row.material else None,
+        "packaging_config_id": row.packaging_config_id,
+        "packaging_name": packaging.packaging_name if packaging else None,
         "item_type": item_type,
-        "item_name": row.product.name if row.product else (row.material.name if row.material else None),
-        "item_code": row.product.product_code if row.product else (row.material.material_code if row.material else None),
+        "item_name": row.product.name if row.product else row.material.name if row.material else packaging.packaging_name if packaging else None,
+        "item_code": row.product.product_code if row.product else row.material.material_code if row.material else f"BZ-{row.packaging_config_id}" if row.packaging_config_id else None,
+        "specification": row.product.specification if row.product else row.material.specification if row.material else packaging_spec_text(packaging.kg_per_bag) if packaging else None,
+        "unit": row.product.unit if row.product else row.material.unit if row.material else "件",
         "latest_price": latest.get("latest_price"),
         "latest_price_at": latest.get("latest_price_at"),
         "latest_order_no": latest.get("latest_order_no"),
@@ -835,6 +843,174 @@ def list_suppliers(current_user: User = Depends(get_current_user), db: Session =
     )
 
 
+def _matrix_sample_data(sample: SupplierSample | None, inspection: QualityInspection | None) -> dict | None:
+    if sample is None:
+        return None
+    return {
+        "id": sample.id,
+        "sample_no": sample.sample_no,
+        "status": sample.status,
+        "quality_status": sample.quality_task.status if sample.quality_task else None,
+        "grade": inspection.grade if inspection else None,
+        "is_passed": inspection.is_passed if inspection else None,
+        "result_text": inspection.result_text if inspection else None,
+        "report_summary": inspection.report_summary if inspection else None,
+        "inspection_id": inspection.id if inspection else None,
+        "inspected_at": inspection.inspected_at.isoformat() if inspection and inspection.inspected_at else None,
+        "created_at": sample.created_at.isoformat() if sample.created_at else None,
+    }
+
+
+@router.get("/supplier-catalog-matrix")
+def get_supplier_catalog_matrix(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the complete supplier/item relationship matrix without frontend N+1 requests."""
+    catalog_rows = db.execute(
+        select(SupplierCatalogItem)
+        .options(
+            joinedload(SupplierCatalogItem.supplier).selectinload(Supplier.financial_accounts),
+            joinedload(SupplierCatalogItem.product),
+            joinedload(SupplierCatalogItem.material),
+            joinedload(SupplierCatalogItem.packaging_config),
+        )
+        .order_by(SupplierCatalogItem.supplier_id.asc(), SupplierCatalogItem.id.asc())
+    ).unique().scalars().all()
+    if not catalog_rows:
+        return api_response(data={"suppliers": [], "items": [], "relations": [], "summary": {
+            "supplier_count": 0, "item_count": 0, "relation_count": 0,
+            "qualified_count": 0, "pending_count": 0, "unqualified_count": 0,
+        }})
+
+    supplier_ids = sorted({row.supplier_id for row in catalog_rows})
+    tag_map = _load_supplier_tag_map(db, supplier_ids)
+    supplier_rows = {row.supplier_id: row.supplier for row in catalog_rows}
+    catalog_count_map: dict[int, int] = {}
+    for row in catalog_rows:
+        catalog_count_map[row.supplier_id] = catalog_count_map.get(row.supplier_id, 0) + 1
+    suppliers = [
+        {
+            **_serialize_supplier(supplier_rows[supplier_id], tags=tag_map.get(supplier_id, [])),
+            "catalog_item_count": catalog_count_map[supplier_id],
+        }
+        for supplier_id in supplier_ids
+    ]
+
+    latest_price_map: dict[tuple[int, str, int], dict] = {}
+    purchase_rows = db.execute(
+        select(PurchaseOrderItem, PurchaseOrder)
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
+        .where(PurchaseOrder.supplier_id.in_(supplier_ids), PurchaseOrder.status != "cancelled")
+        .order_by(PurchaseOrder.created_at.desc(), PurchaseOrderItem.id.desc())
+    ).all()
+    for purchase_item, order in purchase_rows:
+        if purchase_item.product_id:
+            item_key = ("product", purchase_item.product_id)
+        elif purchase_item.material_id:
+            item_key = ("material", purchase_item.material_id)
+        elif purchase_item.packaging_config_id:
+            item_key = ("packaging", purchase_item.packaging_config_id)
+        else:
+            continue
+        key = (order.supplier_id, *item_key)
+        latest_price_map.setdefault(key, {
+            "latest_price": float(purchase_item.unit_price or 0),
+            "latest_price_at": order.created_at.isoformat() if order.created_at else None,
+            "latest_order_no": order.order_no,
+        })
+
+    sample_rows = db.execute(
+        select(SupplierSample)
+        .options(joinedload(SupplierSample.quality_task))
+        .where(SupplierSample.supplier_id.in_(supplier_ids))
+        .order_by(SupplierSample.created_at.desc(), SupplierSample.id.desc())
+    ).scalars().all()
+    task_ids = [row.quality_task_id for row in sample_rows if row.quality_task_id]
+    inspection_rows = db.execute(
+        select(QualityInspection)
+        .where(QualityInspection.quality_task_id.in_(task_ids or [-1]))
+        .order_by(QualityInspection.quality_task_id.asc(), QualityInspection.sequence_no.desc(), QualityInspection.id.desc())
+    ).scalars().all()
+    inspection_map: dict[int, QualityInspection] = {}
+    for inspection in inspection_rows:
+        inspection_map.setdefault(inspection.quality_task_id, inspection)
+
+    latest_sample_map: dict[tuple[int, str, int], SupplierSample] = {}
+    latest_report_map: dict[tuple[int, str, int], SupplierSample] = {}
+    for sample in sample_rows:
+        item_type = "product" if sample.product_id else "material" if sample.material_id else "packaging"
+        item_id = sample.product_id or sample.material_id or sample.packaging_config_id
+        if not item_id:
+            continue
+        key = (sample.supplier_id, item_type, item_id)
+        latest_sample_map.setdefault(key, sample)
+        if sample.status == "completed":
+            latest_report_map.setdefault(key, sample)
+
+    item_map: dict[tuple[str, int], dict] = {}
+    relations: list[dict] = []
+    quality_counts = {"qualified": 0, "pending": 0, "unqualified": 0}
+    for row in catalog_rows:
+        catalog_data = _serialize_supplier_catalog_item(row)
+        item_type = catalog_data["item_type"]
+        item_id = catalog_data["product_id"] or catalog_data["material_id"] or catalog_data["packaging_config_id"]
+        item_key = (item_type, item_id)
+        item_map.setdefault(item_key, {
+            "key": f"{item_type}:{item_id}",
+            "item_type": item_type,
+            "item_type_label": {"product": "产品", "material": "原料", "packaging": "包装"}[item_type],
+            "item_id": item_id,
+            "item_code": catalog_data["item_code"],
+            "item_name": catalog_data["item_name"],
+            "specification": catalog_data["specification"],
+            "unit": catalog_data["unit"],
+        })
+        relation_key = (row.supplier_id, item_type, item_id)
+        latest_sample = latest_sample_map.get(relation_key)
+        latest_inspection = inspection_map.get(latest_sample.quality_task_id) if latest_sample and latest_sample.quality_task_id else None
+        report_sample = latest_report_map.get(relation_key)
+        report_inspection = inspection_map.get(report_sample.quality_task_id) if report_sample and report_sample.quality_task_id else None
+        if latest_sample is None:
+            quality_state = "unsampled"
+        elif latest_sample.status != "completed":
+            quality_state = "pending"
+            quality_counts["pending"] += 1
+        elif latest_inspection and latest_inspection.is_passed:
+            quality_state = "qualified"
+            quality_counts["qualified"] += 1
+        else:
+            quality_state = "unqualified"
+            quality_counts["unqualified"] += 1
+        relations.append({
+            "id": row.id,
+            "supplier_id": row.supplier_id,
+            "item_key": f"{item_type}:{item_id}",
+            "item_type": item_type,
+            "item_id": item_id,
+            "remark": row.remark,
+            "quality_state": quality_state,
+            "latest_sample": _matrix_sample_data(latest_sample, latest_inspection),
+            "latest_report_sample": _matrix_sample_data(report_sample, report_inspection),
+            **latest_price_map.get(relation_key, {}),
+        })
+
+    items = sorted(item_map.values(), key=lambda item: ({"product": 0, "material": 1, "packaging": 2}[item["item_type"]], item["item_code"] or "", item["item_name"] or ""))
+    return api_response(data={
+        "suppliers": suppliers,
+        "items": items,
+        "relations": relations,
+        "summary": {
+            "supplier_count": len(suppliers),
+            "item_count": len(items),
+            "relation_count": len(relations),
+            "qualified_count": quality_counts["qualified"],
+            "pending_count": quality_counts["pending"],
+            "unqualified_count": quality_counts["unqualified"],
+        },
+    })
+
+
 @router.post("/suppliers")
 def create_supplier(
     payload: SupplierCreate,
@@ -940,7 +1116,7 @@ def get_supplier_catalog(
         raise HTTPException(status_code=404, detail="供应商不存在")
     rows = db.execute(
         select(SupplierCatalogItem)
-        .options(joinedload(SupplierCatalogItem.product), joinedload(SupplierCatalogItem.material))
+        .options(joinedload(SupplierCatalogItem.product), joinedload(SupplierCatalogItem.material), joinedload(SupplierCatalogItem.packaging_config))
         .where(SupplierCatalogItem.supplier_id == supplier_id)
         .order_by(SupplierCatalogItem.id.asc())
     ).scalars().all()
@@ -962,12 +1138,18 @@ def get_supplier_catalog_price_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if item_type not in {"product", "material"}:
-        raise HTTPException(status_code=409, detail="价格历史类型必须是产品或原料")
+    if item_type not in {"product", "material", "packaging"}:
+        raise HTTPException(status_code=409, detail="价格历史类型必须是产品、原料或包装")
     supplier = db.execute(select(Supplier).where(Supplier.id == supplier_id)).scalar_one_or_none()
     if supplier is None:
         raise HTTPException(status_code=404, detail="供应商不存在")
-    item_filter = PurchaseOrderItem.product_id == item_id if item_type == "product" else PurchaseOrderItem.material_id == item_id
+    item_filter = (
+        PurchaseOrderItem.product_id == item_id
+        if item_type == "product"
+        else PurchaseOrderItem.material_id == item_id
+        if item_type == "material"
+        else PurchaseOrderItem.packaging_config_id == item_id
+    )
     rows = db.execute(
         select(PurchaseOrderItem, PurchaseOrder)
         .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.purchase_order_id)
@@ -1008,16 +1190,21 @@ def replace_supplier_catalog(
     seen_keys: set[tuple[str, int]] = set()
     normalized_rows: list[dict] = []
     for item in payload:
-        if bool(item.product_id) == bool(item.material_id):
-            raise HTTPException(status_code=409, detail="名录项必须且只能选择一个产品或原料")
+        selected_ids = (item.product_id, item.material_id, item.packaging_config_id)
+        if sum(value is not None for value in selected_ids) != 1:
+            raise HTTPException(status_code=409, detail="名录项必须且只能选择一个产品、原料或包装")
         if item.product_id:
             if db.execute(select(Product.id).where(Product.id == item.product_id)).scalar_one_or_none() is None:
                 raise HTTPException(status_code=404, detail="名录中的产品不存在")
             dedupe_key = ("product", item.product_id)
-        else:
+        elif item.material_id:
             if db.execute(select(Material.id).where(Material.id == item.material_id)).scalar_one_or_none() is None:
                 raise HTTPException(status_code=404, detail="名录中的原料不存在")
             dedupe_key = ("material", item.material_id)
+        else:
+            if db.execute(select(PackagingConfig.id).where(PackagingConfig.id == item.packaging_config_id)).scalar_one_or_none() is None:
+                raise HTTPException(status_code=404, detail="名录中的包装不存在")
+            dedupe_key = ("packaging", item.packaging_config_id)
         if dedupe_key in seen_keys:
             raise HTTPException(status_code=409, detail="供应商名录中存在重复条目")
         seen_keys.add(dedupe_key)
@@ -1033,7 +1220,7 @@ def replace_supplier_catalog(
     db.commit()
     rows = db.execute(
         select(SupplierCatalogItem)
-        .options(joinedload(SupplierCatalogItem.product), joinedload(SupplierCatalogItem.material))
+        .options(joinedload(SupplierCatalogItem.product), joinedload(SupplierCatalogItem.material), joinedload(SupplierCatalogItem.packaging_config))
         .where(SupplierCatalogItem.supplier_id == supplier_id)
         .order_by(SupplierCatalogItem.id.asc())
     ).scalars().all()

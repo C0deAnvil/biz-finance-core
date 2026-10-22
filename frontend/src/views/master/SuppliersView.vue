@@ -1,5 +1,17 @@
 <template>
   <div class="page-stack">
+    <div class="view-switcher">
+      <div>
+        <strong>供应商资料</strong>
+        <span>在列表维护档案，在矩阵中快速比较供货能力与质检结果</span>
+      </div>
+      <div class="view-switcher-actions">
+        <el-button :type="currentView === 'list' ? 'primary' : 'default'" @click="currentView = 'list'">供应商列表</el-button>
+        <el-button :type="currentView === 'matrix' ? 'primary' : 'default'" @click="switchToMatrix">供货关系矩阵</el-button>
+      </div>
+    </div>
+
+    <template v-if="currentView === 'list'">
     <el-row :gutter="12" class="summary-row">
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">供应商总数</div><div class="summary-value">{{ filteredRows.length }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">启用中</div><div class="summary-value">{{ enabledCount }}</div></el-card></el-col>
@@ -80,6 +92,84 @@
         :page-sizes="pageSizes"
       />
     </PageSection>
+    </template>
+
+    <template v-else>
+      <el-row :gutter="12" class="summary-row">
+        <el-col :span="6"><el-card shadow="hover"><div class="summary-label">矩阵供应商</div><div class="summary-value">{{ matrixSummary.supplier_count || 0 }}</div></el-card></el-col>
+        <el-col :span="6"><el-card shadow="hover"><div class="summary-label">已关联品项</div><div class="summary-value">{{ matrixSummary.item_count || 0 }}</div></el-card></el-col>
+        <el-col :span="6"><el-card shadow="hover"><div class="summary-label">合格供货关系</div><div class="summary-value summary-success">{{ matrixSummary.qualified_count || 0 }}</div></el-card></el-col>
+        <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待检 / 不合格</div><div class="summary-value summary-warning">{{ (matrixSummary.pending_count || 0) + (matrixSummary.unqualified_count || 0) }}</div></el-card></el-col>
+      </el-row>
+
+      <PageSection title="供应商供货关系矩阵" description="横向比较同一品项的供应商，纵向查看单个供应商的供货范围；颜色代表最新样品质检状态。">
+        <template #actions>
+          <el-select v-model="matrixFilters.itemType" class="w-140" placeholder="品类">
+            <el-option label="全部品类" value="" />
+            <el-option label="产品" value="product" />
+            <el-option label="原料" value="material" />
+            <el-option label="包装" value="packaging" />
+          </el-select>
+          <el-select v-model="matrixFilters.quality" clearable class="w-160" placeholder="质检状态">
+            <el-option label="未送检" value="unsampled" />
+            <el-option label="待收样 / 待质检" value="pending" />
+            <el-option label="合格" value="qualified" />
+            <el-option label="不合格" value="unqualified" />
+          </el-select>
+          <el-input v-model="matrixFilters.itemKeyword" clearable placeholder="搜索编码 / 名称 / 规格" class="w-260" />
+          <el-input v-model="matrixFilters.supplierKeyword" clearable placeholder="筛选供应商列" class="w-200" />
+          <el-button @click="resetMatrixFilters">重置</el-button>
+          <el-button @click="loadMatrix(true)">刷新</el-button>
+        </template>
+
+        <div class="matrix-legend">
+          <span><i class="legend-dot state-unsampled"></i>可供货 · 未送检</span>
+          <span><i class="legend-dot state-pending"></i>待收样 / 待质检</span>
+          <span><i class="legend-dot state-qualified"></i>质检合格</span>
+          <span><i class="legend-dot state-unqualified"></i>质检不合格</span>
+          <span class="matrix-hint">点击供应商名称查看详情；点击关系单元格查看记录与供价。</span>
+        </div>
+
+        <el-table v-loading="matrixLoading" :data="matrixRows" border stripe height="620" class="supplier-matrix">
+          <el-table-column prop="item_type_label" label="品类" width="76" fixed="left">
+            <template #default="scope"><el-tag size="small" :type="scope.row.item_type === 'product' ? 'primary' : scope.row.item_type === 'material' ? 'warning' : 'info'">{{ scope.row.item_type_label }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="item_code" label="编码" width="135" fixed="left" show-overflow-tooltip />
+          <el-table-column prop="item_name" label="产品 / 原料 / 包装" width="190" fixed="left" show-overflow-tooltip />
+          <el-table-column prop="specification" label="规格" width="135" fixed="left" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.specification || '-' }}</template>
+          </el-table-column>
+          <el-table-column v-for="supplier in matrixVisibleSuppliers" :key="supplier.id" :width="190">
+            <template #header>
+              <button type="button" class="supplier-header" @click="openCatalog(supplier)">
+                <span>{{ supplier.name }}</span>
+                <small>{{ supplier.code }} · 查看详情</small>
+              </button>
+            </template>
+            <template #default="scope">
+              <div
+                v-if="matrixRelation(scope.row, supplier)"
+                class="matrix-cell"
+                :class="`state-${matrixRelation(scope.row, supplier).quality_state}`"
+                @click="openMatrixRelation(scope.row, supplier, matrixRelation(scope.row, supplier))"
+              >
+                <div class="matrix-cell-title">{{ matrixStateText(matrixRelation(scope.row, supplier)) }}</div>
+                <div v-if="matrixRelation(scope.row, supplier).latest_price != null" class="matrix-cell-price">最近供价 ¥{{ formatMoney(matrixRelation(scope.row, supplier).latest_price) }}</div>
+                <button
+                  v-if="matrixRelation(scope.row, supplier).latest_report_sample?.inspection_id"
+                  type="button"
+                  class="report-link"
+                  @click.stop="openSampleReport(matrixRelation(scope.row, supplier).latest_report_sample)"
+                >预览质检单</button>
+              </div>
+              <div v-else class="matrix-empty">—</div>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!matrixLoading && !matrixRows.length" description="当前筛选条件下没有供货关系" />
+        <div class="matrix-footer">当前显示 {{ matrixRows.length }} 个品项 × {{ matrixVisibleSuppliers.length }} 家供应商；矩阵仅展示已维护供货名录的品项。</div>
+      </PageSection>
+    </template>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑供应商' : '新增供应商'" width="820px">
       <el-form :model="form" label-width="120px">
@@ -173,9 +263,10 @@
       <el-table :data="catalogRows" border>
         <el-table-column label="品类" width="120">
           <template #default="scope">
-            <el-select v-model="scope.row.item_type" :disabled="!canManageCatalog" style="width: 100%">
+            <el-select v-model="scope.row.item_type" :disabled="!canManageCatalog" style="width: 100%" @change="handleCatalogTypeChange(scope.row)">
               <el-option label="产品" value="product" />
               <el-option label="原料" value="material" />
+              <el-option label="包装" value="packaging" />
             </el-select>
           </template>
         </el-table-column>
@@ -183,9 +274,9 @@
           <template #default="scope">
             <el-select v-model="scope.row.target_id" filterable :disabled="!canManageCatalog" style="width: 100%">
               <el-option
-                v-for="item in scope.row.item_type === 'product' ? products : materials"
+                v-for="item in catalogOptions(scope.row)"
                 :key="`${scope.row.item_type}-${item.id}`"
-                :label="scope.row.item_type === 'product' ? `${item.product_code} / ${item.name}` : `${item.material_code} / ${item.name}`"
+                :label="catalogOptionLabel(item, scope.row.item_type)"
                 :value="item.id"
               />
             </el-select>
@@ -223,7 +314,7 @@
     <el-dialog v-model="sampleCreateVisible" title="登记供应商待收样" width="600px">
       <el-form :model="sampleForm" label-width="105px">
         <el-form-item label="供应商"><el-input :model-value="catalogSupplier?.name || '-'" disabled /></el-form-item>
-        <el-form-item label="产品/原料"><el-input :model-value="sampleTarget ? catalogItemName(sampleTarget) : '-'" disabled /></el-form-item>
+        <el-form-item label="送检品项"><el-input :model-value="sampleTarget ? catalogItemName(sampleTarget) : '-'" disabled /></el-form-item>
         <el-form-item label="接收仓库" required>
           <el-select v-model="sampleForm.warehouse_id" placeholder="选择负责收样的仓库" style="width: 100%">
             <el-option v-for="item in warehouses" :key="item.id" :label="item.name" :value="item.id" />
@@ -280,6 +371,24 @@
       <el-empty v-if="!priceHistoryRows.length" description="暂无历史供价记录" class="mt-16" />
       <template #footer>
         <el-button @click="priceHistoryVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="matrixRelationVisible" title="供货关系详情" width="660px">
+      <div v-if="matrixRelationDetail" class="relation-detail">
+        <div><span>供应商</span><strong>{{ matrixRelationDetail.supplier.name }}</strong></div>
+        <div><span>品项</span><strong>{{ matrixRelationDetail.item.item_code }} / {{ matrixRelationDetail.item.item_name }}</strong></div>
+        <div><span>品类 / 规格</span><strong>{{ matrixRelationDetail.item.item_type_label }} / {{ matrixRelationDetail.item.specification || '-' }}</strong></div>
+        <div><span>最新质检</span><strong>{{ matrixStateText(matrixRelationDetail.relation) }}</strong></div>
+        <div><span>最近供价</span><strong>{{ matrixRelationDetail.relation.latest_price == null ? '暂无采购价格' : `¥${formatMoney(matrixRelationDetail.relation.latest_price)}` }}</strong></div>
+        <div><span>最近采购单</span><strong>{{ matrixRelationDetail.relation.latest_order_no || '-' }}</strong></div>
+        <div class="relation-detail-full"><span>供货备注</span><strong>{{ matrixRelationDetail.relation.remark || '-' }}</strong></div>
+        <div v-if="matrixRelationDetail.relation.latest_report_sample" class="relation-detail-full"><span>质检摘要</span><strong>{{ matrixRelationDetail.relation.latest_report_sample.report_summary || matrixRelationDetail.relation.latest_report_sample.result_text || '-' }}</strong></div>
+      </div>
+      <template #footer>
+        <el-button @click="openCatalog(matrixRelationDetail.supplier)">供应商详情</el-button>
+        <el-button @click="openPriceHistoryFromMatrix">历史供价</el-button>
+        <el-button v-if="matrixRelationDetail?.relation.latest_report_sample?.inspection_id" type="primary" @click="openSampleReport(matrixRelationDetail.relation.latest_report_sample)">预览质检单</el-button>
       </template>
     </el-dialog>
   </div>
@@ -339,6 +448,8 @@ const pagePermission = usePagePermission()
 const rows = ref([])
 const products = ref([])
 const materials = ref([])
+const packagings = ref([])
+const currentView = ref('list')
 const dialogVisible = ref(false)
 const catalogVisible = ref(false)
 const editingId = ref(null)
@@ -380,6 +491,12 @@ const priceHistoryVisible = ref(false)
 const priceHistoryRows = ref([])
 const priceHistoryTitle = ref('历史供价详情')
 const priceHistorySummary = ref(null)
+const matrixData = ref({ suppliers: [], items: [], relations: [], summary: {} })
+const matrixLoading = ref(false)
+const matrixLoaded = ref(false)
+const matrixFilters = reactive({ itemType: '', quality: '', itemKeyword: '', supplierKeyword: '' })
+const matrixRelationVisible = ref(false)
+const matrixRelationDetail = ref(null)
 
 const canManageAccounts = computed(() => ['purchase', 'master_data_admin', 'finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
 const canManage = computed(() => ['purchase', 'finance', 'finance_super', 'master_data_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
@@ -410,6 +527,34 @@ const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPaginati
 const enabledCount = computed(() => filteredRows.value.filter((item) => item.status === 'enabled').length)
 const linkedCount = computed(() => filteredRows.value.filter((item) => Number(item.purchase_order_count || 0) > 0).length)
 const catalogCount = computed(() => filteredRows.value.reduce((total, item) => total + Number(item.catalog_item_count || 0), 0))
+const matrixSummary = computed(() => matrixData.value.summary || {})
+const matrixVisibleSuppliers = computed(() => {
+  const keyword = matrixFilters.supplierKeyword.trim().toLowerCase()
+  return (matrixData.value.suppliers || []).filter((supplier) => {
+    if (!keyword) return true
+    return [supplier.name, supplier.code, supplier.supplier_type_label, ...(supplier.tags || [])]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword))
+  })
+})
+const matrixRelationMap = computed(() => new Map(
+  (matrixData.value.relations || []).map((relation) => [`${relation.item_key}:${relation.supplier_id}`, relation])
+))
+const matrixRows = computed(() => {
+  const keyword = matrixFilters.itemKeyword.trim().toLowerCase()
+  const visibleSupplierIds = new Set(matrixVisibleSuppliers.value.map((supplier) => supplier.id))
+  return (matrixData.value.items || []).filter((item) => {
+    if (matrixFilters.itemType && item.item_type !== matrixFilters.itemType) return false
+    if (keyword && ![item.item_code, item.item_name, item.specification, item.item_type_label]
+      .filter(Boolean).some((value) => String(value).toLowerCase().includes(keyword))) return false
+    if (!matrixFilters.quality) return true
+    return (matrixData.value.relations || []).some((relation) => (
+      relation.item_key === item.key &&
+      visibleSupplierIds.has(relation.supplier_id) &&
+      relation.quality_state === matrixFilters.quality
+    ))
+  })
+})
 
 function resetForm() {
   Object.assign(form, emptyForm())
@@ -446,11 +591,12 @@ function buildPayload(source) {
 function normalizeCatalogRows(items = []) {
   return items.map((item) => ({
     id: item.id,
-    item_type: item.item_type || (item.product_id ? 'product' : 'material'),
-    target_id: item.product_id || item.material_id || item.item_id || item.target_id,
+    item_type: item.item_type || (item.product_id ? 'product' : item.material_id ? 'material' : 'packaging'),
+    target_id: item.product_id || item.material_id || item.packaging_config_id || item.item_id || item.target_id,
     product_id: item.product_id,
     material_id: item.material_id,
-    item_name: item.item_name || item.product_name || item.material_name,
+    packaging_config_id: item.packaging_config_id,
+    item_name: item.item_name || item.product_name || item.material_name || item.packaging_name,
     item_code: item.item_code || item.product_code || item.material_code,
     latest_price: item.latest_price,
     latest_order_no: item.latest_order_no,
@@ -476,6 +622,62 @@ async function loadCatalogOptions() {
   if (!materials.value.length) {
     materials.value = await get('/api/master-data/materials')
   }
+  if (!packagings.value.length) {
+    packagings.value = await get('/api/master-data/packaging-configs?active_only=true')
+  }
+}
+
+async function loadMatrix(force = false) {
+  if (matrixLoaded.value && !force) return
+  matrixLoading.value = true
+  try {
+    matrixData.value = await get('/api/master-data/supplier-catalog-matrix', { force: true })
+    matrixLoaded.value = true
+  } catch (error) {
+    ElMessage.error(error?.message || '供货关系矩阵加载失败')
+  } finally {
+    matrixLoading.value = false
+  }
+}
+
+async function switchToMatrix() {
+  currentView.value = 'matrix'
+  await loadMatrix()
+}
+
+function resetMatrixFilters() {
+  Object.assign(matrixFilters, { itemType: '', quality: '', itemKeyword: '', supplierKeyword: '' })
+}
+
+function matrixRelation(item, supplier) {
+  return matrixRelationMap.value.get(`${item.key}:${supplier.id}`) || null
+}
+
+function matrixStateText(relation) {
+  if (!relation) return '-'
+  if (relation.quality_state === 'qualified') return `合格${relation.latest_sample?.grade ? ` · ${relation.latest_sample.grade}` : ''}`
+  if (relation.quality_state === 'unqualified') return `不合格${relation.latest_sample?.grade ? ` · ${relation.latest_sample.grade}` : ''}`
+  if (relation.latest_sample?.status === 'pending_receipt') return '待库管收样'
+  if (relation.latest_sample?.status === 'pending_quality') return '待质检'
+  return '可供货 · 未送检'
+}
+
+function openMatrixRelation(item, supplier, relation) {
+  matrixRelationDetail.value = { item, supplier, relation }
+  matrixRelationVisible.value = true
+}
+
+async function openPriceHistoryFromMatrix() {
+  if (!matrixRelationDetail.value) return
+  const { item, supplier, relation } = matrixRelationDetail.value
+  catalogSupplier.value = supplier
+  await openPriceHistory({
+    item_type: item.item_type,
+    target_id: item.item_id,
+    item_name: item.item_name,
+    latest_price: relation.latest_price,
+    latest_order_no: relation.latest_order_no
+  })
 }
 
 function openCreate() {
@@ -515,8 +717,8 @@ async function openCatalog(row) {
 }
 
 function samplesFor(row) {
-  const targetId = Number(row.target_id || row.product_id || row.material_id)
-  return samples.value.filter((sample) => sample.item_type === row.item_type && Number(sample.product_id || sample.material_id) === targetId)
+  const targetId = Number(row.target_id || row.product_id || row.material_id || row.packaging_config_id)
+  return samples.value.filter((sample) => sample.item_type === row.item_type && Number(sample.product_id || sample.material_id || sample.packaging_config_id) === targetId)
 }
 
 function latestSample(row) {
@@ -560,6 +762,7 @@ async function submitSample() {
     supplier_id: catalogSupplier.value.id,
     product_id: sampleTarget.value.item_type === 'product' ? sampleTarget.value.target_id : null,
     material_id: sampleTarget.value.item_type === 'material' ? sampleTarget.value.target_id : null,
+    packaging_config_id: sampleTarget.value.item_type === 'packaging' ? sampleTarget.value.target_id : null,
     ...sampleForm
   })
   ElMessage.success('待收样任务已提交给目标仓库库管')
@@ -582,6 +785,24 @@ function addCatalogRow() {
   catalogRows.value.push({ item_type: 'product', target_id: null, remark: '' })
 }
 
+function handleCatalogTypeChange(row) {
+  row.target_id = null
+  row.item_name = ''
+  row.item_code = ''
+}
+
+function catalogOptions(row) {
+  if (row.item_type === 'product') return products.value
+  if (row.item_type === 'material') return materials.value
+  return packagings.value
+}
+
+function catalogOptionLabel(item, itemType) {
+  if (itemType === 'product') return `${item.product_code} / ${item.name}`
+  if (itemType === 'material') return `${item.material_code} / ${item.name}`
+  return `BZ-${item.id} / ${item.packaging_name}`
+}
+
 function removeCatalogRow(index) {
   catalogRows.value.splice(index, 1)
 }
@@ -597,28 +818,25 @@ function formatMoney(value) {
 }
 
 function catalogSpec(row) {
-  const source = row.item_type === 'product'
-    ? products.value.find((item) => item.id === row.target_id)
-    : materials.value.find((item) => item.id === row.target_id)
+  const source = catalogOptions(row).find((item) => item.id === row.target_id)
+  if (row.item_type === 'packaging') return source?.specification_text || (source?.kg_per_bag ? `${source.kg_per_bag} kg/件` : '-')
   return source?.specification || '-'
 }
 
 function catalogItemName(row) {
   if (row.item_name) return row.item_name
-  const source = row.item_type === 'product'
-    ? products.value.find((item) => item.id === row.target_id)
-    : materials.value.find((item) => item.id === row.target_id)
-  return source?.name || '未选择条目'
+  const source = catalogOptions(row).find((item) => item.id === row.target_id)
+  return (row.item_type === 'packaging' ? source?.packaging_name : source?.name) || '未选择条目'
 }
 
 async function openPriceHistory(row) {
-  const targetId = row.target_id || row.product_id || row.material_id
+  const targetId = row.target_id || row.product_id || row.material_id || row.packaging_config_id
   if (!catalogSupplier.value) {
     ElMessage.warning('请先打开供应商名录')
     return
   }
   if (!targetId) {
-    ElMessage.warning('请先选择产品或原料')
+    ElMessage.warning('请先选择产品、原料或包装')
     return
   }
   try {
@@ -669,12 +887,14 @@ async function saveCatalog() {
   const payload = catalogRows.value.map((item) => ({
     product_id: item.item_type === 'product' ? item.target_id : null,
     material_id: item.item_type === 'material' ? item.target_id : null,
+    packaging_config_id: item.item_type === 'packaging' ? item.target_id : null,
     remark: item.remark || null
   }))
   await put(`/api/master-data/suppliers/${catalogSupplier.value.id}/catalog`, payload)
   ElMessage.success('供应商商品名录已更新')
   await openCatalog(catalogSupplier.value)
   await load()
+  matrixLoaded.value = false
 }
 
 async function toggleStatus(row) {
@@ -720,9 +940,41 @@ onMounted(async () => {
 
 <style scoped>
 .page-stack { display: flex; flex-direction: column; gap: 16px; }
+.view-switcher { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 18px; border: 1px solid #d9e6f2; border-radius: 10px; background: linear-gradient(135deg, #f4f9fd 0%, #fff 70%); }
+.view-switcher > div:first-child { display: flex; flex-direction: column; gap: 4px; }
+.view-switcher strong { color: #163a59; font-size: 17px; }
+.view-switcher span { color: #708399; font-size: 13px; }
+.view-switcher-actions { display: flex; flex-shrink: 0; }
 .summary-row { margin-bottom: 0; }
 .summary-label { color: #909399; margin-bottom: 8px; }
 .summary-value { font-size: 28px; font-weight: 700; color: #0f5c90; }
+.summary-success { color: #23845b; }
+.summary-warning { color: #c57a12; }
+.matrix-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 4px 2px 14px; color: #526579; font-size: 13px; }
+.matrix-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.legend-dot { width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, .08); }
+.matrix-hint { margin-left: auto; color: #8a99a8; }
+.supplier-matrix :deep(.el-table__header th) { background: #f5f8fb; }
+.supplier-header { width: 100%; padding: 4px 2px; border: 0; background: transparent; color: #185d8f; text-align: left; cursor: pointer; }
+.supplier-header span, .supplier-header small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.supplier-header span { font-weight: 700; }
+.supplier-header small { margin-top: 3px; color: #91a0ae; font-weight: 400; }
+.matrix-cell { min-height: 62px; margin: -8px -12px; padding: 9px 12px; border-left: 4px solid transparent; cursor: pointer; transition: filter .15s ease, transform .15s ease; }
+.matrix-cell:hover { filter: brightness(.97); transform: translateY(-1px); }
+.matrix-cell-title { font-weight: 700; line-height: 1.4; }
+.matrix-cell-price { margin-top: 4px; color: #53677a; font-size: 12px; }
+.report-link { margin-top: 4px; padding: 0; border: 0; background: transparent; color: #176ea5; font-size: 12px; cursor: pointer; }
+.state-unsampled { background: #edf6ff; border-color: #409eff; color: #245f8d; }
+.state-pending { background: #fff6e4; border-color: #e6a23c; color: #9a650d; }
+.state-qualified { background: #edf9f2; border-color: #38a169; color: #23734c; }
+.state-unqualified { background: #fff0f0; border-color: #e35d6a; color: #a23741; }
+.matrix-empty { color: #c7d0d9; text-align: center; }
+.matrix-footer { padding-top: 12px; color: #8a99a8; font-size: 13px; text-align: right; }
+.relation-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.relation-detail > div { display: flex; flex-direction: column; gap: 5px; padding: 12px; border-radius: 7px; background: #f7f9fb; }
+.relation-detail span { color: #8493a2; font-size: 12px; }
+.relation-detail strong { color: #263b4f; line-height: 1.6; }
+.relation-detail-full { grid-column: 1 / -1; }
 .drawer-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-bottom: 16px; color: #606266; }
 .detail-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 8px 0 12px; font-weight: 600; }
 .price-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 12px; color: #303133; font-weight: 600; }
@@ -735,4 +987,8 @@ onMounted(async () => {
 .w-160 { width: 160px; }
 .w-140 { width: 140px; }
 .mt-16 { margin-top: 16px; }
+@media (max-width: 900px) {
+  .view-switcher { align-items: flex-start; flex-direction: column; }
+  .matrix-hint { width: 100%; margin-left: 0; }
+}
 </style>

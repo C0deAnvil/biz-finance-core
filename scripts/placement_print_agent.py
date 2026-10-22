@@ -17,7 +17,8 @@ from pathlib import Path
 from ctypes import wintypes
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+
+from curl_cffi import requests as curl_requests
 
 
 BASE_URL = os.environ.get("YECAI_SERVER_URL", "").rstrip("/")
@@ -294,14 +295,22 @@ def request(path, *, method="GET", data=None, lease_token=None):
     headers = {"X-Print-Agent-Token": TOKEN, "User-Agent": USER_AGENT}
     if lease_token:
         headers["X-Print-Lease-Token"] = lease_token
-    body = None
-    if data is not None:
-        body = json.dumps(data).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = Request(BASE_URL + path, data=body, headers=headers, method=method)
-    with urlopen(req, timeout=30) as response:
-        content = response.read()
-        return content if path.endswith("/pdf") else json.loads(content).get("data")
+    url = BASE_URL + path
+    try:
+        response = curl_requests.request(
+            method,
+            url,
+            headers=headers,
+            json=data,
+            timeout=30,
+            impersonate="chrome",
+        )
+    except curl_requests.RequestsError as exc:
+        raise URLError(f"HTTPS 连接失败：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPError(url, response.status_code, response.reason, response.headers, None)
+    content = response.content
+    return content if path.endswith("/pdf") else response.json().get("data")
 
 
 def print_job(job):

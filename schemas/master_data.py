@@ -60,6 +60,7 @@ class SupplierCreate(BaseModel):
 class SupplierCatalogItemInput(BaseModel):
     product_id: int | None = None
     material_id: int | None = None
+    packaging_config_id: int | None = None
     remark: str | None = Field(default=None, max_length=255)
 
 

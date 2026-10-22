@@ -165,7 +165,7 @@ def _serialize_quality_task(
     if transfer:
         item_name = transfer.product.name if transfer.product else (transfer.material.name if transfer.material else (transfer.packaging_config.packaging_name if transfer.packaging_config else None))
     if sample:
-        item_name = sample.product.name if sample.product else sample.material.name if sample.material else None
+        item_name = sample.product.name if sample.product else sample.material.name if sample.material else sample.packaging_config.packaging_name if sample.packaging_config else None
     return {
         "id": task.id,
         "quality_no": task.quality_no,
@@ -182,8 +182,8 @@ def _serialize_quality_task(
         "product_id": sample.product_id if sample else transfer.product_id if transfer else (production_task.product_id if production_task else None),
         "product_name": item_name,
         "item_name": item_name,
-        "item_type": ("product" if sample.product_id else "material") if sample else ("product" if transfer.product_id else "material" if transfer.material_id else "packaging") if transfer else purchase_meta.get("item_type"),
-        "item_code": (sample.product.product_code if sample.product else sample.material.material_code) if sample else purchase_meta.get("item_code"),
+        "item_type": ("product" if sample.product_id else "material" if sample.material_id else "packaging") if sample else ("product" if transfer.product_id else "material" if transfer.material_id else "packaging") if transfer else purchase_meta.get("item_type"),
+        "item_code": (sample.product.product_code if sample.product else sample.material.material_code if sample.material else f"BZ-{sample.packaging_config_id}") if sample else purchase_meta.get("item_code"),
         "purchase_order_id": purchase_meta.get("purchase_order_id"),
         "purchase_order_no": purchase_meta.get("purchase_order_no"),
         "purchase_receipt_id": purchase_meta.get("purchase_receipt_id"),
@@ -478,7 +478,7 @@ def list_quality_tasks(current_user: User = Depends(get_current_user), db: Sessi
         for row in db.execute(
             select(SupplierSample).options(
                 joinedload(SupplierSample.supplier), joinedload(SupplierSample.product),
-                joinedload(SupplierSample.material), joinedload(SupplierSample.warehouse),
+                joinedload(SupplierSample.material), joinedload(SupplierSample.packaging_config), joinedload(SupplierSample.warehouse),
             ).where(SupplierSample.quality_task_id.in_(task_ids))
         ).scalars().all()
     } if task_ids else {}

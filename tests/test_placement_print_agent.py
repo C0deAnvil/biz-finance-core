@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +20,28 @@ from scripts import placement_print_agent as agent
 ])
 def test_server_url_does_not_expose_token_over_remote_http(url, expected):
     assert agent.server_url_is_safe(url) is expected
+
+
+def test_agent_request_uses_browser_compatible_tls(monkeypatch):
+    monkeypatch.setattr(agent, "BASE_URL", "https://print.example")
+    monkeypatch.setattr(agent, "TOKEN", "secret-token")
+    response = SimpleNamespace(
+        status_code=200,
+        reason="OK",
+        headers={},
+        content=b'{"data":{"id":7}}',
+        json=lambda: {"data": {"id": 7}},
+    )
+    with patch.object(agent.curl_requests, "request", return_value=response) as request:
+        assert agent.request("/claim", method="POST", data={"recover_failed": True}) == {"id": 7}
+    request.assert_called_once_with(
+        "POST",
+        "https://print.example/claim",
+        headers={"X-Print-Agent-Token": "secret-token", "User-Agent": agent.USER_AGENT},
+        json={"recover_failed": True},
+        timeout=30,
+        impersonate="chrome",
+    )
 
 
 def test_local_pdf_submission_uses_configured_printer_without_a_shell(tmp_path, monkeypatch):

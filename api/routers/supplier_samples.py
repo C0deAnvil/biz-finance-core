@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from dependencies import require_roles
-from models import Material, Product, QualityInspection, QualityTask, Role, Supplier, SupplierCatalogItem, SupplierSample, User, Warehouse
+from models import Material, PackagingConfig, Product, QualityInspection, QualityTask, Role, Supplier, SupplierCatalogItem, SupplierSample, User, Warehouse
 from responses import api_response
 from services.core import complete_todos, create_notification, create_todo, next_business_no, write_operation_log
 from services.organization import get_inventory_scope_warehouse_ids
@@ -25,6 +25,7 @@ class SampleCreate(BaseModel):
     supplier_id: int
     product_id: int | None = None
     material_id: int | None = None
+    packaging_config_id: int | None = None
     warehouse_id: int
     quantity: Decimal = Field(..., gt=0, max_digits=18, decimal_places=4)
     batch_no: str | None = Field(default=None, max_length=80)
@@ -47,6 +48,8 @@ def _can_receive(db: Session, user: User, warehouse: Warehouse) -> bool:
 
 def _sample_data(sample: SupplierSample, inspection: QualityInspection | None = None) -> dict:
     task = sample.quality_task
+    item_type = "product" if sample.product_id else "material" if sample.material_id else "packaging"
+    item = sample.product or sample.material or sample.packaging_config
     return {
         "id": sample.id,
         "sample_no": sample.sample_no,
@@ -54,9 +57,10 @@ def _sample_data(sample: SupplierSample, inspection: QualityInspection | None = 
         "supplier_name": sample.supplier.name if sample.supplier else None,
         "product_id": sample.product_id,
         "material_id": sample.material_id,
-        "item_type": "product" if sample.product_id else "material",
-        "item_name": sample.product.name if sample.product else sample.material.name if sample.material else None,
-        "item_code": sample.product.product_code if sample.product else sample.material.material_code if sample.material else None,
+        "packaging_config_id": sample.packaging_config_id,
+        "item_type": item_type,
+        "item_name": item.name if item and item_type != "packaging" else item.packaging_name if item else None,
+        "item_code": sample.product.product_code if sample.product else sample.material.material_code if sample.material else f"BZ-{sample.packaging_config_id}" if sample.packaging_config_id else None,
         "warehouse_id": sample.warehouse_id,
         "warehouse_name": sample.warehouse.name if sample.warehouse else None,
         "quantity": float(sample.quantity),
@@ -100,6 +104,7 @@ def _latest_inspections(db: Session, task_ids: list[int]) -> dict[int, QualityIn
 def _load_samples(db: Session, supplier_id: int | None = None, status: str | None = None) -> list[SupplierSample]:
     query = select(SupplierSample).options(
         joinedload(SupplierSample.supplier), joinedload(SupplierSample.product), joinedload(SupplierSample.material),
+        joinedload(SupplierSample.packaging_config),
         joinedload(SupplierSample.warehouse), joinedload(SupplierSample.requested_by),
         joinedload(SupplierSample.received_by), joinedload(SupplierSample.quality_task),
     )
@@ -138,21 +143,35 @@ def create_sample(
     current_user: User = Depends(require_roles("purchase", "finance", "finance_super", "master_data_admin", "manager", "chairman")),
     db: Session = Depends(get_db),
 ):
-    if bool(payload.product_id) == bool(payload.material_id):
-        raise HTTPException(status_code=422, detail="样品必须且只能选择一种产品或原料")
+    selected_ids = (payload.product_id, payload.material_id, payload.packaging_config_id)
+    if sum(value is not None for value in selected_ids) != 1:
+        raise HTTPException(status_code=422, detail="样品必须且只能选择一种产品、原料或包装")
     supplier = db.get(Supplier, payload.supplier_id)
     if not supplier or supplier.status != "enabled":
         raise HTTPException(status_code=404, detail="供应商不存在或已停用")
+    item_filter = (
+        SupplierCatalogItem.product_id == payload.product_id
+        if payload.product_id is not None
+        else SupplierCatalogItem.material_id == payload.material_id
+        if payload.material_id is not None
+        else SupplierCatalogItem.packaging_config_id == payload.packaging_config_id
+    )
     catalog = db.scalar(select(SupplierCatalogItem.id).where(
         SupplierCatalogItem.supplier_id == payload.supplier_id,
-        SupplierCatalogItem.product_id == payload.product_id if payload.product_id else SupplierCatalogItem.material_id == payload.material_id,
+        item_filter,
     ))
     if not catalog:
-        raise HTTPException(status_code=409, detail="该供应商的可供货名录中不存在此产品或原料")
-    item = db.get(Product, payload.product_id) if payload.product_id else db.get(Material, payload.material_id)
+        raise HTTPException(status_code=409, detail="该供应商的可供货名录中不存在此产品、原料或包装")
+    item = (
+        db.get(Product, payload.product_id)
+        if payload.product_id is not None
+        else db.get(Material, payload.material_id)
+        if payload.material_id is not None
+        else db.get(PackagingConfig, payload.packaging_config_id)
+    )
     warehouse = db.get(Warehouse, payload.warehouse_id)
     if not item or not warehouse:
-        raise HTTPException(status_code=404, detail="产品、原料或仓库不存在")
+        raise HTTPException(status_code=404, detail="产品、原料、包装或仓库不存在")
     recipients = _warehouse_workers(db, warehouse.id, "inventory", warehouse.manager_user_id)
     if not recipients:
         raise HTTPException(status_code=409, detail=f"{warehouse.name}未配置在岗库管，无法登记待收样任务")
@@ -160,8 +179,9 @@ def create_sample(
     sample = SupplierSample(
         sample_no=sample_no, supplier_id=supplier.id,
         product_id=payload.product_id, material_id=payload.material_id,
+        packaging_config_id=payload.packaging_config_id,
         warehouse_id=warehouse.id, quantity=payload.quantity,
-        unit=item.unit, batch_no=(payload.batch_no or "").strip() or sample_no,
+        unit=item.unit if payload.packaging_config_id is None else "件", batch_no=(payload.batch_no or "").strip() or sample_no,
         status="pending_receipt", remark=(payload.remark or "").strip() or None,
         requested_by_id=current_user.id,
     )
@@ -169,7 +189,7 @@ def create_sample(
     db.flush()
     for user_id in recipients:
         create_todo(db, title=f"待接收供应商样品 {sample.sample_no}",
-                    description=f"{supplier.name} / {item.name} / {warehouse.name}，请核对并确认收样。",
+                    description=f"{supplier.name} / {item.packaging_name if payload.packaging_config_id else item.name} / {warehouse.name}，请核对并确认收样。",
                     module="inventory", assigned_user_id=user_id,
                     business_type="supplier_sample", business_id=sample.id)
     write_operation_log(db, user_id=current_user.id, module="master_data", action="create_supplier_sample",
@@ -228,7 +248,7 @@ def receive_sample(
     complete_todos(db, business_type="supplier_sample", business_id=sample.id)
     for user_id in recipients:
         create_todo(db, title=f"待检供应商样品 {sample.sample_no}",
-                    description=f"{sample.supplier.name} / {sample.product.name if sample.product else sample.material.name} / {warehouse.name}。",
+                    description=f"{sample.supplier.name} / {sample.product.name if sample.product else sample.material.name if sample.material else sample.packaging_config.packaging_name} / {warehouse.name}。",
                     module="quality", assigned_user_id=user_id,
                     business_type="quality_task", business_id=task.id)
     create_notification(db, title="供应商样品已收样", content=f"样品 {sample.sample_no} 已由 {current_user.full_name} 接收，待质检。",

@@ -525,11 +525,13 @@ class SupplierCatalogItem(TimestampMixin, Base):
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     remark = Column(String(255), nullable=True)
 
     supplier = relationship("Supplier")
     product = relationship("Product")
     material = relationship("Material")
+    packaging_config = relationship("PackagingConfig")
 
 
 class SupplierSample(TimestampMixin, Base):
@@ -541,6 +543,7 @@ class SupplierSample(TimestampMixin, Base):
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=False, index=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
+    packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
     quantity = Column(Numeric(18, 4), nullable=False)
     received_quantity = Column(Numeric(18, 4), nullable=True)
@@ -558,6 +561,7 @@ class SupplierSample(TimestampMixin, Base):
     supplier = relationship("Supplier")
     product = relationship("Product")
     material = relationship("Material")
+    packaging_config = relationship("PackagingConfig")
     warehouse = relationship("Warehouse")
     requested_by = relationship("User", foreign_keys=[requested_by_id])
     received_by = relationship("User", foreign_keys=[received_by_id])
