@@ -1,0 +1,44 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace "com.nlscan.nlsdk"
+    compileSdkVersion 33
+
+    defaultConfig {
+        minSdkVersion 17
+        targetSdkVersion 33
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+}
+
+task makeJar(type: Copy) {
+    delete 'build/nlScanSdk_V1.0.jar' //删除之前的旧jar包
+    from('build/intermediates/packaged-classes/release/') //从这个目录下取出默认jar包
+    into('build/') //将jar包输出到指定目录下
+    include('classes.jar')
+    rename('classes.jar', 'nlScanSdk_V1.0.jar') //自定义jar包的名字
+}
+makeJar.dependsOn(build)
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+
+    implementation 'androidx.appcompat:appcompat:1.1.0'
+    testImplementation 'junit:junit:4.12'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.1'
+    //implementation 'com.aill:AndroidSerialPort:1.0.8'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.2.0'
+    implementation project(path: ':serial-port')
+}

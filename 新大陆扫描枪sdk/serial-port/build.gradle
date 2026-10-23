@@ -1,0 +1,28 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace "com.aill.androidserialport"
+    compileSdkVersion 33
+
+    defaultConfig {
+        minSdkVersion 17
+        targetSdkVersion 33
+
+        ndk {
+            moduleName "serial_port"
+        }
+
+        sourceSets {
+            main {
+                jniLibs.srcDirs = ['/src/main/jniLibs'] // 假设你的.so文件在项目的libs目录下
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
+        }
+    }
+}
