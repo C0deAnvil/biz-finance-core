@@ -50,6 +50,7 @@ from services.quality_workflow import (
     quality_sample_consumption,
     resolve_purchase_quality_context,
 )
+from services.sales_return_workflow import create_sales_return_inbound_request
 from services.organization import get_inventory_scope_warehouse_ids
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.workflow import create_inventory_operation_request
@@ -232,7 +233,13 @@ def _serialize_quality_task(
         "can_rework": status == "pending_disposition" and not transfer and not sample,
         "can_scrap": status == "pending_disposition" and not transfer and not sample,
         "can_allow_inbound": status == "ready_for_inbound" and not transfer and not sample,
-        "can_apply_inbound": status == "ready_for_inbound" and source_type not in {"purchase_quality", "stock_transfer", "supplier_sample"},
+        "can_apply_inbound": status == "ready_for_inbound" and source_type not in {
+            "purchase_quality",
+            "sales_return_reinspection",
+            "purchase_return_reinspection",
+            "stock_transfer",
+            "supplier_sample",
+        },
         "workflow_hint": (
             ("请录入样品质检结果并上传报告；完成后自动归档至供应商可供货名录，不生成库存入库。" if status == "pending" else "样品质检完成；结果已归档，不生成库存入库。")
             if sample else
@@ -416,11 +423,27 @@ def _sync_return_reinspection_status(
     if row is None:
         return
     row.reinspection_status = status
+    inventory_request = None
+    if business_type == "sales_return" and status == "approved":
+        inventory_request, inventory_user_ids = create_sales_return_inbound_request(
+            db,
+            row,
+            requested_by_id=current_user.id,
+        )
+        task.status = "completed"
+        if production_task is not None:
+            production_task.status = "completed"
+        complete_todos(db, business_type="quality_task", business_id=task.id)
+        recipient_ids = list(dict.fromkeys([*recipient_ids, *inventory_user_ids]))
     if status in {"approved", "rejected"}:
         create_notification(
             db,
             title="退换货复检结果已更新",
-            content=f"{meta.get('source_label') or '退换货复检'} {meta.get('business_no') or row.id} 已完成复检，结果：{status_label(status)}。",
+            content=(
+                f"{meta.get('source_label') or '退换货复检'} {meta.get('business_no') or row.id} "
+                f"已完成复检，结果：{status_label(status)}。"
+                + (f" 已生成库存入库作业 {inventory_request.request_no}。" if inventory_request else "")
+            ),
             module=module,
             recipient_user_ids=recipient_ids,
             created_by_id=current_user.id,
@@ -1188,7 +1211,7 @@ def create_scrap_record(
 def allow_inbound(
     task_id: int,
     payload: QualityAllowInbound,
-    current_user: User = Depends(require_roles("quality", "manager", "chairman")),
+    current_user: User = Depends(require_roles("quality", "quality_super", "manager", "chairman")),
     db: Session = Depends(get_db),
 ):
     task = db.execute(select(QualityTask).where(QualityTask.id == task_id)).scalar_one_or_none()
@@ -1306,6 +1329,63 @@ def allow_inbound(
             }
         )
 
+    return_meta = parse_return_quality_meta(production_task)
+    if production_task.source_type == "sales_return_reinspection" and return_meta.get("business_type") == "sales_return":
+        sales_return_id = return_meta.get("business_id")
+        sales_return = db.execute(
+            select(SalesReturn).where(SalesReturn.id == int(sales_return_id)).with_for_update()
+        ).scalar_one_or_none() if sales_return_id else None
+        if sales_return is None:
+            raise HTTPException(status_code=404, detail="销售退换货质检关联单据不存在")
+        if sales_return.status not in {"approved", "refunded"}:
+            raise HTTPException(status_code=409, detail="销售退换货单尚未审批通过，不能生成回库作业")
+        if sales_return.reinspection_status != "approved":
+            raise HTTPException(status_code=409, detail="销售退换货复检尚未通过，不能生成回库作业")
+
+        inbound_request, inventory_user_ids = create_sales_return_inbound_request(
+            db,
+            sales_return,
+            requested_by_id=current_user.id,
+        )
+        task.status = "completed"
+        production_task.status = "completed"
+        complete_todos(db, business_type="quality_task", business_id=task.id)
+        create_notification(
+            db,
+            title="销售退换货质检已放行",
+            content=(
+                f"销售退换货单 {sales_return.return_no} 已通过质检，"
+                f"已生成库存入库作业 {inbound_request.request_no}。"
+            ),
+            module="quality",
+            recipient_user_ids=list(dict.fromkeys([sales_return.requested_by_id, *inventory_user_ids])),
+            created_by_id=current_user.id,
+            category="success",
+        )
+        write_operation_log(
+            db,
+            user_id=current_user.id,
+            module="quality",
+            action="allow_sales_return_inbound",
+            content=f"准许销售退换货复检任务 {task.quality_no} 入库",
+            after_data={
+                "quality_no": task.quality_no,
+                "sales_return_no": sales_return.return_no,
+                "inventory_request_no": inbound_request.request_no,
+                "remark": payload.remark,
+            },
+        )
+        db.commit()
+        return api_response(
+            data={
+                "id": task.id,
+                "status": task.status,
+                "sales_return_id": sales_return.id,
+                "inventory_request_id": inbound_request.id,
+                "inventory_request_no": inbound_request.request_no,
+            }
+        )
+
     task.status = "completed"
     complete_todos(db, business_type="quality_task", business_id=task.id)
     inspections = db.execute(
@@ -1373,6 +1453,8 @@ def create_inbound_application(
     production_task = db.execute(select(ProductionTask).where(ProductionTask.id == task.production_task_id)).scalar_one_or_none()
     if production_task and (production_task.source_type == "purchase_quality" or task.source_category == "purchase"):
         raise HTTPException(status_code=409, detail="采购来料质检请直接执行“准许入库”，无需再发起入库申请")
+    if production_task and production_task.source_type in {"sales_return_reinspection", "purchase_return_reinspection"}:
+        raise HTTPException(status_code=409, detail="退换货复检请直接执行“准许入库”，系统将生成对应仓库作业")
     if task.status == "pending_disposition":
         raise HTTPException(status_code=409, detail="当前质检任务存在不合格结果，请先处理返工或报废")
     if len(task.inspections) < task.required_tests:

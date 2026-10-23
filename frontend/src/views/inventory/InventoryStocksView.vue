@@ -134,19 +134,8 @@
 
     <PageSection title="库存作业请求" description="所有生产领料、采购到货、质检放行、销售发货、退货回库等库存动作，统一由库管在此手工完成。">
       <div class="inventory-table-scroll inventory-operation-table-scroll">
-      <el-table class="inventory-operation-table" :data="operationRequests" stripe :fit="false">
-        <el-table-column prop="request_no" label="作业号" width="150" />
-        <el-table-column prop="operation_type" label="类型" width="100">
-          <template #default="scope">{{ scope.row.operation_type === 'inbound' ? '入库' : '出库' }}</template>
-        </el-table-column>
-        <el-table-column prop="request_category_label" label="来源类别" width="190" />
-        <el-table-column prop="source_no" label="来源单号" width="160" />
-        <el-table-column prop="status_label" label="状态" width="120">
-          <template #default="scope"><el-tag :type="scope.row.status === 'completed' ? 'success' : 'warning'">{{ scope.row.status_label }}</el-tag></template>
-        </el-table-column>
-        <el-table-column prop="remark" label="备注" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="created_at" label="创建时间" min-width="170"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+      <el-table class="inventory-operation-table" :data="operationRequests" stripe :fit="false" scrollbar-always-on>
+        <el-table-column label="操作" width="220" fixed="left">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openOperationRequest(scope.row)">详情</el-button>
             <el-button v-if="canApproveInventoryOperation(scope.row)" size="small" text type="warning" @click="openOperationRequest(scope.row, true)">{{ approvalActionLabel }}</el-button>
@@ -154,6 +143,35 @@
             <el-button v-if="canRejectOperation(scope.row)" size="small" text type="danger" @click="openRejectDialog(scope.row)">拒绝</el-button>
           </template>
         </el-table-column>
+        <el-table-column prop="request_no" label="作业号" width="160" />
+        <el-table-column prop="operation_type" label="类型" width="90">
+          <template #default="scope">{{ scope.row.operation_type === 'inbound' ? '入库' : '出库' }}</template>
+        </el-table-column>
+        <el-table-column prop="request_category_label" label="来源类别" width="190" />
+        <el-table-column prop="source_no" label="来源单号" width="160"><template #default="scope">{{ scope.row.source_no || '-' }}</template></el-table-column>
+        <el-table-column label="货品信息" min-width="260">
+          <template #default="scope">
+            <template v-if="scope.row.item_lines?.length">
+              <div v-for="(item, index) in scope.row.item_lines" :key="index" class="operation-item-line">
+                <span class="operation-item-type">{{ item.item_type_label }}：</span>{{ item.item_name }}
+              </div>
+            </template>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="数量" width="130" align="right">
+          <template #default="scope">
+            <template v-if="scope.row.item_lines?.length">
+              <div v-for="(item, index) in scope.row.item_lines" :key="index" class="operation-item-line">{{ formatNumber(item.quantity) }}</div>
+            </template>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status_label" label="状态" width="120">
+          <template #default="scope"><el-tag :type="scope.row.status === 'completed' ? 'success' : 'warning'">{{ scope.row.status_label }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="240" show-overflow-tooltip><template #default="scope">{{ scope.row.remark || '-' }}</template></el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="180"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
       </el-table>
       </div>
     </PageSection>
@@ -964,8 +982,11 @@ watch(
   scrollbar-color: #9db5c7 transparent;
 }
 .inventory-status-table { min-width: 1760px; }
-.inventory-operation-table { min-width: 1340px; }
+.inventory-operation-table-scroll { overflow-x: hidden; }
+.inventory-operation-table { width: 100%; min-width: 100%; }
 .inventory-transaction-table { min-width: 2050px; }
+.operation-item-line { min-height: 24px; line-height: 24px; white-space: normal; word-break: break-word; }
+.operation-item-type { color: #606266; font-weight: 600; }
 .transaction-section :deep(.section-header) { flex-wrap: wrap; align-items: flex-start; }
 .transaction-section :deep(.section-main) { flex: 1 0 100%; min-width: 240px; }
 .transaction-section :deep(.section-actions) { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: flex-start; white-space: normal; }
@@ -984,7 +1005,6 @@ watch(
   }
 
   .inventory-status-table,
-  .inventory-operation-table,
   .inventory-transaction-table {
     width: max-content !important;
     max-width: none !important;
@@ -995,7 +1015,8 @@ watch(
   }
 
   .inventory-operation-table {
-    min-width: 1340px !important;
+    width: 100% !important;
+    min-width: 100% !important;
   }
 
   .inventory-transaction-table {

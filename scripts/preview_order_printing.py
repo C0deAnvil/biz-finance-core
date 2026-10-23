@@ -42,5 +42,10 @@ order = Row(
 )
 for kind in ("sales", "placement"):
     path = target / f"sample_{kind}_order.pdf"
-    path.write_bytes(render_order_pdf(order, kind=kind))
+    kwargs = {
+        "placement_token": "A1B2C3D4E5F60718293A4B5C",
+        "shipment_token": "F1E2D3C4B5A60718293F4E5D",
+        "warehouse_name": "沧州仓库",
+    } if kind == "placement" else {}
+    path.write_bytes(render_order_pdf(order, kind=kind, **kwargs))
     print(path)

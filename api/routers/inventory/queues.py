@@ -105,11 +105,12 @@ def _lock_sales_packaging_inventory(db: Session, *, warehouse_id: int, item: Sal
     return packaging, inventory
 
 
-def _lock_product_inventories(db: Session, product_id: int) -> list[Inventory]:
-    """锁定所有仓库中的同一成品库存，用于公司级置货。"""
+def _lock_product_inventories(db: Session, product_id: int, warehouse_id: int) -> list[Inventory]:
+    """锁定作业单指定仓库中的成品库存。"""
     return db.execute(
         select(Inventory)
         .where(
+            Inventory.warehouse_id == warehouse_id,
             Inventory.product_id == product_id,
             Inventory.material_id.is_(None),
         )
@@ -118,11 +119,12 @@ def _lock_product_inventories(db: Session, product_id: int) -> list[Inventory]:
     ).scalars().all()
 
 
-def _lock_packaging_inventories(db: Session, packaging_id: int) -> list[Inventory]:
-    """锁定所有仓库中的同一包装库存，用于公司级置货。"""
+def _lock_packaging_inventories(db: Session, packaging_id: int, warehouse_id: int) -> list[Inventory]:
+    """锁定作业单指定仓库中的包装库存。"""
     return db.execute(
         select(Inventory)
         .where(
+            Inventory.warehouse_id == warehouse_id,
             Inventory.packaging_config_id == packaging_id,
             Inventory.product_id.is_(None),
             Inventory.material_id.is_(None),
@@ -305,6 +307,11 @@ def mark_placement(
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.id == queue_id)).scalar_one_or_none()
     if queue is None:
         raise HTTPException(status_code=404, detail="置货队列不存在")
+    warehouse_id = queue.warehouse_id or _finished_warehouse_id(db)
+    if queue.warehouse_id is None:
+        queue.warehouse_id = warehouse_id
+    if not warehouse_in_scope(db, current_user, warehouse_id):
+        raise HTTPException(status_code=403, detail="当前账号无权处理该仓库的置货任务")
     if payload.action != "placed":
         raise HTTPException(status_code=409, detail="置货操作只允许提交 placed")
     order = db.execute(
@@ -340,7 +347,7 @@ def mark_placement(
                 code=409,
                 msg=f"商品 {_order_item_name(item)} 置货数量超过待置货量(剩余 {float(remaining_quantity)})",
             )
-        inventories = _lock_product_inventories(db, item.product_id)
+        inventories = _lock_product_inventories(db, item.product_id, warehouse_id)
         # 财务审批时已为本明细占用了库存(item.reserved_quantity),置货不再重复占用,
         # 否则同一订单会被占两次(库存 200/订单 100 → 置货后占用 200)。
         # 只有当累计置货量超过已占量时(例如审批时库存不足、后来补货到货),才按当前可置货量补足差额。
@@ -363,7 +370,7 @@ def mark_placement(
             )
             continue
         packaging = get_inventory_packaging_config(db, item.packaging_config)
-        packaging_inventories = _lock_packaging_inventories(db, packaging.id) if packaging else []
+        packaging_inventories = _lock_packaging_inventories(db, packaging.id, warehouse_id) if packaging else []
         target_packaging_units = _sales_item_packaging_units(item, placed_after)
         allocated_packaging_units = Decimal(item.packaging_reserved_quantity or 0) + Decimal(item.packaging_shipped_quantity or 0)
         packaging_extra_needed = max(target_packaging_units - allocated_packaging_units, Decimal("0"))
@@ -394,6 +401,15 @@ def mark_placement(
         placed_any = True
 
     if shortage_rows:
+        if payload.atomic:
+            db.rollback()
+            has_packaging_shortage = any(row.get("shortage_type") == "packaging" for row in shortage_rows)
+            shortage_message = "包装库存不足，整单未置货" if has_packaging_shortage else "成品库存不足，整单未置货"
+            return api_response(
+                code=409,
+                msg=shortage_message,
+                data={"code": "atomic_stock_shortage", "shortages": shortage_rows},
+            )
         db.commit()
         has_product_shortage = any(row.get("shortage_type") != "packaging" for row in shortage_rows)
         has_packaging_shortage = any(row.get("shortage_type") == "packaging" for row in shortage_rows)
@@ -438,6 +454,13 @@ def mark_placement(
                 "shortage_quantity": float(shortage),
             })
     if remaining_shortages:
+        if payload.atomic:
+            db.rollback()
+            return api_response(
+                code=409,
+                msg="订单仍有库存缺口，整单未置货",
+                data={"code": "atomic_stock_shortage", "shortages": remaining_shortages},
+            )
         db.commit()
         # 需求:置货后仍有缺口→询问是否提补货需求(不自动生成)
         return api_response(
@@ -559,12 +582,14 @@ def mark_shipment(
     current_user: User = Depends(require_roles("inventory")),
     db: Session = Depends(get_db),
 ):
-    warehouse_id = _finished_warehouse_id(db)
-    if not warehouse_in_scope(db, current_user, warehouse_id):
-        raise HTTPException(status_code=403, detail="当前账号无权处理成品仓发货任务")
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.id == queue_id)).scalar_one_or_none()
     if queue is None:
         raise HTTPException(status_code=404, detail="发货队列不存在")
+    warehouse_id = queue.warehouse_id or _finished_warehouse_id(db)
+    if queue.warehouse_id is None:
+        queue.warehouse_id = warehouse_id
+    if not warehouse_in_scope(db, current_user, warehouse_id):
+        raise HTTPException(status_code=403, detail="当前账号无权处理该仓库的发货任务")
     if queue.placement_status != "hidden":
         raise HTTPException(status_code=409, detail="当前客户订单尚未完成置货，不能发货")
     order = db.execute(

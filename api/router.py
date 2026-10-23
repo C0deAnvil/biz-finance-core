@@ -22,6 +22,7 @@ from api.routers.reimbursements import router as reimbursements_router
 from api.routers.sales import router as sales_router
 from api.routers.supplier_ai import router as supplier_ai_router
 from api.routers.supplier_samples import router as supplier_samples_router
+from api.routers.warehouse_scanning import router as warehouse_scanning_router
 
 
 api_router = APIRouter()
@@ -39,6 +40,7 @@ for _r in inventory_router_list:
 api_router.include_router(logistics_router)
 api_router.include_router(purchases_router)
 api_router.include_router(printing_router)
+api_router.include_router(warehouse_scanning_router)
 api_router.include_router(production_router)
 api_router.include_router(quality_router)
 api_router.include_router(realtime_router)

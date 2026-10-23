@@ -9,6 +9,7 @@ from models import FulfillmentDemand, InventoryDispatchQueue, InventoryOperation
 from services.core import complete_todos, ensure_notification, ensure_todo, resolve_workflow_recipients
 from services.request_trace import emit
 from services.replenishment_service import ensure_fulfillment_demand_routing
+from services.warehouse_lookup import get_finished_warehouse
 from sqlalchemy.orm import joinedload, selectinload
 
 
@@ -197,11 +198,14 @@ def repair_sales_dispatch_workflows(db: Session) -> int:
             if queue is None:
                 queue = InventoryDispatchQueue(
                     sales_order_id=order.id,
+                    warehouse_id=get_finished_warehouse(db).id,
                     placement_status="pending",
                     shipment_status="waiting_approval",
                 )
                 db.add(queue)
                 db.flush()
+            elif queue.warehouse_id is None:
+                queue.warehouse_id = get_finished_warehouse(db).id
             if queue.placement_status != "hidden":
                 queue.placement_status = "pending"
                 queue.shipment_status = "waiting_approval"

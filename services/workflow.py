@@ -525,7 +525,9 @@ def _sync_inventory_request_source(
         sales_return = db.execute(select(SalesReturn).where(SalesReturn.id == source_id)).scalar_one_or_none()
         if sales_return is None:
             return
-        sales_return.status = "approved"
+        # 回库完成不能把已经登记退款的单据从 refunded 倒退回 approved。
+        if sales_return.status != "refunded":
+            sales_return.status = "approved"
         # 退货入库完成 → 扣减退货在途(实有已由入库作业增加)
         _release_sales_return_in_transit(db, request)
         create_notification(

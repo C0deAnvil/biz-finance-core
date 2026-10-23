@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.router import api_router
 from api.routers.printing import purge_old_print_access_logs
+from api.routers.warehouse_scanning import purge_old_scan_access_logs
 from config import settings
 from database import SessionLocal
 from exceptions import BusinessError
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI):
             try:
                 with SessionLocal() as cleanup_db:
                     purge_old_print_access_logs(cleanup_db)
+                    purge_old_scan_access_logs(cleanup_db)
             except Exception:
                 logging.exception("Failed to purge expired print access logs")
             await asyncio.sleep(3600)

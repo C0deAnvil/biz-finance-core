@@ -20,28 +20,72 @@ from services.display import payment_type_label
 
 
 FONT = "NotoSansSC"
+FONT_BOLD = "NotoSansSC-Bold"
 pdfmetrics.registerFont(TTFont(FONT, str(Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoSansSC.ttf")))
+pdfmetrics.registerFont(TTFont(FONT_BOLD, str(Path(__file__).resolve().parent.parent / "assets" / "fonts" / "NotoSansSC-Bold.ttf")))
+pdfmetrics.registerFontFamily(FONT, normal=FONT, bold=FONT_BOLD, italic=FONT, boldItalic=FONT_BOLD)
 PAGE_SIZE = landscape(A5)
-INK = colors.HexColor("#263445")
-GRID = colors.HexColor("#aeb9c7")
+INK = colors.black
+GRID = colors.black
 
 
 def _text(value, fallback="-"):
     return escape(str(value).strip()) if value is not None and str(value).strip() else fallback
 
 
-def _paragraph(value, *, size=7.5, align=0):
+def _paragraph(value, *, size=9, align=0):
     return Paragraph(
         _text(value),
         ParagraphStyle(
             name="cell",
-            fontName=FONT,
+            fontName=FONT_BOLD,
             fontSize=size,
-            leading=size + 4,
+            leading=size + 3,
             textColor=INK,
             alignment=align,
         ),
     )
+
+
+def _rich_paragraph(value, *, size=9, align=0):
+    """Render trusted template markup; dynamic values must be escaped by caller."""
+    return Paragraph(
+        str(value),
+        ParagraphStyle(
+            name="rich-cell",
+            fontName=FONT_BOLD,
+            fontSize=size,
+            leading=size + 3,
+            textColor=INK,
+            alignment=align,
+        ),
+    )
+
+
+def _placement_paragraph(value, *, size=11, align=0, color=colors.black):
+    """High-contrast text for warehouse printouts and low-quality printers."""
+    return Paragraph(
+        _text(value),
+        ParagraphStyle(
+            name="placement-cell",
+            fontName=FONT_BOLD,
+            fontSize=size,
+            leading=size + 3,
+            textColor=color,
+            alignment=align,
+        ),
+    )
+
+
+def _placement_footer(canvas, doc):
+    canvas.saveState()
+    canvas.setStrokeColor(colors.black)
+    canvas.setLineWidth(0.8)
+    canvas.line(7 * mm, 7 * mm, PAGE_SIZE[0] - 7 * mm, 7 * mm)
+    canvas.setFillColor(colors.black)
+    canvas.setFont(FONT, 8)
+    canvas.drawRightString(PAGE_SIZE[0] - 7 * mm, 3 * mm, f"第 {doc.page} 页")
+    canvas.restoreState()
 
 
 def _money(value):
@@ -64,8 +108,8 @@ def _field(label, value):
 def _base_doc(buffer):
     return SimpleDocTemplate(
         buffer, pagesize=PAGE_SIZE,
-        leftMargin=10 * mm, rightMargin=10 * mm,
-        topMargin=10 * mm, bottomMargin=10 * mm,
+        leftMargin=7 * mm, rightMargin=7 * mm,
+        topMargin=7 * mm, bottomMargin=8 * mm,
         title="业务单据", author="业务系统",
     )
 
@@ -82,38 +126,162 @@ def _meta_table(rows, width):
 
 
 def _grid_table(headers, rows, widths):
-    content = [[_paragraph(value, size=7, align=TA_CENTER) for value in headers]]
-    content.extend([_paragraph(value, size=7) for value in row] for row in rows)
+    content = [[_paragraph(value, size=8.5, align=TA_CENTER) for value in headers]]
+    content.extend([_paragraph(value, size=8.5) for value in row] for row in rows)
     table = Table(content, colWidths=widths, repeatRows=1, hAlign="LEFT")
     table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, GRID),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2f6")),
+        ("GRID", (0, 0), (-1, -1), 1.2, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
     ]))
     return table
 
 
 def _footer(canvas, doc):
     canvas.saveState()
-    canvas.setStrokeColor(GRID)
-    canvas.line(10 * mm, 7 * mm, PAGE_SIZE[0] - 10 * mm, 7 * mm)
-    canvas.setFont(FONT, 7)
-    canvas.drawRightString(PAGE_SIZE[0] - 10 * mm, 3 * mm, f"第 {doc.page} 页")
+    canvas.setStrokeColor(colors.black)
+    canvas.setLineWidth(0.8)
+    canvas.line(7 * mm, 7 * mm, PAGE_SIZE[0] - 7 * mm, 7 * mm)
+    canvas.setFillColor(colors.black)
+    canvas.setFont(FONT_BOLD, 8)
+    canvas.drawRightString(PAGE_SIZE[0] - 7 * mm, 3 * mm, f"第 {doc.page} 页")
     canvas.restoreState()
 
 
-def render_order_pdf(order: SalesOrder, *, kind: str) -> bytes:
+def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: str, warehouse_name: str | None) -> bytes:
+    """Large-font warehouse sheet with separate full-placement/full-shipment codes."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=PAGE_SIZE,
+        leftMargin=7 * mm, rightMargin=7 * mm,
+        topMargin=6 * mm, bottomMargin=8 * mm,
+        title=f"销售出库作业单 {order.order_no}", author="业务系统",
+    )
+    width = PAGE_SIZE[0] - 14 * mm
+    story = []
+
+    placement_barcode = Code128(
+        f"YCP01{placement_token}", barWidth=0.18 * mm, barHeight=12 * mm, humanReadable=False,
+    )
+    shipment_barcode = Code128(
+        f"YCS01{shipment_token}", barWidth=0.18 * mm, barHeight=12 * mm, humanReadable=False,
+    )
+    barcode_table = Table(
+        [
+            [_placement_paragraph("销售出库作业单", size=22, align=TA_CENTER), ""],
+            [placement_barcode, shipment_barcode],
+            [_placement_paragraph("置货码", size=13, align=TA_CENTER),
+             _placement_paragraph("发货码", size=13, align=TA_CENTER)],
+        ],
+        colWidths=[width / 2, width / 2],
+    )
+    barcode_table.setStyle(TableStyle([
+        ("SPAN", (0, 0), (1, 0)),
+        ("BOX", (0, 0), (-1, -1), 1.2, colors.black),
+        ("INNERGRID", (0, 0), (-1, -1), 1.0, colors.black),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (1, 0), 1),
+        ("BOTTOMPADDING", (0, 0), (1, 0), 4),
+    ]))
+    story.extend([barcode_table, Spacer(1, 2 * mm)])
+
+    style = order_type_style(order.order_type)
+    expected = order.expected_delivery_date
+    order_type_color = colors.HexColor("#D40000") if order.order_type == "urgent" else colors.black
+    owner = (order.sales_user.full_name or order.sales_user.username) if order.sales_user else "-"
+    meta = Table(
+        [
+            [_placement_paragraph("订单编号"), _placement_paragraph(order.order_no, size=12),
+             _placement_paragraph("作业仓库"), _placement_paragraph(warehouse_name, size=12),
+             _placement_paragraph(style["label"], size=13, align=TA_CENTER, color=order_type_color)],
+            [_placement_paragraph("期望发货"), _placement_paragraph(_date(expected), size=12),
+             _placement_paragraph("销售负责人"), _placement_paragraph(owner), ""],
+            [_placement_paragraph("收货人/电话"), _placement_paragraph(f"{order.consignee or '-'}  {order.consignee_phone or '-'}"),
+             _placement_paragraph("送货地址"), _placement_paragraph(order.delivery_address or "-", size=10.5), ""],
+            [_placement_paragraph("销售备注"), _placement_paragraph(order.order_remark or "-"), "", "", ""],
+        ],
+        colWidths=[width * 0.10, width * 0.22, width * 0.10, width * 0.43, width * 0.15],
+    )
+    meta.setStyle(TableStyle([
+        ("SPAN", (3, 2), (4, 2)),
+        ("SPAN", (1, 3), (4, 3)),
+        ("GRID", (0, 0), (-1, -1), 1.4, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.extend([meta, Spacer(1, 2.5 * mm)])
+
+    headers = ["产品编码", "产品名称 / 产品规格", "包装要求", "数量", "明细备注"]
+    rows = []
+    for item in order.items:
+        product = item.product
+        packaging = item.packaging_config
+        specification = item.display_specification or (product.specification if product else None) or "-"
+        pack_parts = [packaging.packaging_name if packaging else "-"]
+        if item.kg_per_bag:
+            pack_parts.append(f"{_qty(item.kg_per_bag)} kg/袋")
+        if item.bag_count:
+            pack_parts.append(f"{_qty(item.bag_count)} 袋")
+        rows.append([
+            product.product_code if product else "-",
+            f"{product.name if product else '-'} / {specification}",
+            " / ".join(pack_parts),
+            f"{_qty(item.quantity)} kg",
+            item.remark or "-",
+        ])
+    content = [[_placement_paragraph(value, size=11, align=TA_CENTER) for value in headers]]
+    content.extend([_placement_paragraph(value, size=10.5) for value in row] for row in rows)
+    item_table = Table(
+        content,
+        colWidths=[width * 0.13, width * 0.25, width * 0.19, width * 0.12, width * 0.31],
+        repeatRows=1, hAlign="LEFT",
+    )
+    item_table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 1.2, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(item_table)
+    doc.build(story, onFirstPage=_placement_footer, onLaterPages=_placement_footer)
+    return buffer.getvalue()
+
+
+def render_order_pdf(
+    order: SalesOrder,
+    *,
+    kind: str,
+    placement_token: str | None = None,
+    shipment_token: str | None = None,
+    warehouse_name: str | None = None,
+) -> bytes:
     if kind not in {"sales", "placement"}:
         raise ValueError("unsupported print template")
+    if kind == "placement":
+        if not placement_token or not shipment_token:
+            raise ValueError("placement and shipment scan tokens are required")
+        return _placement_pdf(
+            order,
+            placement_token=placement_token,
+            shipment_token=shipment_token,
+            warehouse_name=warehouse_name,
+        )
     buffer = BytesIO()
     doc = _base_doc(buffer)
-    width = PAGE_SIZE[0] - 20 * mm
+    width = PAGE_SIZE[0] - 14 * mm
     title = "销售单" if kind == "sales" else "置货单"
-    styles = ParagraphStyle(name="title", fontName=FONT, fontSize=16, leading=21, alignment=TA_CENTER, textColor=INK)
+    styles = ParagraphStyle(name="title", fontName=FONT_BOLD, fontSize=22, leading=27, alignment=TA_CENTER, textColor=colors.black)
     story = [Paragraph(title, styles), Spacer(1, 3 * mm)]
     if kind == "placement":
         # 纸面只包含任务标识。设备认证码由扫描终端保存，不能印在单据中。
@@ -169,7 +337,7 @@ def render_order_pdf(order: SalesOrder, *, kind: str) -> bytes:
     story.append(_grid_table(headers, rows, widths))
     story.append(Spacer(1, 5 * mm))
     if kind == "sales":
-        story.append(_paragraph(f"订单总金额：¥{_money(order.total_amount)}", size=10, align=TA_RIGHT))
+        story.append(_paragraph(f"订单总金额：¥{_money(order.total_amount)}", size=12, align=TA_RIGHT))
         story.append(Spacer(1, 2 * mm))
         account = order.receipt_account
         account_text = f"{account.account_name} / {account.bank_name} / {account.account_number}" if account else "-"

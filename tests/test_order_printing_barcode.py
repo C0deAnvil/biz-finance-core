@@ -24,12 +24,19 @@ def sample_order():
     )
 
 
-def test_placement_pdf_has_scannable_task_identifier():
+def test_placement_pdf_has_separate_full_placement_and_shipment_codes():
     with patch("services.order_printing.Code128", wraps=__import__("reportlab.graphics.barcode.code128", fromlist=["Code128"]).Code128) as barcode:
-        pdf = render_order_pdf(sample_order(), kind="placement")
+        pdf = render_order_pdf(
+            sample_order(),
+            kind="placement",
+            placement_token="A" * 24,
+            shipment_token="B" * 24,
+            warehouse_name="沧州仓库",
+        )
     assert pdf.startswith(b"%PDF")
-    barcode.assert_called_once()
-    assert barcode.call_args.args[0] == "PL:123"
+    assert barcode.call_count == 2
+    assert barcode.call_args_list[0].args[0] == f"YCP01{'A' * 24}"
+    assert barcode.call_args_list[1].args[0] == f"YCS01{'B' * 24}"
 
 
 def test_sales_pdf_does_not_show_placement_barcode():

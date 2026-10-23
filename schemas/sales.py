@@ -122,6 +122,8 @@ class PlacementItemInput(BaseModel):
 class PlacementActionRequest(BaseModel):
     action: str = Field(..., pattern="^placed$")
     items: list[PlacementItemInput]
+    # 扫码作业必须整单成功或整单失败；普通页面仍可按原流程分批置货。
+    atomic: bool = False
 
 
 class SalesShipmentItemInput(BaseModel):

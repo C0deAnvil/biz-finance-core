@@ -433,12 +433,20 @@ function openInspection(row) {
 }
 
 async function submitInspection() {
-  const result = await post('/api/quality/inspections', { ...inspectionForm, quality_task_id: activeTask.value.id })
-  ElMessage.success('质检记录已提交')
-  inspectionVisible.value = false
-  await load()
-  attachmentTargetId.value = result.id
-  attachmentVisible.value = true
+  try {
+    const result = await post('/api/quality/inspections', { ...inspectionForm, quality_task_id: activeTask.value.id })
+    ElMessage.success(
+      result?.status === 'completed' && activeTask.value?.source_category === 'return'
+        ? '退换货质检已通过，并已生成后续入库作业'
+        : '质检记录已提交'
+    )
+    inspectionVisible.value = false
+    await load()
+    attachmentTargetId.value = result.id
+    attachmentVisible.value = true
+  } catch (error) {
+    ElMessage.error(error?.message || '质检记录提交失败，请稍后重试')
+  }
 }
 
 function openRework(row) {
@@ -470,9 +478,19 @@ async function submitScrap() {
 }
 
 async function allowInbound(row) {
-  await post(`/api/quality/tasks/${row.id}/allow-inbound`, {})
-  ElMessage.success('已准许入库，并已通知生产继续处理')
-  await load()
+  try {
+    const result = await post(`/api/quality/tasks/${row.id}/allow-inbound`, {})
+    if (result?.inventory_request_no) {
+      ElMessage.success(`已准许入库，并生成库存作业：${result.inventory_request_no}`)
+    } else if (row.source_category === 'purchase') {
+      ElMessage.success('已准许入库，并生成采购入库作业')
+    } else {
+      ElMessage.success('已准许入库，并通知后续处理人员')
+    }
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '准许入库失败，请稍后重试')
+  }
 }
 
 function openAttachment(row) {

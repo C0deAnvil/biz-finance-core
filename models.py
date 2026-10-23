@@ -13,6 +13,7 @@
 """
 
 from datetime import datetime
+import secrets
 
 from sqlalchemy import (
     JSON,
@@ -974,6 +975,12 @@ class InventoryDispatchQueue(TimestampMixin, Base):
 
     id = Column(Integer, primary_key=True)
     sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False, unique=True)
+    # 纸质作业单必须对应唯一的实际发货仓库。历史数据由迁移回填成品仓，
+    # 新建队列也由销售流程显式写入；保留 nullable 仅兼容老测试夹具。
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True, index=True)
+    placement_scan_token = Column(String(32), nullable=False, unique=True, default=lambda: secrets.token_hex(12).upper())
+    shipment_scan_token = Column(String(32), nullable=False, unique=True, default=lambda: secrets.token_hex(12).upper())
+    barcode_version = Column(Integer, nullable=False, default=1, server_default=text("1"))
     placement_status = Column(String(30), nullable=False, default="pending")
     shipment_status = Column(String(30), nullable=False, default="waiting_approval")
     placement_marked_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -987,6 +994,7 @@ class InventoryDispatchQueue(TimestampMixin, Base):
     placement_print_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
 
     sales_order = relationship("SalesOrder")
+    warehouse = relationship("Warehouse")
     placement_printed_by = relationship("User", foreign_keys=[placement_printed_by_id])
 
 
@@ -1029,6 +1037,113 @@ class PlacementPrintAccessLog(Base):
     path = Column(String(255), nullable=False)
     result = Column(String(30), nullable=False)
     created_at = Column(DateTime, default=now_local, nullable=False, index=True)
+
+
+class WarehouseScanDevice(TimestampMixin, Base):
+    """受信任的仓库扫码电脑；扫描枪本身不保存系统认证信息。"""
+
+    __tablename__ = "warehouse_scan_devices"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
+    operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("1"))
+    last_seen_at = Column(DateTime, nullable=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    warehouse = relationship("Warehouse")
+    operator_user = relationship("User", foreign_keys=[operator_user_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class WarehouseScanAccessLog(Base):
+    """设备接口安全访问日志；可按保留策略定期清理。"""
+
+    __tablename__ = "warehouse_scan_access_logs"
+
+    id = Column(Integer, primary_key=True)
+    device_id = Column(Integer, ForeignKey("warehouse_scan_devices.id"), nullable=True)
+    token_fingerprint = Column(String(12), nullable=True)
+    ip_address = Column(String(64), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+    method = Column(String(10), nullable=False)
+    path = Column(String(255), nullable=False)
+    result = Column(String(30), nullable=False)
+    created_at = Column(DateTime, default=now_local, nullable=False, index=True)
+
+    device = relationship("WarehouseScanDevice")
+
+
+class WarehouseScanEvent(TimestampMixin, Base):
+    """永久业务审计事件；重复请求依靠 idempotency_key 返回同一结果。"""
+
+    __tablename__ = "warehouse_scan_events"
+    __table_args__ = (UniqueConstraint("device_id", "idempotency_key", name="uq_scan_event_device_idempotency"),)
+
+    id = Column(Integer, primary_key=True)
+    device_id = Column(Integer, ForeignKey("warehouse_scan_devices.id"), nullable=False, index=True)
+    queue_id = Column(Integer, ForeignKey("inventory_dispatch_queues.id"), nullable=True, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=True, index=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False, index=True)
+    operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action = Column(String(30), nullable=False)
+    idempotency_key = Column(String(80), nullable=False)
+    barcode_fingerprint = Column(String(12), nullable=True)
+    result = Column(String(30), nullable=False)
+    message = Column(String(500), nullable=True)
+    ip_address = Column(String(64), nullable=True)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+
+    device = relationship("WarehouseScanDevice")
+    queue = relationship("InventoryDispatchQueue")
+    sales_order = relationship("SalesOrder")
+    warehouse = relationship("Warehouse")
+    operator_user = relationship("User", foreign_keys=[operator_user_id])
+
+
+class ShipmentProof(TimestampMixin, Base):
+    """高拍仪上传的发货凭证；只有一次成功发货可以消费该照片。"""
+
+    __tablename__ = "shipment_proofs"
+
+    id = Column(Integer, primary_key=True)
+    queue_id = Column(Integer, ForeignKey("inventory_dispatch_queues.id"), nullable=False, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False, index=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    device_id = Column(Integer, ForeignKey("warehouse_scan_devices.id"), nullable=False)
+    attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=False, unique=True)
+    sha256 = Column(String(64), nullable=False, unique=True)
+    captured_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+
+    attachment = relationship("Attachment")
+    queue = relationship("InventoryDispatchQueue")
+    device = relationship("WarehouseScanDevice")
+
+
+class SalesShipmentBatch(TimestampMixin, Base):
+    """一次实际销售发货。当前扫码方案固定为整单全量发货。"""
+
+    __tablename__ = "sales_shipment_batches"
+
+    id = Column(Integer, primary_key=True)
+    batch_no = Column(String(60), nullable=False, unique=True)
+    queue_id = Column(Integer, ForeignKey("inventory_dispatch_queues.id"), nullable=False, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id"), nullable=False, index=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    device_id = Column(Integer, ForeignKey("warehouse_scan_devices.id"), nullable=True)
+    operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    proof_id = Column(Integer, ForeignKey("shipment_proofs.id"), nullable=True, unique=True)
+    status = Column(String(30), nullable=False, default="completed")
+    total_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    shipped_at = Column(DateTime, default=now_local, nullable=False)
+
+    queue = relationship("InventoryDispatchQueue")
+    proof = relationship("ShipmentProof")
+    device = relationship("WarehouseScanDevice")
+    operator_user = relationship("User", foreign_keys=[operator_user_id])
 
 
 

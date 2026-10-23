@@ -323,7 +323,7 @@ def _serialize_shipment_queue(row: InventoryDispatchQueue, db: Session, current_
     }
 
 
-def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
+def _placement_stock_status(db: Session, order: SalesOrder, warehouse_id: int | None = None) -> dict:
     """实时计算置货状态(不落库):
     - green: 所有商品可用库存 >= 待置货量
     - yellow: 部分商品有可用库存(可部分置货)
@@ -331,12 +331,15 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
     同时返回每个明细的待置货/已置货/可用库存。
     """
     product_ids = [item.product_id for item in order.items if item.product_id]
+    inventory_filters = [
+        Inventory.product_id.in_(product_ids),
+        Inventory.material_id.is_(None),
+    ]
+    if warehouse_id is not None:
+        inventory_filters.append(Inventory.warehouse_id == warehouse_id)
     inventory_rows = (
         db.execute(
-            select(Inventory).where(
-                Inventory.product_id.in_(product_ids),
-                Inventory.material_id.is_(None),
-            )
+            select(Inventory).where(*inventory_filters)
         ).scalars().all()
         if product_ids
         else []
@@ -347,13 +350,14 @@ def _placement_stock_status(db: Session, order: SalesOrder) -> dict:
         unreserved_map[row.product_id] = (
             unreserved_map.get(row.product_id, Decimal("0")) + max(placeable_of(row), Decimal("0"))
         )
-    packaging_rows = db.execute(
-        select(Inventory).where(
-            Inventory.packaging_config_id.is_not(None),
-            Inventory.product_id.is_(None),
-            Inventory.material_id.is_(None),
-        )
-    ).scalars().all()
+    packaging_filters = [
+        Inventory.packaging_config_id.is_not(None),
+        Inventory.product_id.is_(None),
+        Inventory.material_id.is_(None),
+    ]
+    if warehouse_id is not None:
+        packaging_filters.append(Inventory.warehouse_id == warehouse_id)
+    packaging_rows = db.execute(select(Inventory).where(*packaging_filters)).scalars().all()
     packaging_free_pool: dict[int, Decimal] = {}
     for row in packaging_rows:
         packaging_free_pool[row.packaging_config_id] = (
@@ -479,10 +483,13 @@ def _placement_blocked_reason(db: Session, order: SalesOrder, stock_status: str)
 def _serialize_placement_queue(row: InventoryDispatchQueue, db: Session, current_user: User) -> dict:
     order = row.sales_order
     process_status = sync_sales_order_process_status(db, order)
-    stock = _placement_stock_status(db, order)
+    warehouse_id = row.warehouse_id or _finished_warehouse_id(db)
+    stock = _placement_stock_status(db, order, warehouse_id)
     blocked_reason = _placement_blocked_reason(db, order, stock["stock_status"])
     return {
         'queue_id': row.id,
+        'warehouse_id': warehouse_id,
+        'warehouse_name': row.warehouse.name if row.warehouse else None,
         'order_id': row.sales_order_id,
         'order_no': order.order_no,
         'sales_user_name': _sales_user_name(order),

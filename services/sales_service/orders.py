@@ -517,8 +517,13 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
 
     queue = db.execute(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id)).scalar_one_or_none()
     if queue is None:
-        queue = InventoryDispatchQueue(sales_order_id=order.id)
+        queue = InventoryDispatchQueue(
+            sales_order_id=order.id,
+            warehouse_id=_finished_warehouse(db).id,
+        )
         db.add(queue)
+    elif queue.warehouse_id is None:
+        queue.warehouse_id = _finished_warehouse(db).id
     # 订单一旦指定处理财务，后续审批结果通知也只发给该人；不能又广播给全体财务。
     finance_recipient_ids = [order.assigned_finance_user_id] if order.assigned_finance_user_id else assignable_finance_user_ids(db)
 

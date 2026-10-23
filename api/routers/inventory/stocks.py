@@ -418,6 +418,74 @@ def list_operation_requests(current_user: User = Depends(get_current_user), db: 
         normalized_any = normalize_inventory_operation_request_approval(row, db) or normalized_any
     if normalized_any:
         db.commit()
+    product_ids = {
+        item.get("product_id")
+        for row in rows
+        for item in (row.original_items_json or [])
+        if item.get("product_id")
+    }
+    material_ids = {
+        item.get("material_id")
+        for row in rows
+        for item in (row.original_items_json or [])
+        if item.get("material_id")
+    }
+    packaging_ids = {
+        item.get("packaging_config_id")
+        for row in rows
+        for item in (row.original_items_json or [])
+        if item.get("packaging_config_id")
+    }
+    product_map = {
+        item.id: item
+        for item in db.execute(select(Product).where(Product.id.in_(product_ids))).scalars().all()
+    } if product_ids else {}
+    material_map = {
+        item.id: item
+        for item in db.execute(select(Material).where(Material.id.in_(material_ids))).scalars().all()
+    } if material_ids else {}
+    packaging_map = {
+        item.id: item
+        for item in db.execute(select(PackagingConfig).where(PackagingConfig.id.in_(packaging_ids))).scalars().all()
+    } if packaging_ids else {}
+
+    def item_lines(row: InventoryOperationRequest) -> list[dict]:
+        lines: list[dict] = []
+        is_sample = row.source_type == "supplier_sample" or row.request_category == "supplier_sample"
+        for item in row.original_items_json or []:
+            product = product_map.get(item.get("product_id"))
+            material = material_map.get(item.get("material_id"))
+            packaging = packaging_map.get(item.get("packaging_config_id"))
+            if product:
+                item_type_label = "产品"
+                item_name = product.name
+            elif material:
+                item_type_label = "原料"
+                item_name = material.name
+            elif packaging:
+                item_type_label = "包装"
+                item_name = packaging.packaging_name
+            else:
+                item_type_label = "物品"
+                item_name = (
+                    item.get("item_name")
+                    or item.get("product_name")
+                    or item.get("material_name")
+                    or item.get("packaging_name")
+                    or "未识别物品"
+                )
+            if is_sample:
+                item_type_label = "样品"
+            quantity = item.get("quantity")
+            if quantity is None:
+                quantity = item.get("requested_quantity") or item.get("planned_quantity") or 0
+            lines.append({
+                "item_type_label": item_type_label,
+                "item_name": item_name,
+                "quantity": float(Decimal(str(quantity or 0))),
+            })
+        return lines
+
     return api_response(
         data=[
             {
@@ -439,6 +507,7 @@ def list_operation_requests(current_user: User = Depends(get_current_user), db: 
                 "quantity_difference_remark": row.quantity_difference_remark,
                 "original_items": row.original_items_json or [],
                 "handled_items": row.handled_items_json or [],
+                "item_lines": item_lines(row),
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "completed_at": row.completed_at.isoformat() if row.completed_at else None,
             }

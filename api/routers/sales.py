@@ -1474,7 +1474,7 @@ def create_return(payload: SalesReturnCreate, current_user: User = Depends(requi
 def approve_return(
     return_id: int,
     payload: SalesReturnApprovalRequest,
-    current_user: User = Depends(require_roles("manager", "chairman")),
+    current_user: User = Depends(require_roles("finance", "finance_super", "manager", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
     return approve_return_service(return_id, payload, current_user, db)

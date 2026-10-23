@@ -1,5 +1,5 @@
 <template>
-  <PageSection title="销售退换货" description="销售提交退换货申请后，经理/董事长审核并回库，财务再登记退款。">
+  <PageSection title="销售退换货" description="销售提交后由财务、总经理或董事长任一人审批；需质检的单据放行后再生成回库作业。">
     <template #actions>
       <el-button @click="load">刷新</el-button>
       <el-button @click="exportTable">导出</el-button>
@@ -52,7 +52,7 @@
     <el-dialog v-model="dialogVisible" title="新建退换货申请" width="980px">
       <el-form :model="form" label-width="100px">
         <el-form-item label="销售订单">
-          <el-select v-model="form.sales_order_id" filterable style="width: 100%" @change="handleOrderChange">
+          <el-select v-model="form.sales_order_id" filterable :loading="orderLoading" style="width: 100%" @change="handleOrderChange">
             <el-option v-for="item in salesOrders" :key="item.id" :label="`${item.order_no} / ${item.customer_name}`" :value="item.id" />
           </el-select>
         </el-form-item>
@@ -79,14 +79,22 @@
           </el-table-column>
           <el-table-column label="本次退换数量" width="160">
             <template #default="scope">
-              <el-input-number v-model="scope.row.return_quantity" :min="0" :max="scope.row.quantity" :precision="2" style="width: 100%" />
+              <el-input-number
+                v-model="scope.row.return_quantity"
+                :min="0"
+                :max="scope.row.quantity"
+                :precision="4"
+                style="width: 100%"
+                @input="handleReturnQuantityChange(scope.row, $event)"
+                @change="handleReturnQuantityChange(scope.row, $event)"
+              />
             </template>
           </el-table-column>
         </el-table>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">提交申请</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="orderLoading" @click="submit">提交申请</el-button>
       </template>
     </el-dialog>
 
@@ -98,7 +106,7 @@
       </el-form>
       <template #footer>
         <el-button @click="approvalVisible = false">取消</el-button>
-        <DelayedActionButton :type="approvalForm.decision === 'approved' ? 'success' : 'danger'" @click="submitApproval">确认</DelayedActionButton>
+        <DelayedActionButton :type="approvalForm.decision === 'approved' ? 'success' : 'danger'" :loading="approvalSubmitting" :disabled="approvalSubmitting" @click="submitApproval">确认</DelayedActionButton>
       </template>
     </el-dialog>
 
@@ -200,7 +208,7 @@ import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 
 import { get, post } from '../../api/client'
 import { useRouteFocus } from '../../composables/useRouteFocus'
@@ -225,6 +233,10 @@ const dialogVisible = ref(false)
 const approvalVisible = ref(false)
 const detailVisible = ref(false)
 const activeRow = ref(null)
+const orderLoading = ref(false)
+const submitting = ref(false)
+const approvalSubmitting = ref(false)
+let orderLoadSequence = 0
 
 const form = reactive({
   sales_order_id: null,
@@ -247,6 +259,8 @@ function rowClassName({ row }) {
 }
 
 function resetForm() {
+  orderLoadSequence += 1
+  orderLoading.value = false
   form.sales_order_id = null
   form.return_type = 'return'
   form.reason = ''
@@ -261,11 +275,11 @@ function openCreate() {
 }
 
 function canApprove(row) {
-  return ['manager', 'chairman'].includes(auth.user?.role_code) && pagePermission.can('approve') && row.status === 'pending'
+  return ['finance', 'finance_super', 'manager', 'chairman', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('approve') && row.status === 'pending'
 }
 
 function canRefund(row) {
-  return auth.isRole('finance') && pagePermission.can('refund') && row.status === 'approved' && Number(row.refund_amount || 0) > 0
+  return ['finance', 'finance_super'].includes(auth.user?.role_code) && pagePermission.can('refund') && row.status === 'approved' && Number(row.refund_amount || 0) > 0
 }
 
 function openApproval(row, decision) {
@@ -295,25 +309,55 @@ async function load() {
 }
 
 async function handleOrderChange(orderId) {
+  const sequence = ++orderLoadSequence
   if (!orderId) {
     items.value = []
+    orderLoading.value = false
     return
   }
-  const order = await get(`/api/sales/orders/${orderId}`)
-  items.value = (order.items || []).map((item) => ({
-    sales_order_item_id: item.id,
-    product_name: item.product_name,
-    quantity: item.quantity,
-    return_quantity: 0
-  }))
+  orderLoading.value = true
+  items.value = []
+  try {
+    const order = await get(`/api/sales/orders/${orderId}`, { force: true })
+    if (sequence !== orderLoadSequence) return
+    items.value = (order.items || []).map((item) => ({
+      sales_order_item_id: Number(item.id),
+      product_name: item.product_name,
+      quantity: Number(item.quantity || 0),
+      return_quantity: 0
+    }))
+    if (!items.value.length) {
+      ElMessage.warning('该销售订单没有可退换的产品明细')
+    }
+  } catch (error) {
+    if (sequence === orderLoadSequence) {
+      items.value = []
+      ElMessage.error(error?.message || '销售订单明细加载失败')
+    }
+  } finally {
+    if (sequence === orderLoadSequence) orderLoading.value = false
+  }
+}
+
+function handleReturnQuantityChange(row, value) {
+  const quantity = Number(String(value ?? '').replace(/,/g, ''))
+  row.return_quantity = Number.isFinite(quantity) ? quantity : 0
 }
 
 async function submit() {
+  if (submitting.value) return
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  await nextTick()
+
   const selectedItems = items.value
-    .filter((item) => Number(item.return_quantity) > 0)
+    .map((item) => ({
+      sales_order_item_id: Number(item.sales_order_item_id),
+      quantity: Number(String(item.return_quantity ?? '').replace(/,/g, ''))
+    }))
+    .filter((item) => Number.isInteger(item.sales_order_item_id) && Number.isFinite(item.quantity) && item.quantity > 0)
     .map((item) => ({
       sales_order_item_id: item.sales_order_item_id,
-      quantity: item.return_quantity
+      quantity: item.quantity
     }))
 
   if (!form.sales_order_id) {
@@ -324,28 +368,47 @@ async function submit() {
     ElMessage.warning('请至少填写一条退换货明细')
     return
   }
+  if (!String(form.reason || '').trim()) {
+    ElMessage.warning('请填写申请原因')
+    return
+  }
 
-  const result = await post('/api/sales/returns', {
-    sales_order_id: form.sales_order_id,
-    return_type: form.return_type,
-    reason: form.reason,
-    refund_amount: form.refund_amount,
-    requires_reinspection: form.requires_reinspection,
-    items: selectedItems
-  })
-  ElMessage.success(`退换货申请已提交：${result.return_no}`)
-  dialogVisible.value = false
-  await load()
+  submitting.value = true
+  try {
+    const result = await post('/api/sales/returns', {
+      sales_order_id: form.sales_order_id,
+      return_type: form.return_type,
+      reason: form.reason.trim(),
+      refund_amount: form.refund_amount,
+      requires_reinspection: form.requires_reinspection,
+      items: selectedItems
+    })
+    ElMessage.success(`退换货申请已提交：${result.return_no}`)
+    dialogVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '退换货申请提交失败，请稍后重试')
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function submitApproval() {
-  await post(`/api/sales/returns/${activeRow.value.id}/approve`, {
-    decision: approvalForm.decision,
-    note: approvalForm.note
-  })
-  ElMessage.success('退换货审批已处理')
-  approvalVisible.value = false
-  await load()
+  if (approvalSubmitting.value || !activeRow.value) return
+  approvalSubmitting.value = true
+  try {
+    await post(`/api/sales/returns/${activeRow.value.id}/approve`, {
+      decision: approvalForm.decision,
+      note: approvalForm.note
+    })
+    ElMessage.success('退换货审批已处理')
+    approvalVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '退换货审批失败，请稍后重试')
+  } finally {
+    approvalSubmitting.value = false
+  }
 }
 
 async function refund(row) {

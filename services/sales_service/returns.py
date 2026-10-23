@@ -35,10 +35,10 @@ from responses import api_response
 from schemas.sales import SalesApprovalRequest, SalesMergedReceiptRequestCreate, SalesOrderCreate, SalesOrderUpdate, SalesReceiptApprovalRequest, SalesReceiptRequestCreate, SalesReturnApprovalRequest, SalesReturnCreate, SalesSettlementCollectRequest
 from services.core import apply_inventory_change, complete_todos, create_cash_flow, create_notification, create_todo, ensure_notification, next_business_no, resolve_workflow_recipients, write_operation_log
 from services.display import calculate_bag_count, get_default_packaging_config, packaging_spec_text, payment_type_label
-from services.quality_workflow import create_return_reinspection_quality_task
+from services.quality_workflow import create_return_reinspection_quality_task, resolve_quality_recipients_for_warehouse
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
-from services.workflow import create_inventory_operation_request
+from services.sales_return_workflow import create_sales_return_inbound_request
 from services.warehouse_lookup import get_finished_warehouse
 from services.time_utils import now_local
 
@@ -47,6 +47,9 @@ from services.time_utils import now_local
 from services.sales_service._common import _ensure_order_owner_or_admin, _finished_warehouse, _load_order, _role_user_ids
 
 def create_return(payload: SalesReturnCreate, current_user: User, db: Session):
+    reason = str(payload.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="请填写退换货申请原因")
     order = _load_order(db, payload.sales_order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
@@ -73,7 +76,7 @@ def create_return(payload: SalesReturnCreate, current_user: User, db: Session):
         return_no=next_business_no(db, "XT"),
         sales_order_id=order.id,
         requested_by_id=current_user.id,
-        reason=payload.reason,
+        reason=reason,
         status="pending",
         return_type=payload.return_type,
         refund_amount=payload.refund_amount,
@@ -130,13 +133,15 @@ def create_return(payload: SalesReturnCreate, current_user: User, db: Session):
             db.add(inventory)
         inventory.in_transit = Decimal(inventory.in_transit or 0) + Decimal(item_payload.quantity)
 
-    approver_user_ids = _role_user_ids(db, "manager", "chairman")
+    approver_user_ids = _role_user_ids(db, "finance", "finance_super", "manager", "chairman")
+    if not approver_user_ids:
+        raise HTTPException(status_code=409, detail="未配置在岗财务、总经理或董事长，无法提交退换货审批")
     return_type_text = "退货" if payload.return_type == "return" else "换货"
     for user_id in approver_user_ids:
         create_todo(
             db,
             title=f"待审批{return_type_text}单 {sales_return.return_no}",
-            description=payload.reason,
+            description=reason,
             module="sales",
             assigned_user_id=user_id,
             business_type="sales_return_approval",
@@ -171,7 +176,10 @@ def create_return(payload: SalesReturnCreate, current_user: User, db: Session):
 
 
 def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_user: User, db: Session):
-    sales_return = db.execute(select(SalesReturn).where(SalesReturn.id == return_id)).scalar_one_or_none()
+    # 多名审批人共享同一待办，锁定单据确保“任一人审批一次即结束”，避免并发重复生成后续作业。
+    sales_return = db.execute(
+        select(SalesReturn).where(SalesReturn.id == return_id).with_for_update()
+    ).scalar_one_or_none()
     if sales_return is None:
         raise HTTPException(status_code=404, detail="退换货单不存在")
     if sales_return.status != "pending":
@@ -196,7 +204,6 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
 
     if payload.decision == "approved":
         warehouse = _finished_warehouse(db)
-        request_items: list[dict] = []
         total_reinspection_quantity = Decimal("0")
         reinspection_names: list[str] = []
         for item in return_items:
@@ -204,47 +211,12 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
             if order_item is None:
                 raise HTTPException(status_code=404, detail="退换货对应订单明细不存在")
 
-            inventory = db.execute(
-                select(Inventory).where(
-                    Inventory.warehouse_id == warehouse.id,
-                    Inventory.product_id == order_item.product_id,
-                    Inventory.material_id.is_(None),
-                )
-            ).scalar_one_or_none()
-            unit_cost = Decimal(inventory.avg_unit_cost or 0) if inventory else Decimal("0")
-            request_items.append(
-                {
-                    "product_id": order_item.product_id,
-                    "sales_order_item_id": order_item.id,
-                    "material_id": None,
-                    "batch_no": f"{sales_return.return_no}-{item.batch_suffix or item.id}",
-                    "quantity": float(item.quantity or 0),
-                    "unit_cost": float(unit_cost),
-                }
-            )
             total_reinspection_quantity += Decimal(item.quantity or 0)
             if order_item.product and order_item.product.name:
                 reinspection_names.append(order_item.product.name)
 
         sales_return.status = "approved"
-        inventory_user_ids = _role_user_ids(db, "inventory")
-        if request_items:
-            create_inventory_operation_request(
-                db,
-                operation_type="inbound",
-                request_category="sales_return_inbound",
-                source_module="sales",
-                source_type="sales_return",
-                source_id=sales_return.id,
-                source_no=sales_return.return_no,
-                warehouse_id=warehouse.id,
-                requested_by_id=current_user.id,
-                items=request_items,
-                remark=sales_return.reason,
-                recipient_user_ids=inventory_user_ids,
-                title=f"待执行销售退货入库 {sales_return.return_no}",
-                description=f"销售退换货单 {sales_return.return_no} 已审批通过，请库管执行退货入库。",
-            )
+        inventory_user_ids: list[int] = []
         if sales_return.requires_reinspection:
             quality_task = create_return_reinspection_quality_task(
                 db,
@@ -258,7 +230,16 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
                 # 退货复检归属成品仓,普通质检员按此过滤可见范围
                 target_warehouse_id=warehouse.id,
             )
-            quality_user_ids = _role_user_ids(db, "quality", "manager", "chairman")
+            quality_user_ids = resolve_quality_recipients_for_warehouse(
+                db,
+                warehouse_id=warehouse.id,
+                fallback_user_ids=_role_user_ids(db, "quality", "quality_super"),
+            )
+            if not quality_user_ids:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{warehouse.name}未配置在岗质检员，无法提交需要质检的退换货",
+                )
             for user_id in quality_user_ids:
                 create_todo(
                     db,
@@ -280,7 +261,13 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
                     created_by_id=current_user.id,
                     category="warning",
                 )
-        finance_user_ids = _role_user_ids(db, "finance", "manager", "chairman")
+        else:
+            _, inventory_user_ids = create_sales_return_inbound_request(
+                db,
+                sales_return,
+                requested_by_id=current_user.id,
+            )
+        finance_user_ids = _role_user_ids(db, "finance", "finance_super", "manager", "chairman")
         if Decimal(sales_return.refund_amount or 0) > 0:
             for user_id in finance_user_ids:
                 create_todo(
@@ -295,7 +282,10 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
         create_notification(
             db,
             title="销售退换货审批通过",
-            content=f"{'退货' if sales_return.return_type == 'return' else '换货'}单 {sales_return.return_no} 已审批通过，并已同步库管执行退货入库。",
+            content=(
+                f"{'退货' if sales_return.return_type == 'return' else '换货'}单 {sales_return.return_no} 已审批通过，"
+                + ("已进入质检，质检放行后生成回库作业。" if sales_return.requires_reinspection else "已生成目标仓库回库作业。")
+            ),
             module="sales",
             recipient_user_ids=list(dict.fromkeys([sales_return.requested_by_id, *finance_user_ids, *inventory_user_ids])),
             created_by_id=current_user.id,

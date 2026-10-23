@@ -129,8 +129,8 @@ def test_sufficient_stock_order_is_green_and_placeable(client, login):
     assert body.get("code") in (0, 200), f"库存充足应可置货, 实际: {body}"
 
 
-def test_placement_aggregates_available_stock_from_all_warehouses(client, login):
-    """置货不应只看默认成品仓；另一仓的成品也应参与可用量计算。"""
+def test_placement_only_uses_the_dispatch_warehouse(client, login):
+    """纸质作业单绑定成品仓，其他仓库库存不能跨仓直接置货。"""
     warehouses = warehouse_map(client, login)
     product_id = create_trade_product(client, login)
     _stock_product(client, login, warehouse_id=warehouses["raw"], product_id=product_id, quantity=1)
@@ -138,14 +138,15 @@ def test_placement_aggregates_available_stock_from_all_warehouses(client, login)
     order_id = _create_approved_order(client, login, product_id=product_id, quantity=0.2)
     queue = _placement_queue(client, login, order_id)
 
-    assert queue["stock_status"] == "green", queue
+    assert queue["warehouse_id"] == warehouses["finished"]
+    assert queue["stock_status"] == "red", queue
     item = queue["items"][0]
-    assert float(item["available_quantity"]) >= 0.2
+    assert float(item["available_quantity"]) == 0
     response = client.post(
         f"/api/inventory/queues/{queue['queue_id']}/placement",
         json={"action": "placed", "items": [{"sales_order_item_id": item["sales_order_item_id"], "placed_quantity": 0.2}]},
     )
-    assert response.json().get("code") in (0, 200), response.text
+    assert response.json().get("code") == 409, response.text
 
 
 def test_reservation_not_doubled_by_placement(client, login):

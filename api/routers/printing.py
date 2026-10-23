@@ -58,10 +58,25 @@ def _order(db: Session, order_id: int) -> SalesOrder:
     return row
 
 
-def _pdf_response(order: SalesOrder, kind: str, *, disposition: str = "inline"):
+def _pdf_response(
+    order: SalesOrder,
+    kind: str,
+    *,
+    queue: InventoryDispatchQueue | None = None,
+    disposition: str = "inline",
+):
     filename = f"{kind}-{order.order_no}.pdf"
+    render_kwargs = {}
+    if kind == "placement":
+        if queue is None:
+            raise HTTPException(status_code=404, detail="该订单没有置货需求")
+        render_kwargs = {
+            "placement_token": queue.placement_scan_token,
+            "shipment_token": queue.shipment_scan_token,
+            "warehouse_name": queue.warehouse.name if queue.warehouse else None,
+        }
     return Response(
-        content=render_order_pdf(order, kind=kind),
+        content=render_order_pdf(order, kind=kind, **render_kwargs),
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'{disposition}; filename="{filename}"',
@@ -89,10 +104,14 @@ def placement_order_pdf(
     db: Session = Depends(get_db),
 ):
     order = _order(db, order_id)
-    queue = db.scalar(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order_id))
+    queue = db.scalar(
+        select(InventoryDispatchQueue)
+        .options(joinedload(InventoryDispatchQueue.warehouse))
+        .where(InventoryDispatchQueue.sales_order_id == order_id)
+    )
     if queue is None:
         raise HTTPException(status_code=404, detail="该订单没有置货需求")
-    return _pdf_response(order, "placement")
+    return _pdf_response(order, "placement", queue=queue)
 
 
 def _system_admin(current_user: User = Depends(get_current_user)) -> User:
@@ -241,7 +260,12 @@ def _leased_job(db: Session, job_id: int, agent: PlacementPrintAgent, lease_toke
 def agent_job_pdf(job_id: int, request: Request, x_print_agent_token: str | None = Header(default=None), x_print_lease_token: str | None = Header(default=None), db: Session = Depends(get_db)):
     agent = _agent(db, x_print_agent_token, request)
     job = _leased_job(db, job_id, agent, x_print_lease_token or "")
-    return _pdf_response(_order(db, job.queue.sales_order_id), "placement")
+    queue = db.scalar(
+        select(InventoryDispatchQueue)
+        .options(joinedload(InventoryDispatchQueue.warehouse))
+        .where(InventoryDispatchQueue.id == job.queue_id)
+    )
+    return _pdf_response(_order(db, job.queue.sales_order_id), "placement", queue=queue)
 
 
 @router.post("/agent/jobs/{job_id}/complete")
