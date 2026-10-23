@@ -7,9 +7,21 @@ from unittest.mock import Mock, patch
 import pytest
 
 from scripts.placement_print_desktop import (
-    DEFAULT_SERVER_URL, PlacementPrintDesktop, agent_environment, current_server_url,
+    DEFAULT_SERVER_URL, PlacementPrintDesktop, agent_command, agent_environment, current_server_url,
     filter_printers, print_command, sumatra_is_printable,
 )
+
+
+def test_source_agent_command_uses_python_module():
+    with patch("scripts.placement_print_desktop.is_frozen_app", return_value=False):
+        assert agent_command("--once")[-4:] == ["-u", "-m", "scripts.placement_print_agent", "--once"]
+
+
+def test_frozen_agent_command_reuses_packaged_executable():
+    with patch("scripts.placement_print_desktop.is_frozen_app", return_value=True), patch(
+        "scripts.placement_print_desktop.sys.executable", r"C:\Printer\业财置货自动打印.exe"
+    ):
+        assert agent_command("--once") == [r"C:\Printer\业财置货自动打印.exe", "--agent", "--once"]
 
 
 def test_printer_search_is_case_insensitive_and_preserves_names():

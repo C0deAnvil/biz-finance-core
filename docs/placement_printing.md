@@ -29,6 +29,14 @@ Windows 的命令示例：`["C:\\Program Files\\SumatraPDF\\SumatraPDF.exe","-pr
 venv\Scripts\pythonw.exe scripts\placement_print_desktop.py
 ```
 
+也可以构建给普通使用人员双击运行的单文件程序：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_placement_print_exe.ps1
+```
+
+构建结果为 `dist\业财置货自动打印.exe`。将它复制到仓库电脑后可以直接双击，不需要在该电脑安装 Python 或复制项目源码。仓库电脑仍需安装目标打印机的 Windows 驱动和 SumatraPDF；打印机、SumatraPDF 路径、服务器、认证码、轮询周期等配置继续保存在当前 Windows 用户的 `%LOCALAPPDATA%\YecaiPlacementPrinter\settings.json`，旧版脚本保存过的配置也会自动沿用。勾选开机启动后，注册表只记录该 exe 的路径和 `--autostart`，不会写入认证码。因此应先把 exe 放在最终固定目录，再启用开机启动；移动 exe 后需重新保存一次配置。
+
 界面默认选择 `EPSONB8696A (L3250 Series)`（或上次保存的打印机），并从 Windows 打印后台读取已经安装的打印机。点击“Windows 打印机”右侧箭头可查看全部；如需筛选，在独立的“搜索打印机”框输入关键词。点击“刷新全部”会清空关键词并重新获取完整列表。蓝牙、USB、有线网络或无线网络打印机都一样：先在 Windows 中安装，再从列表选择。若未检测到打印程序，点击“官方下载”安装 SumatraPDF，或者使用“选择程序”定位便携版的 `SumatraPDF.exe`。先点击“试打印示例单”：程序会生成匿名 A5 横向置货单，使用 `-print-to` 和 `paper=A5,landscape,fit` 提交给指定打印机。纸张和纸盒仍需在打印机/驱动中正确配置。
 
 注意不要把下载的安装包复制并改名为项目根目录的 `SumatraPDF.exe`：缺少同目录的打印引擎 DLL 时，它只会启动安装界面，即使进程返回成功也没有打印。客户端会优先寻找真正安装目录中的程序，并拒绝这种错误文件；若旧配置指向该文件，下次打开会自动改选已安装程序，并提示重新保存。

@@ -119,6 +119,8 @@ def save_settings(settings, path=None):
 
 
 def startup_command(script_path):
+    if getattr(sys, "frozen", False):
+        return subprocess.list2cmdline([str(Path(sys.executable).resolve()), "--autostart"])
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     executable = pythonw if pythonw.is_file() else Path(sys.executable)
     return subprocess.list2cmdline([str(executable), str(Path(script_path).resolve()), "--autostart"])

@@ -38,6 +38,17 @@ def test_startup_command_contains_no_token(tmp_path):
     assert "YECAI_PRINT_AGENT_TOKEN" not in command
 
 
+def test_frozen_startup_command_uses_packaged_executable_only(tmp_path):
+    executable = tmp_path / "业财置货自动打印.exe"
+    with patch.object(config.sys, "frozen", True, create=True), patch.object(
+        config.sys, "executable", str(executable)
+    ):
+        command = startup_command(tmp_path / "placement_print_desktop.py")
+    assert str(executable) in command
+    assert "placement_print_desktop.py" not in command
+    assert "--autostart" in command
+
+
 def test_enable_autostart_only_writes_own_current_user_value(tmp_path):
     key = MagicMock()
     with patch.object(config.winreg, "CreateKeyEx") as create, patch.object(config.winreg, "SetValueEx") as set_value:

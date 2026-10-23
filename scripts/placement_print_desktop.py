@@ -11,8 +11,11 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import tkinter as tk
+import uuid
 import webbrowser
 from pathlib import Path
 from ctypes import wintypes
@@ -33,6 +36,28 @@ ADMIN_URL = f"{DEFAULT_SERVER_URL}/admin/print-agents"
 SUMATRA_URL = "https://www.sumatrapdfreader.org/download-free-pdf-viewer"
 DEFAULT_PRINTER = "EPSONB8696A (L3250 Series)"
 LEGACY_SERVER_URLS = {"http://8.140.196.85", "http://8.140.196.85:8001"}
+
+
+def is_frozen_app():
+    return bool(getattr(sys, "frozen", False))
+
+
+def agent_command(*args):
+    """Return the worker command for source and packaged executions."""
+    if is_frozen_app():
+        return [sys.executable, "--agent", *args]
+    return [sys.executable, "-u", "-m", "scripts.placement_print_agent", *args]
+
+
+def _child_log_path():
+    return Path(tempfile.gettempdir()) / f"yecai-print-{os.getpid()}-{uuid.uuid4().hex}.log"
+
+
+def _read_child_log(path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
 
 
 def current_server_url(value):
@@ -337,22 +362,22 @@ class PlacementPrintDesktop(tk.Tk):
 
         def work():
             try:
-                preview = subprocess.run(
-                    [sys.executable, "-m", "scripts.preview_order_printing"],
-                    cwd=ROOT, env=env, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=60,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                if preview.returncode:
-                    self.events.put(("test_done", preview.returncode, (preview.stdout + preview.stderr).strip()))
-                    return
+                from scripts.preview_order_printing import generate_sample_pdfs
+
+                generate_sample_pdfs(SAMPLE_PDF.parent)
+                log_path = _child_log_path() if is_frozen_app() else None
+                if log_path:
+                    env["YECAI_CHILD_LOG_PATH"] = str(log_path)
                 result = subprocess.run(
-                    [sys.executable, "-m", "scripts.placement_print_agent", "--test-print", str(SAMPLE_PDF)],
+                    agent_command("--test-print", str(SAMPLE_PDF)),
                     cwd=ROOT, env=env, capture_output=True, text=True,
                     encoding="utf-8", errors="replace", timeout=240,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
-                self.events.put(("test_done", result.returncode, (result.stdout + result.stderr).strip()))
+                output = _read_child_log(log_path) if log_path else (result.stdout + result.stderr).strip()
+                if log_path:
+                    log_path.unlink(missing_ok=True)
+                self.events.put(("test_done", result.returncode, output))
             except (OSError, subprocess.SubprocessError) as exc:
                 self.events.put(("test_done", 1, str(exc)))
 
@@ -366,12 +391,17 @@ class PlacementPrintDesktop(tk.Tk):
         except ValueError as exc:
             messagebox.showerror("配置错误", str(exc))
             return False
-        command = [sys.executable, "-u", "-m", "scripts.placement_print_agent"]
+        command = agent_command()
         if once:
             command.append("--once")
+        log_path = _child_log_path() if is_frozen_app() else None
+        if log_path:
+            env["YECAI_CHILD_LOG_PATH"] = str(log_path)
         try:
             process = subprocess.Popen(
-                command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                command, cwd=ROOT, env=env,
+                stdout=subprocess.DEVNULL if log_path else subprocess.PIPE,
+                stderr=subprocess.DEVNULL if log_path else subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -386,9 +416,26 @@ class PlacementPrintDesktop(tk.Tk):
         self._append("正在领取一次打印任务……" if once else "自动打印已启动，等待新的置货单……")
 
         def monitor():
-            assert process.stdout is not None
-            for line in process.stdout:
-                self.events.put(("log", line.rstrip()))
+            if log_path:
+                position = 0
+                while process.poll() is None:
+                    if log_path.is_file():
+                        with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                            handle.seek(position)
+                            for line in handle:
+                                self.events.put(("log", line.rstrip()))
+                            position = handle.tell()
+                    time.sleep(0.25)
+                if log_path.is_file():
+                    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                        handle.seek(position)
+                        for line in handle:
+                            self.events.put(("log", line.rstrip()))
+                    log_path.unlink(missing_ok=True)
+            else:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    self.events.put(("log", line.rstrip()))
             self.events.put(("exit", process, process.wait()))
 
         threading.Thread(target=monitor, daemon=True).start()
@@ -458,5 +505,25 @@ class PlacementPrintDesktop(tk.Tk):
             self.destroy()
 
 
-if __name__ == "__main__":
+def main():
+    if "--agent" in sys.argv[1:]:
+        log_path = os.environ.get("YECAI_CHILD_LOG_PATH")
+        stream = None
+        if log_path:
+            stream = open(log_path, "a", encoding="utf-8", buffering=1)
+            sys.stdout = stream
+            sys.stderr = stream
+        try:
+            from scripts.placement_print_agent import main as agent_main
+
+            marker = sys.argv.index("--agent")
+            agent_main(sys.argv[marker + 1:])
+        finally:
+            if stream:
+                stream.close()
+        return
     PlacementPrintDesktop().mainloop()
+
+
+if __name__ == "__main__":
+    main()

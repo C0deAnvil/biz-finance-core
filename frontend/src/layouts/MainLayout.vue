@@ -42,6 +42,7 @@
           </div>
         </div>
         <div class="top-actions">
+          <el-button class="guide-button" plain @click="router.push('/help')">◉ 使用指南</el-button>
           <!-- <el-badge :value="todoCount" :hidden="!todoCount">
             <el-button plain @click="router.push('/dashboard')">待办</el-button>
           </el-badge>

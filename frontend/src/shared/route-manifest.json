@@ -1,5 +1,32 @@
 [
   {
+    "path": "/help",
+    "name": "system-guide",
+    "title": "系统使用指南",
+    "group": "工作台",
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
+  },
+  {
+    "path": "/help",
+    "name": "system-guide",
+    "title": "系统使用指南",
+    "group": "工作台",
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
+  },
+  {
+    "path": "/help",
+    "name": "system-guide",
+    "title": "系统使用指南",
+    "group": "工作台",
+    "menu_roles": [],
+    "preload_roles": [],
+    "warmers": []
+  },
+  {
     "path": "/profile",
     "name": "profile",
     "title": "个人中心",

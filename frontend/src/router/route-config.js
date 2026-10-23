@@ -3,6 +3,9 @@ import routeManifest from '../shared/route-manifest.json'
 export const APP_TITLE = '业财一体化系统'
 
 const loaderMap = {
+  '/help': () => import('../views/help/SystemGuideView.vue'),
+  '/help': () => import('../views/help/SystemGuideView.vue'),
+  '/help': () => import('../views/help/SystemGuideView.vue'),
   '/profile': () => import('../views/ProfileView.vue'),
   '/finance/accounts': () => import('../views/finance/AccountsView.vue'),
   '/dashboard': () => import('../views/dashboards/DashboardView.vue'),

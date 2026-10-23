@@ -351,11 +351,11 @@ def run_once(*, recover_failed=False):
     return False
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="置货单本地自动打印客户端")
     parser.add_argument("--test-print", metavar="PDF", help="只打印本地 PDF，不连接服务器或使用认证码")
     parser.add_argument("--once", action="store_true", help="只领取一次任务，便于本地调试")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         print_command()
         if args.test_print:
