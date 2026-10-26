@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    full_name: str = Field(..., max_length=100)
+    full_name: str = Field(..., min_length=1, max_length=100)
     department_id: int
     role_id: int
     job_title: str | None = Field(default=None, max_length=100)

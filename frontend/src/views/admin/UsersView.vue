@@ -55,29 +55,29 @@
     />
 
     <el-dialog v-model="dialogVisible" :title="dialogMode === 'create' ? '新增用户' : '编辑用户'" width="720px">
-      <el-form :model="form" label-width="110px">
-        <el-form-item label="用户名">
-          <el-input v-model="form.username" :disabled="dialogMode === 'edit'" />
+      <el-form ref="formRef" :model="form" :rules="formRules" label-width="110px" status-icon>
+        <el-form-item label="用户名" prop="username">
+          <el-input v-model="form.username" :disabled="dialogMode === 'edit'" maxlength="50" />
         </el-form-item>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="姓名"><el-input v-model="form.full_name" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="岗位"><el-input v-model="form.job_title" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="姓名" prop="full_name"><el-input v-model="form.full_name" maxlength="100" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="岗位" prop="job_title"><el-input v-model="form.job_title" maxlength="100" /></el-form-item></el-col>
         </el-row>
-        <el-form-item label="组织单元">
+        <el-form-item label="组织单元" prop="department_id">
           <el-select v-model="form.department_id" filterable style="width: 100%">
             <el-option v-for="item in orgUnits" :key="item.id" :label="item.path_name" :value="item.id" />
           </el-select>
         </el-form-item>
         <el-row :gutter="12">
           <el-col :span="12">
-            <el-form-item label="功能角色">
+            <el-form-item label="功能角色" prop="role_id">
               <el-select v-model="form.role_id" style="width: 100%">
                 <el-option v-for="item in roles" :key="item.id" :label="item.name" :value="item.id" />
               </el-select>
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="数据范围">
+            <el-form-item label="数据范围" prop="data_scope">
               <el-select v-model="form.data_scope" style="width: 100%">
                 <el-option v-for="item in DATA_SCOPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
               </el-select>
@@ -85,8 +85,8 @@
           </el-col>
         </el-row>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="电话"><el-input v-model="form.phone" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="邮箱"><el-input v-model="form.email" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="电话" prop="phone"><el-input v-model="form.phone" maxlength="30" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="邮箱" prop="email"><el-input v-model="form.email" maxlength="120" /></el-form-item></el-col>
         </el-row>
         <el-form-item label="继承谁的数据">
           <el-select v-model="form.inherit_from_user_id" clearable filterable style="width: 100%">
@@ -103,7 +103,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button v-if="canManageUsers" type="primary" @click="submit">{{ dialogMode === 'create' ? '创建' : '保存' }}</el-button>
+        <el-button v-if="canManageUsers" type="primary" :loading="submitting" @click="submit">{{ dialogMode === 'create' ? '创建' : '保存' }}</el-button>
       </template>
     </el-dialog>
 
@@ -204,8 +204,10 @@ const canManageUsers = computed(() => auth.user?.role_code === 'system_admin')
 const rows = ref([])
 const orgUnits = ref([])
 const roles = ref([])
+const formRef = ref(null)
 const dialogVisible = ref(false)
 const dialogMode = ref('create')
+const submitting = ref(false)
 const resetVisible = ref(false)
 const successorVisible = ref(false)
 const selectedUser = ref(null)
@@ -231,6 +233,27 @@ const resetForm = reactive({
 const successorForm = reactive({
   successor_user_id: null
 })
+
+const requiredSelect = (label) => ({ required: true, message: `请选择${label}`, trigger: 'change' })
+const formRules = {
+  username: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+    { min: 3, max: 50, message: '用户名长度应为 3～50 个字符', trigger: 'blur' }
+  ],
+  full_name: [
+    { required: true, message: '请输入姓名', trigger: 'blur' },
+    { max: 100, message: '姓名不能超过 100 个字符', trigger: 'blur' }
+  ],
+  department_id: [requiredSelect('组织单元')],
+  role_id: [requiredSelect('功能角色')],
+  data_scope: [requiredSelect('数据范围')],
+  job_title: [{ max: 100, message: '岗位不能超过 100 个字符', trigger: 'blur' }],
+  phone: [{ max: 30, message: '电话不能超过 30 个字符', trigger: 'blur' }],
+  email: [
+    { max: 120, message: '邮箱不能超过 120 个字符', trigger: 'blur' },
+    { type: 'email', message: '请输入正确的邮箱地址', trigger: 'blur' }
+  ]
+}
 
 const inheritanceCandidates = computed(() =>
   rows.value.filter((item) => item.is_active && item.id !== form.id)
@@ -266,6 +289,7 @@ function openCreate() {
   dialogMode.value = 'create'
   resetCreateForm()
   dialogVisible.value = true
+  formRef.value?.clearValidate()
 }
 
 function openEdit(row) {
@@ -295,27 +319,44 @@ async function loadMeta() {
 }
 
 async function submit() {
+  if (submitting.value) return
+  try {
+    await formRef.value?.validate()
+  } catch {
+    ElMessage.warning('请检查并补全用户信息')
+    return
+  }
+
   const payload = {
-    username: form.username,
-    full_name: form.full_name,
+    full_name: form.full_name.trim(),
     department_id: form.department_id,
     role_id: form.role_id,
-    job_title: form.job_title,
+    job_title: form.job_title.trim() || null,
     data_scope: form.data_scope,
-    phone: form.phone,
-    email: form.email,
+    phone: form.phone.trim() || null,
+    email: form.email.trim() || null,
     inherit_from_user_id: form.inherit_from_user_id || null
   }
-  if (dialogMode.value === 'create') {
-    const result = await post('/api/admin/users', payload)
-    ElMessage.success(`用户已创建，默认密码：${result.default_password}`)
-  } else {
-    await put(`/api/admin/users/${form.id}`, payload)
-    ElMessage.success('用户信息已更新')
+  submitting.value = true
+  try {
+    if (dialogMode.value === 'create') {
+      const result = await post('/api/admin/users', {
+        ...payload,
+        username: form.username.trim()
+      })
+      ElMessage.success(`用户已创建，默认密码：${result.default_password}`)
+    } else {
+      await put(`/api/admin/users/${form.id}`, payload)
+      ElMessage.success('用户信息已更新')
+    }
+    dialogVisible.value = false
+    resetCreateForm()
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || (dialogMode.value === 'create' ? '创建用户失败' : '保存用户失败'))
+  } finally {
+    submitting.value = false
   }
-  dialogVisible.value = false
-  resetCreateForm()
-  await load()
 }
 
 function openResetPassword(row) {

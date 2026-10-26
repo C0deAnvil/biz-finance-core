@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
+from config import settings
 from database import get_db
 from dependencies import require_roles
 from models import (
@@ -310,7 +312,13 @@ def update_module_permissions(
 
 @router.post("/users")
 def create_user(payload: UserCreate, current_user: User = Depends(require_roles("system_admin")), db: Session = Depends(get_db)):
-    existing = db.execute(select(User).where(User.username == payload.username)).scalar_one_or_none()
+    username = payload.username.strip()
+    full_name = payload.full_name.strip()
+    if not username:
+        raise HTTPException(status_code=422, detail="用户名不能为空")
+    if not full_name:
+        raise HTTPException(status_code=422, detail="姓名不能为空")
+    existing = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="用户名已存在")
     department = db.execute(select(Department).where(Department.id == payload.department_id)).scalar_one_or_none()
@@ -318,30 +326,34 @@ def create_user(payload: UserCreate, current_user: User = Depends(require_roles(
     if department is None or role is None:
         raise HTTPException(status_code=404, detail="组织单元或角色不存在")
     user = User(
-        username=payload.username,
-        full_name=payload.full_name,
-        hashed_password=hash_password("ChangeMe123!"),
+        username=username,
+        full_name=full_name,
+        hashed_password=hash_password(settings.default_user_password),
         department_id=payload.department_id,
         role_id=payload.role_id,
-        job_title=payload.job_title,
+        job_title=payload.job_title.strip() if payload.job_title else None,
         data_scope=payload.data_scope,
-        phone=payload.phone,
-        email=payload.email,
+        phone=payload.phone.strip() if payload.phone else None,
+        email=payload.email.strip() if payload.email else None,
         is_active=True,
         inherited_from_user_id=payload.inherit_from_user_id,
     )
-    db.add(user)
-    db.flush()
-    if role.code in {"sales", "production"}:
-        db.add(UserModulePermission(
-            user_id=user.id,
-            route_path="/sales/my-receivables" if role.code == "sales" else "/inventory/stocks",
-            assigned_by_id=current_user.id,
-        ))
-    if payload.inherit_from_user_id:
-        _transfer_user_data(db, payload.inherit_from_user_id, user.id)
-    db.commit()
-    return api_response(data={"id": user.id, "default_password": "ChangeMe123!"})
+    try:
+        db.add(user)
+        db.flush()
+        if role.code in {"sales", "production"}:
+            db.add(UserModulePermission(
+                user_id=user.id,
+                route_path="/sales/my-receivables" if role.code == "sales" else "/inventory/stocks",
+                assigned_by_id=current_user.id,
+            ))
+        if payload.inherit_from_user_id:
+            _transfer_user_data(db, payload.inherit_from_user_id, user.id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="用户名已存在，请更换后重试") from exc
+    return api_response(data={"id": user.id, "default_password": settings.default_user_password})
 
 
 @router.put("/users/{user_id}")
