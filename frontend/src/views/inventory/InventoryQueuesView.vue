@@ -162,6 +162,46 @@
       </el-col>
     </el-row>
 
+    <PageSection title="发货历史记录" description="查看已发货、已完结、已取消及已驳回的客户订单；历史记录只读。">
+      <template #actions>
+        <el-select v-model="historyStatus" aria-label="历史状态" style="width: 130px" @change="searchHistory">
+          <el-option label="全部状态" value="all" />
+          <el-option label="已发货" value="shipped" />
+          <el-option label="已完结" value="completed" />
+          <el-option label="已取消" value="cancelled" />
+          <el-option label="已驳回" value="rejected" />
+        </el-select>
+        <el-input v-model="historySearch" clearable placeholder="搜索订单号、负责人或产品" style="width: 260px" @keyup.enter="searchHistory" @clear="searchHistory" />
+        <el-button @click="searchHistory">搜索</el-button>
+        <el-button @click="load">刷新</el-button>
+      </template>
+      <el-table :data="queues.history" stripe>
+        <el-table-column prop="order_no" label="订单号" width="180">
+          <template #default="scope"><el-button text type="primary" @click="openOrderDetail(scope.row)">{{ scope.row.order_no }}</el-button></template>
+        </el-table-column>
+        <el-table-column label="类型" width="90">
+          <template #default="scope"><el-tag :type="orderTypeStyle(scope.row.order_type).tagType" size="small">{{ orderTypeStyle(scope.row.order_type).label }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="sales_user_name" label="负责人" width="130" show-overflow-tooltip />
+        <el-table-column prop="item_summary" label="产品" min-width="240" show-overflow-tooltip />
+        <el-table-column label="订单数量" width="110"><template #default="scope">{{ formatNumber(scope.row.ordered_quantity) }}</template></el-table-column>
+        <el-table-column label="已发数量" width="110"><template #default="scope">{{ formatNumber(scope.row.shipped_quantity) }}</template></el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="scope"><el-tag :type="statusType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="状态时间" width="175">
+          <template #default="scope">{{ formatDateTime(historyStatusTime(scope.row)) }}</template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注 / 驳回原因" min-width="200" show-overflow-tooltip>
+          <template #default="scope">{{ scope.row.remark || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="scope"><el-button link type="primary" @click="openOrderDetail(scope.row)">详情</el-button></template>
+        </el-table-column>
+      </el-table>
+      <AppPagination v-model:page="historyPagination.page" v-model:page-size="historyPagination.pageSize" :total="historyTotal" :page-sizes="pageSizes" @change="handleHistoryPaginationChange" />
+    </PageSection>
+
     <PageSection v-if="false" title="客户订单看板" description="仅展示去除单价和金额后的客户订单摘要，便于库存追踪已发货与已完结订单。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
@@ -573,7 +613,7 @@ import { useLocalPagination } from '../../composables/useLocalPagination'
 import { formatDateTime, formatNumber, statusLabel, statusType } from '../../utils/format'
 
 const route = useRoute()
-const queues = reactive({ placement: [], shipment: [], salesOrders: [] })
+const queues = reactive({ placement: [], shipment: [], history: [], salesOrders: [] })
 function placementPrintStatus(row) {
   return row?.placement_print_status || (row?.placement_printed ? 'printed' : 'unprinted')
 }
@@ -657,11 +697,15 @@ const shipmentForm = reactive({ items: [], remark: '' })
 const shipmentSubmitting = ref(false)
 const placementPagination = reactive({ page: 1, pageSize: 10 })
 const shipmentPagination = reactive({ page: 1, pageSize: 10 })
+const historyPagination = reactive({ page: 1, pageSize: 10 })
 const salesOrderPagination = reactive({ page: 1, pageSize: 10 })
 const placementSearch = ref('')
 const shipmentSearch = ref('')
+const historySearch = ref('')
+const historyStatus = ref('all')
 const placementTotal = ref(0)
 const shipmentTotal = ref(0)
+const historyTotal = ref(0)
 const salesOrderTotal = ref(0)
 const pageSizes = [10, 20, 50, 100]
 function matchesQueueSearch(row, keyword) {
@@ -675,12 +719,23 @@ const pagedPlacementRows = computed(() => queues.placement.filter((row) => match
 const pagedShipmentRows = computed(() => queues.shipment.filter((row) => matchesQueueSearch(row, shipmentSearch.value)))
 const pagedSalesOrderRows = computed(() => queues.salesOrders)
 
+function historyStatusTime(row) {
+  if (row.status === 'completed') return row.completed_at || row.shipped_at || row.updated_at
+  if (row.status === 'cancelled') return row.cancelled_at || row.updated_at
+  if (row.status === 'rejected') return row.updated_at
+  return row.shipped_at || row.shipment_marked_at || row.updated_at
+}
+
 async function load() {
   const query = new URLSearchParams({
     placement_page: String(placementPagination.page),
     placement_page_size: String(placementPagination.pageSize),
     shipment_page: String(shipmentPagination.page),
     shipment_page_size: String(shipmentPagination.pageSize),
+    history_page: String(historyPagination.page),
+    history_page_size: String(historyPagination.pageSize),
+    history_keyword: historySearch.value.trim(),
+    history_status: historyStatus.value,
     sales_order_page: String(salesOrderPagination.page),
     sales_order_page_size: String(salesOrderPagination.pageSize),
     placement_keyword: placementSearch.value.trim(),
@@ -689,9 +744,11 @@ async function load() {
   const data = await get(`/api/inventory/queues?${query.toString()}`)
   queues.placement = data.placement || []
   queues.shipment = data.shipment || []
+  queues.history = data.history || []
   queues.salesOrders = data.sales_orders || []
   placementTotal.value = Number(data.pagination?.placement?.total || 0)
   shipmentTotal.value = Number(data.pagination?.shipment?.total || 0)
+  historyTotal.value = Number(data.pagination?.history?.total || 0)
   salesOrderTotal.value = Number(data.pagination?.sales_orders?.total || 0)
   applyFocus()
 }
@@ -715,6 +772,17 @@ async function handleShipmentPaginationChange({ page, pageSize }) {
 
 async function searchShipment() {
   shipmentPagination.page = 1
+  await load()
+}
+
+async function handleHistoryPaginationChange({ page, pageSize }) {
+  historyPagination.page = page
+  historyPagination.pageSize = pageSize
+  await load()
+}
+
+async function searchHistory() {
+  historyPagination.page = 1
   await load()
 }
 

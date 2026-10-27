@@ -160,6 +160,10 @@ def list_dispatch_queues(
     sales_order_page_size: int = Query(default=10, ge=1, le=100),
     placement_keyword: str | None = Query(default=None, max_length=100),
     shipment_keyword: str | None = Query(default=None, max_length=100),
+    history_page: int = Query(default=1, ge=1),
+    history_page_size: int = Query(default=10, ge=1, le=100),
+    history_keyword: str | None = Query(default=None, max_length=100),
+    history_status: str = Query(default="all", pattern="^(all|shipped|completed|cancelled|rejected)$"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -234,6 +238,68 @@ def list_dispatch_queues(
         ).scalars().all()
     }
 
+    # 历史以销售订单的最终业务状态为准；旧订单即使没有队列，只要已有发货时间也可查看。
+    history_filter = [
+        SalesOrder.status.in_(["shipped", "completed", "cancelled", "rejected"]),
+        or_(InventoryDispatchQueue.id.is_not(None), SalesOrder.shipped_at.is_not(None)),
+    ]
+    if history_status != "all":
+        history_filter.append(SalesOrder.status == history_status)
+    history_search = _queue_search_filter(history_keyword)
+    if history_search is not None:
+        history_filter.append(history_search)
+    history_base = (
+        select(SalesOrder.id)
+        .outerjoin(InventoryDispatchQueue, InventoryDispatchQueue.sales_order_id == SalesOrder.id)
+        .where(*history_filter)
+    )
+    history_count = db.execute(select(func.count()).select_from(history_base.subquery())).scalar_one()
+    history_ids = db.execute(
+        history_base.order_by(
+            func.coalesce(SalesOrder.completed_at, SalesOrder.cancelled_at, SalesOrder.shipped_at, SalesOrder.updated_at).desc(),
+            SalesOrder.id.desc(),
+        )
+        .offset((history_page - 1) * history_page_size)
+        .limit(history_page_size)
+    ).scalars().all()
+    history_orders = db.execute(
+        select(SalesOrder)
+        .options(
+            joinedload(SalesOrder.sales_user),
+            selectinload(SalesOrder.items).joinedload(SalesOrderItem.product),
+        )
+        .where(SalesOrder.id.in_(history_ids or [-1]))
+    ).unique().scalars().all()
+    history_order_map = {order.id: order for order in history_orders}
+    history_queue_map = {
+        row.sales_order_id: row
+        for row in db.execute(
+            select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id.in_(history_ids or [-1]))
+        ).scalars().all()
+    }
+    history_rows = []
+    for order_id in history_ids:
+        order = history_order_map[order_id]
+        queue = history_queue_map.get(order_id)
+        history_rows.append({
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "sales_user_name": (order.sales_user.full_name or order.sales_user.username) if order.sales_user else None,
+            "order_type": order.order_type,
+            "status": order.status,
+            "item_summary": "、".join(
+                item.product.name if item.product else f"产品#{item.product_id}" for item in order.items
+            ) or "-",
+            "ordered_quantity": float(sum((Decimal(item.quantity or 0) for item in order.items), Decimal("0"))),
+            "shipped_quantity": float(sum((Decimal(item.shipped_quantity or 0) for item in order.items), Decimal("0"))),
+            "shipment_marked_at": queue.shipment_marked_at.isoformat() if queue and queue.shipment_marked_at else None,
+            "shipped_at": order.shipped_at.isoformat() if order.shipped_at else None,
+            "completed_at": order.completed_at.isoformat() if order.completed_at else None,
+            "cancelled_at": order.cancelled_at.isoformat() if order.cancelled_at else None,
+            "updated_at": order.updated_at.isoformat() if order.updated_at else None,
+            "remark": order.rejection_reason if order.status == "rejected" else (order.order_remark or None),
+        })
+
     sales_order_filter = SalesOrder.status.in_(["pending_shipment", "shipped", "completed"])
     sales_order_count = db.execute(select(func.count(SalesOrder.id)).where(sales_order_filter)).scalar_one()
     sales_order_ids = db.execute(
@@ -263,10 +329,12 @@ def list_dispatch_queues(
         data={
             "placement": [_serialize_placement_queue(row, db, current_user) for row in rows],
             "shipment": shipment_rows,
+            "history": history_rows,
             "sales_orders": [_serialize_inventory_sales_order_summary(order, db, current_user) for order in sales_order_rows],
             "pagination": {
                 "placement": {"page": placement_page, "page_size": placement_page_size, "total": placement_count},
                 "shipment": {"page": shipment_page, "page_size": shipment_page_size, "total": shipment_count},
+                "history": {"page": history_page, "page_size": history_page_size, "total": history_count},
                 "sales_orders": {"page": sales_order_page, "page_size": sales_order_page_size, "total": sales_order_count},
             },
         }
