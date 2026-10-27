@@ -1,5 +1,6 @@
 """PDF templates for customer sales orders and warehouse placement sheets."""
 
+import os
 from decimal import Decimal
 from html import escape
 from io import BytesIO
@@ -11,6 +12,8 @@ from reportlab.lib.pagesizes import A5, landscape
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.graphics.barcode.code128 import Code128
+from reportlab.graphics.barcode.qr import QrCodeWidget
+from reportlab.graphics.shapes import Drawing
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -27,6 +30,33 @@ pdfmetrics.registerFontFamily(FONT, normal=FONT, bold=FONT_BOLD, italic=FONT, bo
 PAGE_SIZE = landscape(A5)
 INK = colors.black
 GRID = colors.black
+SCAN_CODE_FORMAT = os.getenv("YECAI_SCAN_CODE_FORMAT", "qr").strip().lower()
+
+
+def _scan_code(value: str):
+    """Render the warehouse action code, with Code128 kept as a rollback option."""
+    if SCAN_CODE_FORMAT == "code128":
+        return Code128(
+            value,
+            barWidth=0.18 * mm,
+            barHeight=12 * mm,
+            humanReadable=False,
+        )
+
+    # 24 mm is large enough for short action tokens while keeping common
+    # two-line placement orders on one A5 landscape sheet.
+    size = 24 * mm
+    widget = QrCodeWidget(value, barLevel="H")
+    left, bottom, right, top = widget.getBounds()
+    width = right - left
+    height = top - bottom
+    drawing = Drawing(
+        size,
+        size,
+        transform=[size / width, 0, 0, size / height, 0, 0],
+    )
+    drawing.add(widget)
+    return drawing
 
 
 def _text(value, fallback="-"):
@@ -163,12 +193,8 @@ def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: s
     width = PAGE_SIZE[0] - 14 * mm
     story = []
 
-    placement_barcode = Code128(
-        f"YCP01{placement_token}", barWidth=0.18 * mm, barHeight=12 * mm, humanReadable=False,
-    )
-    shipment_barcode = Code128(
-        f"YCS01{shipment_token}", barWidth=0.18 * mm, barHeight=12 * mm, humanReadable=False,
-    )
+    placement_barcode = _scan_code(f"YCP01{placement_token}")
+    shipment_barcode = _scan_code(f"YCS01{shipment_token}")
     barcode_table = Table(
         [
             [_placement_paragraph("销售出库作业单", size=22, align=TA_CENTER), ""],
@@ -189,7 +215,7 @@ def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: s
         ("TOPPADDING", (0, 0), (1, 0), 1),
         ("BOTTOMPADDING", (0, 0), (1, 0), 4),
     ]))
-    story.extend([barcode_table, Spacer(1, 2 * mm)])
+    story.extend([barcode_table, Spacer(1, 1.2 * mm)])
 
     style = order_type_style(order.order_type)
     expected = order.expected_delivery_date
@@ -215,10 +241,10 @@ def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: s
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
-    story.extend([meta, Spacer(1, 2.5 * mm)])
+    story.extend([meta, Spacer(1, 1.5 * mm)])
 
     headers = ["产品编码", "产品名称 / 产品规格", "包装要求", "数量", "明细备注"]
     rows = []
@@ -248,8 +274,8 @@ def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: s
     item_table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 1.2, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
     ]))

@@ -24,8 +24,27 @@ def sample_order():
     )
 
 
-def test_placement_pdf_has_separate_full_placement_and_shipment_codes():
-    with patch("services.order_printing.Code128", wraps=__import__("reportlab.graphics.barcode.code128", fromlist=["Code128"]).Code128) as barcode:
+def test_placement_pdf_has_separate_full_placement_and_shipment_qr_codes():
+    qr_type = __import__("reportlab.graphics.barcode.qr", fromlist=["QrCodeWidget"]).QrCodeWidget
+    with patch("services.order_printing.QrCodeWidget", wraps=qr_type) as qr_code:
+        pdf = render_order_pdf(
+            sample_order(),
+            kind="placement",
+            placement_token="A" * 24,
+            shipment_token="B" * 24,
+            warehouse_name="沧州仓库",
+        )
+    assert pdf.startswith(b"%PDF")
+    assert qr_code.call_count == 2
+    assert qr_code.call_args_list[0].args[0] == f"YCP01{'A' * 24}"
+    assert qr_code.call_args_list[1].args[0] == f"YCS01{'B' * 24}"
+
+
+def test_placement_pdf_can_fall_back_to_code128():
+    barcode_type = __import__("reportlab.graphics.barcode.code128", fromlist=["Code128"]).Code128
+    with patch("services.order_printing.SCAN_CODE_FORMAT", "code128"), patch(
+        "services.order_printing.Code128", wraps=barcode_type,
+    ) as barcode:
         pdf = render_order_pdf(
             sample_order(),
             kind="placement",
@@ -40,7 +59,8 @@ def test_placement_pdf_has_separate_full_placement_and_shipment_codes():
 
 
 def test_sales_pdf_does_not_show_placement_barcode():
-    with patch("services.order_printing.Code128") as barcode:
+    with patch("services.order_printing.Code128") as barcode, patch("services.order_printing.QrCodeWidget") as qr_code:
         pdf = render_order_pdf(sample_order(), kind="sales")
     assert pdf.startswith(b"%PDF")
     barcode.assert_not_called()
+    qr_code.assert_not_called()

@@ -6,12 +6,14 @@ keeps a large scan box focused, so no vendor SDK is required.
 
 from __future__ import annotations
 
+import ctypes
 from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
@@ -20,7 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 from urllib.parse import urlsplit
 import uuid
 
-from curl_cffi import requests
+from curl_cffi import CurlMime, requests
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +36,27 @@ from scripts.warehouse_scan_config import (  # noqa: E402
 
 DEFAULT_SERVER = "https://www.cphwchem.xyz:8001"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+BARCODE_RE = re.compile(r"^(?:YCP01|YCS01)[A-F0-9]{24}$")
+
+
+def activate_english_keyboard(window_id: int | None = None) -> None:
+    """Keep HID scanner keystrokes out of the Chinese IME composition path."""
+    if sys.platform != "win32":
+        return
+    try:
+        user32 = ctypes.WinDLL("user32.dll", use_last_error=True)
+        user32.LoadKeyboardLayoutW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+        user32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
+        layout = user32.LoadKeyboardLayoutW("00000409", 0x00000001)  # English (United States)
+        if not layout:
+            return
+        user32.ActivateKeyboardLayout(ctypes.c_void_p(layout), 0)
+        if window_id:
+            # WM_INPUTLANGCHANGEREQUEST applies the layout to the Tk window.
+            user32.PostMessageW(window_id, 0x0050, 0, ctypes.c_void_p(layout))
+    except (AttributeError, OSError, TypeError, ValueError):
+        # Failure to switch layouts must not prevent manual operation.
+        return
 
 
 def safe_server(url: str) -> bool:
@@ -62,6 +85,7 @@ class WarehouseScanDesktop(tk.Tk):
         self.scan_value = tk.StringVar()
         self.events = queue.Queue()
         self.busy = False
+        self.scan_submit_after = None
         self.used_photo_hashes: set[str] = set()
         self._build()
         self.after(120, self._drain)
@@ -88,7 +112,8 @@ class WarehouseScanDesktop(tk.Tk):
         self.scan_entry = ttk.Entry(scan_frame, textvariable=self.scan_value, font=("Microsoft YaHei UI", 18))
         self.scan_entry.pack(fill="x")
         self.scan_entry.bind("<Return>", self._scan)
-        ttk.Label(scan_frame, text="置货码：直接整单置货；发货码：自动取照片目录中最新且未使用的图片，上传后整单发货。", foreground="#555").pack(anchor="w", pady=(8, 0))
+        self.scan_value.trace_add("write", self._scan_value_changed)
+        ttk.Label(scan_frame, text="扫描框会自动切换到英文输入；有无回车均可。置货码直接整单置货，发货码上传最新照片后整单发货。", foreground="#555").pack(anchor="w", pady=(8, 0))
 
         self.result = tk.Label(self, text="等待扫描", font=("Microsoft YaHei UI", 25, "bold"), bg="#E8F4FF", fg="#1D5F91", pady=24, wraplength=820)
         self.result.pack(fill="x", padx=16, pady=8)
@@ -122,16 +147,30 @@ class WarehouseScanDesktop(tk.Tk):
 
     def _focus_scan(self):
         self.scan_entry.focus_force()
+        activate_english_keyboard(self.winfo_id())
         self.scan_entry.selection_range(0, "end")
 
+    def _scan_value_changed(self, *_args):
+        if self.scan_submit_after is not None:
+            self.after_cancel(self.scan_submit_after)
+            self.scan_submit_after = None
+        barcode = "".join(self.scan_value.get().strip().upper().split())
+        if BARCODE_RE.fullmatch(barcode):
+            # HID scanners may omit the Enter suffix.  A short debounce waits
+            # for the complete 29-character value before submitting once.
+            self.scan_submit_after = self.after(120, self._scan)
+
     def _scan(self, _event=None):
+        if self.scan_submit_after is not None:
+            self.after_cancel(self.scan_submit_after)
+            self.scan_submit_after = None
         barcode = "".join(self.scan_value.get().strip().upper().split())
         self.scan_value.set("")
         if self.busy:
             self._status(False, "上一笔仍在处理中，请稍候")
             return
-        if not (barcode.startswith("YCP01") or barcode.startswith("YCS01")):
-            self._status(False, "不是本系统的置货/发货条码")
+        if not BARCODE_RE.fullmatch(barcode):
+            self._status(False, "条码应为 YCP01/YCS01 加24位字符；请切换英文输入法后只扫描一个完整条码")
             return
         config = {
             "server": self.server.get().strip().rstrip("/"),
@@ -149,7 +188,48 @@ class WarehouseScanDesktop(tk.Tk):
         if not safe_server(server) or not token:
             raise RuntimeError("服务器或认证码尚未正确配置")
         headers = {"X-Warehouse-Device-Token": token, "User-Agent": "YecaiWarehouseScanner/1.0"}
-        response = requests.post(f"{server}/api/warehouse-scanning{path}", json=payload, files=files, data=data, headers=headers, timeout=30)
+        multipart = None
+        try:
+            request_kwargs = {
+                "headers": headers,
+                "timeout": 30,
+                "impersonate": "chrome",
+            }
+            if files:
+                multipart = CurlMime()
+                for name, value in (data or {}).items():
+                    multipart.addpart(name=name, data=str(value).encode("utf-8"))
+                for name, file_info in files.items():
+                    filename, handle, content_type = file_info
+                    multipart.addpart(
+                        name=name,
+                        filename=filename,
+                        content_type=content_type,
+                        data=handle.read(),
+                    )
+                request_kwargs["multipart"] = multipart
+            else:
+                request_kwargs["json"] = payload
+            # Keep the scanner consistent with the working print agent.  The
+            # deployed HTTPS endpoint may close the generic libcurl/BoringSSL
+            # handshake, while a browser-compatible TLS fingerprint succeeds.
+            # Certificate verification remains enabled.
+            response = requests.post(
+                f"{server}/api/warehouse-scanning{path}",
+                **request_kwargs,
+            )
+        except requests.RequestsError as exc:
+            message = str(exc)
+            if "SSL" in message or "BoringSSL" in message or "curl: (35)" in message:
+                raise RuntimeError(
+                    "HTTPS 安全连接失败。请确认服务器地址是 "
+                    "https://www.cphwchem.xyz:8001；如果浏览器可以访问，"
+                    "请更新并重新启动仓库扫码客户端。"
+                ) from exc
+            raise RuntimeError(f"连接服务器失败：{message}") from exc
+        finally:
+            if multipart is not None:
+                multipart.close()
         try:
             body = response.json()
         except Exception as exc:
