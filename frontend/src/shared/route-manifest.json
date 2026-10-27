@@ -780,7 +780,7 @@
         "ttl_ms": 45000
       },
       {
-        "url": "/api/purchases/orders",
+        "url": "/api/purchases/receipts/arrival-board",
         "ttl_ms": 45000
       },
       {

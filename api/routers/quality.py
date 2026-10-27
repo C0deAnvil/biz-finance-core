@@ -1278,7 +1278,8 @@ def allow_inbound(
             if meta.get("purchase_receipt_id") == receipt.id:
                 receipt_task_statuses.append(row.status)
         if receipt_task_statuses and all(status == "completed" for status in receipt_task_statuses):
-            receipt.status = "completed"
+            # 质检结束后仍须由库管执行入库作业，不能提前标记为已入库。
+            receipt.status = "pending_inbound"
             receipt.quality_status = "approved"
         else:
             receipt.status = "pending_quality"

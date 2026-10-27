@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
@@ -535,6 +535,59 @@ def complete_purchase_payment_request(
     return complete_purchase_payment_request_service(request_id, payload, current_user, db)
 
 
+@router.get("/receipts/arrival-board")
+def list_expected_purchase_arrivals(current_user: User = Depends(require_roles("purchase", "inventory", "manager", "chairman")), db: Session = Depends(get_db)):
+    """Warehouse-facing expected arrivals, including approved orders awaiting purchaser confirmation."""
+    query = (
+        select(PurchaseOrder)
+        .options(
+            joinedload(PurchaseOrder.supplier),
+            joinedload(PurchaseOrder.target_warehouse),
+            selectinload(PurchaseOrder.items).joinedload(PurchaseOrderItem.product),
+            selectinload(PurchaseOrder.items).joinedload(PurchaseOrderItem.material),
+            selectinload(PurchaseOrder.items).joinedload(PurchaseOrderItem.packaging_config),
+        )
+        .where(
+            PurchaseOrder.status.in_(["pending_purchase_confirm", "purchasing", "partial_received"]),
+            PurchaseOrder.items.any(PurchaseOrderItem.received_quantity < PurchaseOrderItem.quantity),
+        )
+        .order_by(PurchaseOrder.expected_arrival_date.is_(None), PurchaseOrder.expected_arrival_date, PurchaseOrder.id)
+    )
+    scoped_user_ids = get_scoped_user_ids(db, current_user, "purchase")
+    warehouse_ids = get_inventory_scope_warehouse_ids(db, current_user)
+    if scoped_user_ids is not None:
+        query = query.where(PurchaseOrder.purchaser_user_id.in_(scoped_user_ids or [-1]))
+    elif warehouse_ids is not None:
+        query = query.where(or_(PurchaseOrder.target_warehouse_id.in_(warehouse_ids or [-1]), PurchaseOrder.target_warehouse_id.is_(None)))
+    orders = db.execute(query).unique().scalars().all()
+    return api_response(data=[
+        {
+            "id": order.id,
+            "order_no": order.order_no,
+            "supplier_name": order.supplier.name if order.supplier else None,
+            "target_warehouse_id": order.target_warehouse_id,
+            "target_warehouse_name": order.target_warehouse.name if order.target_warehouse else None,
+            "expected_arrival_date": order.expected_arrival_date.isoformat() if order.expected_arrival_date else None,
+            "status": order.status,
+            "status_label": status_label(order.status),
+            "can_receive": order.status in {"purchasing", "partial_received"},
+            "item_count": len(order.items),
+            "item_summary": "、".join(
+                item.product.name if item.product else (
+                    item.material.name if item.material else (
+                        item.packaging_config.packaging_name if item.packaging_config else "其他物品"
+                    )
+                )
+                for item in order.items if Decimal(item.received_quantity or 0) < Decimal(item.quantity or 0)
+            ) or "-",
+            "pending_item_count": sum(
+                Decimal(item.received_quantity or 0) < Decimal(item.quantity or 0) for item in order.items
+            ),
+        }
+        for order in orders
+    ])
+
+
 @router.get("/receipts")
 def list_receipts(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     query = select(PurchaseReceipt).order_by(PurchaseReceipt.created_at.desc())
@@ -556,6 +609,30 @@ def list_receipts(current_user: User = Depends(get_current_user), db: Session = 
     warehouses = {row.id: row for row in db.execute(select(Warehouse).where(Warehouse.id.in_([row.warehouse_id for row in rows]))).scalars().all()} if rows else {}
     receivers = {row.id: row for row in db.execute(select(User).where(User.id.in_([row.received_by_id for row in rows if row.received_by_id]))).scalars().all()} if rows else {}
     receipt_items = db.execute(select(PurchaseReceiptItem).where(PurchaseReceiptItem.purchase_receipt_id.in_(receipt_ids))).scalars().all() if receipt_ids else []
+    operation_requests = db.execute(
+        select(InventoryOperationRequest)
+        .where(
+            InventoryOperationRequest.source_type == "purchase_receipt",
+            InventoryOperationRequest.source_id.in_(receipt_ids or [-1]),
+            InventoryOperationRequest.request_category.in_(["purchase_receipt_inbound", "purchase_quality_inbound"]),
+        )
+        .order_by(InventoryOperationRequest.id.desc())
+    ).scalars().all()
+    request_by_receipt = {}
+    requests_by_receipt = {}
+    for request in operation_requests:
+        request_by_receipt.setdefault(request.source_id, request)
+        requests_by_receipt.setdefault(request.source_id, []).append(request)
+        if request_by_receipt[request.source_id].status == "completed" and request.status in {"pending", "processing"}:
+            request_by_receipt[request.source_id] = request
+
+    def receipt_display_status(receipt: PurchaseReceipt) -> str:
+        requests = requests_by_receipt.get(receipt.id, [])
+        if receipt.requires_quality and receipt.quality_status != "approved":
+            return "pending_quality"
+        if requests and any(request.status != "completed" for request in requests):
+            return "pending_inbound"
+        return receipt.status
 
     item_count_map: dict[int, int] = {}
     quantity_map: dict[int, Decimal] = {}
@@ -570,13 +647,16 @@ def list_receipts(current_user: User = Depends(get_current_user), db: Session = 
                 "receipt_no": row.receipt_no,
                 "purchase_order_id": row.purchase_order_id,
                 "purchase_order_no": orders[row.purchase_order_id].order_no if row.purchase_order_id in orders else None,
+                "expected_arrival_date": orders[row.purchase_order_id].expected_arrival_date.isoformat() if row.purchase_order_id in orders and orders[row.purchase_order_id].expected_arrival_date else None,
                 "supplier_name": orders[row.purchase_order_id].supplier.name if row.purchase_order_id in orders and orders[row.purchase_order_id].supplier else None,
                 "warehouse_name": warehouses[row.warehouse_id].name if row.warehouse_id in warehouses else None,
-                "status": row.status,
-                "status_label": status_label(row.status),
+                "status": receipt_display_status(row),
+                "status_label": status_label(receipt_display_status(row)),
                 "requires_quality": row.requires_quality,
                 "quality_status": row.quality_status,
                 "quality_status_label": status_label(row.quality_status),
+                "inventory_request_id": request_by_receipt[row.id].id if row.id in request_by_receipt else None,
+                "inventory_request_status": request_by_receipt[row.id].status if row.id in request_by_receipt else None,
                 "remark": row.remark,
                 "preliminary_acceptance_note": row.preliminary_acceptance_note,
                 "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
@@ -611,11 +691,15 @@ def get_receipt_detail(receipt_id: int, current_user: User = Depends(get_current
         row.id: row
         for row in db.execute(
             select(PurchaseOrderItem)
-            .options(joinedload(PurchaseOrderItem.product), joinedload(PurchaseOrderItem.material))
+            .options(
+                joinedload(PurchaseOrderItem.product),
+                joinedload(PurchaseOrderItem.material),
+                joinedload(PurchaseOrderItem.packaging_config),
+            )
             .where(PurchaseOrderItem.id.in_(order_item_ids))
         ).scalars().all()
     } if order_item_ids else {}
-    inventory_request = db.execute(
+    inventory_requests = db.execute(
         select(InventoryOperationRequest)
         .where(
             InventoryOperationRequest.source_type == "purchase_receipt",
@@ -623,7 +707,15 @@ def get_receipt_detail(receipt_id: int, current_user: User = Depends(get_current
             InventoryOperationRequest.request_category.in_(["purchase_receipt_inbound", "purchase_quality_inbound"]),
         )
         .order_by(InventoryOperationRequest.id.desc())
-    ).scalars().first()
+    ).scalars().all()
+    inventory_request = next((request for request in inventory_requests if request.status in {"pending", "processing"}), None)
+    if inventory_request is None:
+        inventory_request = inventory_requests[0] if inventory_requests else None
+    detail_status = receipt.status
+    if receipt.requires_quality and receipt.quality_status != "approved":
+        detail_status = "pending_quality"
+    elif any(request.status != "completed" for request in inventory_requests):
+        detail_status = "pending_inbound"
 
     return api_response(
         data={
@@ -633,8 +725,8 @@ def get_receipt_detail(receipt_id: int, current_user: User = Depends(get_current
             "purchase_order_no": order.order_no if order else None,
             "supplier_name": order.supplier.name if order and order.supplier else None,
             "warehouse_name": warehouse.name if warehouse else None,
-            "status": receipt.status,
-            "status_label": status_label(receipt.status),
+            "status": detail_status,
+            "status_label": status_label(detail_status),
             "requires_quality": receipt.requires_quality,
             "quality_status": receipt.quality_status,
             "quality_status_label": status_label(receipt.quality_status),
@@ -652,7 +744,7 @@ def get_receipt_detail(receipt_id: int, current_user: User = Depends(get_current
                     "id": row.id,
                     "purchase_order_item_id": row.purchase_order_item_id,
                     "item_code": order_items[row.purchase_order_item_id].product.product_code if row.purchase_order_item_id in order_items and order_items[row.purchase_order_item_id].product else (order_items[row.purchase_order_item_id].material.material_code if row.purchase_order_item_id in order_items and order_items[row.purchase_order_item_id].material else None),
-                    "item_name": order_items[row.purchase_order_item_id].product.name if row.purchase_order_item_id in order_items and order_items[row.purchase_order_item_id].product else (order_items[row.purchase_order_item_id].material.name if row.purchase_order_item_id in order_items and order_items[row.purchase_order_item_id].material else None),
+                    "item_name": order_items[row.purchase_order_item_id].product.name if row.purchase_order_item_id in order_items and order_items[row.purchase_order_item_id].product else (order_items[row.purchase_order_item_id].material.name if row.purchase_order_item_id in order_items and order_items[row.purchase_order_item_id].material else (order_items[row.purchase_order_item_id].packaging_config.packaging_name if row.purchase_order_item_id in order_items and order_items[row.purchase_order_item_id].packaging_config else None)),
                     "received_quantity": float(row.received_quantity),
                     "expected_quantity": float(row.expected_quantity or 0),
                     "difference_remark": row.difference_remark,

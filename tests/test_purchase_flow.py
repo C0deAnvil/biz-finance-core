@@ -93,10 +93,18 @@ def test_purchase_order_threshold_approval_flow(client, login):
     approve_purchase_order(client, login, order_id=order_id, decision="approved")
     detail = _get_order(client, login, order_id)
     assert detail["status"] == "pending_purchase_confirm", detail
+    login("purchase01")
+    board = client.get("/api/purchases/receipts/arrival-board")
+    assert board.status_code == 200, board.text
+    arrival = next(row for row in board.json()["data"] if row["id"] == order_id)
+    assert arrival["can_receive"] is False, arrival
 
     confirm_purchase_order(client, login, order_id=order_id)
     detail = _get_order(client, login, order_id)
     assert detail["status"] == "purchasing", detail
+    board = client.get("/api/purchases/receipts/arrival-board")
+    arrival = next(row for row in board.json()["data"] if row["id"] == order_id)
+    assert arrival["can_receive"] is True, arrival
 
     # 驳回路径:审批拒绝后应停在 rejected
     created2 = create_purchase_order(client, login, supplier_id=supplier_id, product_id=product_id, quantity=5, unit_price=10)
@@ -145,10 +153,15 @@ def test_purchase_receipt_quality_inbound_full_chain(client, login):
     allow_quality_inbound(client, login, quality_task_id=task_id)
     receipt_detail = _get_receipt(client, login, receipt_id)
     assert receipt_detail.get("quality_status") == "approved", receipt_detail
+    assert receipt_detail.get("status") == "pending_inbound", receipt_detail
 
     # 生成库管入库作业(入库不再需要经理审批) → 库管直接执行
     op = find_operation_request(client, login, category="purchase_quality_inbound", source_id=receipt_id, statuses={"pending"})
     complete_operation_request(client, login, request_id=op["id"], items=request_operation_items(op))
+    receipt_detail = _get_receipt(client, login, receipt_id)
+    assert receipt_detail.get("status") == "completed", receipt_detail
+    board = client.get("/api/purchases/receipts/arrival-board")
+    assert all(row["id"] != order_id for row in board.json()["data"]), board.json()
 
     # 成品仓库存 +10
     stock = stock_of(client, login, warehouse_id=warehouses["finished"], product_id=product_id)

@@ -1,24 +1,69 @@
 <template>
-  <PageSection title="采购到货登记" description="支持多次到货登记，并将待检到货与其他到货分开展示；实际入库由库管手工完成。">
-    <template #actions>
-      <el-button @click="load">刷新</el-button>
-      <el-button v-if="canCreate" type="primary" @click="openCreate">新增到货登记</el-button>
-    </template>
+  <div class="receipts-page">
+    <PageSection title="未来七天预计到货" description="按采购单预计到货日期统计；逾期未到货单独提示，未填写日期的订单不计入图表。">
+      <div class="arrival-overview">
+        <div class="overdue-summary">逾期未到货 <strong>{{ overdueCount }}</strong> 单</div>
+        <div v-for="day in arrivalDays" :key="day.date" class="arrival-day">
+          <span class="arrival-day-label">{{ day.label }}</span>
+          <span class="arrival-bar-track"><span class="arrival-bar" :style="{ width: `${day.percent}%` }" /></span>
+          <strong>{{ day.count }} 单</strong>
+        </div>
+      </div>
+    </PageSection>
 
-    <el-tabs v-model="activeTab" class="status-tabs">
-      <el-tab-pane :label="`待检到货 (${pendingQualityRows.length})`" name="quality_pending" />
-      <el-tab-pane :label="`其他到货 (${otherRows.length})`" name="others" />
-    </el-tabs>
+    <PageSection title="待到货采购订单" description="已批准、已下单且尚有未到货明细的采购单，按预计到货时间排列；到货后从对应订单直接登记。">
+      <template #actions>
+        <el-input v-model="arrivalKeyword" clearable placeholder="搜索采购单、供应商或物品" style="width: 235px" />
+        <el-select v-model="arrivalStatus" aria-label="到货状态" style="width: 150px">
+          <el-option label="全部状态" value="all" />
+          <el-option label="待采购确认" value="pending_purchase_confirm" />
+          <el-option label="采购中" value="purchasing" />
+          <el-option label="部分到货" value="partial_received" />
+        </el-select>
+        <el-select v-model="arrivalWarehouseId" aria-label="目标仓库" clearable placeholder="全部仓库" style="width: 155px">
+          <el-option v-for="item in warehouses" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
+        <el-button @click="load">刷新</el-button>
+      </template>
+      <el-table :data="pagedArrivalRows" stripe>
+        <el-table-column prop="order_no" label="采购单号" width="175" />
+        <el-table-column prop="supplier_name" label="供应商" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="target_warehouse_name" label="目标仓库" width="140" />
+        <el-table-column prop="item_summary" label="待到货物品" min-width="220" show-overflow-tooltip />
+        <el-table-column prop="pending_item_count" label="待到货明细" width="110" />
+        <el-table-column label="预计到货" width="140">
+          <template #default="scope"><span :class="{ 'is-overdue': isOverdue(scope.row.expected_arrival_date) }">{{ scope.row.expected_arrival_date || '未填写' }}</span></template>
+        </el-table-column>
+        <el-table-column label="状态" width="120"><template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
+        <el-table-column label="操作" width="130" fixed="right">
+          <template #default="scope">
+            <el-button v-if="canCreate && scope.row.can_receive" link type="primary" @click="openCreate(scope.row)">登记到货</el-button>
+            <span v-else-if="!scope.row.can_receive" class="form-tip">待采购确认</span>
+            <span v-else class="form-tip">无操作权限</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <AppPagination v-model:page="arrivalPagination.page" v-model:page-size="arrivalPagination.pageSize" :total="arrivalTotal" :page-sizes="arrivalPageSizes" />
+    </PageSection>
 
-    <el-table :data="pagedRows" stripe>
+    <PageSection title="到货与入库历史" description="保留每次到货登记；待质检、待入库和已入库状态分开显示，可查看凭证及执行已获准的入库作业。">
+      <template #actions>
+        <el-input v-model="historyKeyword" clearable placeholder="搜索到货单、采购单或供应商" style="width: 245px" />
+        <el-select v-model="historyStatus" aria-label="入库状态" style="width: 130px">
+          <el-option label="全部状态" value="all" />
+          <el-option label="待质检" value="pending_quality" />
+          <el-option label="待入库" value="pending_inbound" />
+          <el-option label="已入库" value="completed" />
+        </el-select>
+        <el-button @click="load">刷新</el-button>
+      </template>
+      <el-table :data="pagedHistoryRows" stripe>
       <el-table-column prop="receipt_no" label="入库单号" width="150" />
       <el-table-column prop="purchase_order_no" label="采购单号" width="150" />
       <el-table-column prop="supplier_name" label="供应商" min-width="180" show-overflow-tooltip />
       <el-table-column prop="warehouse_name" label="仓库" width="140" />
+      <el-table-column prop="expected_arrival_date" label="预计到货" width="135"><template #default="scope">{{ scope.row.expected_arrival_date || '-' }}</template></el-table-column>
       <el-table-column prop="item_count" label="明细数" width="100" />
-      <el-table-column prop="received_quantity" label="到货总量" width="120">
-        <template #default="scope">{{ formatNumber(scope.row.received_quantity) }}</template>
-      </el-table-column>
       <el-table-column label="质检状态" width="120">
         <template #default="scope">
           <el-tag :type="scope.row.requires_quality ? statusType(scope.row.quality_status) : 'info'">
@@ -35,34 +80,26 @@
       <el-table-column prop="created_at" label="创建时间" min-width="170">
         <template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column label="操作" width="165" fixed="right">
         <template #default="scope">
           <el-button size="small" text type="primary" @click="openDetail(scope.row)">详情</el-button>
+          <el-button v-if="canExecuteInventoryRequest(scope.row)" size="small" text type="success" @click="executeInventoryRequest(scope.row)">执行入库</el-button>
         </template>
       </el-table-column>
     </el-table>
     <AppPagination
-      v-model:page="pagination.page"
-      v-model:page-size="pagination.pageSize"
-      :total="total"
-      :page-sizes="pageSizes"
+      v-model:page="historyPagination.page"
+      v-model:page-size="historyPagination.pageSize"
+      :total="historyTotal"
+      :page-sizes="historyPageSizes"
     />
+    </PageSection>
 
-    <el-dialog v-model="dialogVisible" title="新增采购到货登记" width="980px">
+    <el-dialog v-model="dialogVisible" title="采购到货登记" width="980px">
       <el-form label-width="90px">
         <el-row :gutter="16">
           <el-col :span="12">
-            <el-form-item label="采购单">
-              <el-select v-model="selectedOrderId" style="width: 100%" @change="loadOrderDetail">
-                <el-option
-                  v-for="item in candidateOrders"
-                  :key="item.id"
-                  :label="orderOptionLabel(item)"
-                  :value="item.id"
-                  :disabled="!canReceiveOrder(item)"
-                />
-              </el-select>
-            </el-form-item>
+            <el-form-item label="采购单"><strong>{{ selectedOrder?.order_no || '-' }}</strong></el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="入库仓库">
@@ -114,7 +151,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submit">提交入库</el-button>
+        <el-button type="primary" :loading="submitting" @click="submit">确认到货登记</el-button>
       </template>
     </el-dialog>
 
@@ -166,7 +203,7 @@
         </el-table-column>
       </el-table>
     </el-drawer>
-  </PageSection>
+  </div>
 </template>
 
 <script setup>
@@ -185,7 +222,6 @@ import 'element-plus/es/components/row/style/css'
 import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/switch/style/css'
 import 'element-plus/es/components/table/style/css'
-import 'element-plus/es/components/tabs/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
@@ -204,7 +240,6 @@ import ElRow from 'element-plus/es/components/row/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import ElTabs, { ElTabPane } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -223,13 +258,13 @@ const auth = useAuthStore()
 const pagePermission = usePagePermission()
 const router = useRouter()
 const rows = ref([])
+const arrivalOrders = ref([])
 const detail = ref(null)
-const candidateOrders = ref([])
 const warehouses = ref([])
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
 const selectedOrderId = ref(null)
-const activeTab = ref('quality_pending')
+const selectedOrder = computed(() => arrivalOrders.value.find((order) => order.id === selectedOrderId.value) || null)
 const submitting = ref(false)
 const form = reactive({ warehouse_id: null, requires_quality: false, remark: '', preliminary_acceptance_note: '', recorded_at: '', items: [] })
 const selectedOrderTargetId = ref(null)
@@ -237,16 +272,47 @@ const canCreate = computed(() => ['purchase', 'inventory'].includes(auth.user?.r
 const selectedWarehouse = computed(() => warehouses.value.find((item) => item.id === form.warehouse_id) || null)
 const isInspectionWarehouse = computed(() => isInspectionWarehouseOption(selectedWarehouse.value))
 const receiptAllowedStatuses = ['purchasing', 'partial_received']
-const receiptVisibleStatuses = [...receiptAllowedStatuses, 'pending_approval', 'pending_purchase_confirm']
+const arrivalKeyword = ref('')
+const arrivalStatus = ref('all')
+const arrivalWarehouseId = ref(null)
+const historyKeyword = ref('')
+const historyStatus = ref('all')
+const filteredArrivalRows = computed(() => arrivalOrders.value.filter((order) => {
+  if (arrivalStatus.value !== 'all' && order.status !== arrivalStatus.value) return false
+  if (arrivalWarehouseId.value && order.target_warehouse_id !== arrivalWarehouseId.value) return false
+  const keyword = arrivalKeyword.value.trim().toLowerCase()
+  return !keyword || [order.order_no, order.supplier_name, order.item_summary].some((text) => String(text || '').toLowerCase().includes(keyword))
+}))
+const filteredHistoryRows = computed(() => rows.value.filter((receipt) => {
+  if (historyStatus.value !== 'all' && receipt.status !== historyStatus.value) return false
+  const keyword = historyKeyword.value.trim().toLowerCase()
+  return !keyword || [receipt.receipt_no, receipt.purchase_order_no, receipt.supplier_name, receipt.warehouse_name].some((text) => String(text || '').toLowerCase().includes(keyword))
+}))
+const { pagination: arrivalPagination, total: arrivalTotal, pageSizes: arrivalPageSizes, pagedItems: pagedArrivalRows } = useLocalPagination(filteredArrivalRows)
+const { pagination: historyPagination, total: historyTotal, pageSizes: historyPageSizes, pagedItems: pagedHistoryRows } = useLocalPagination(filteredHistoryRows)
 
-const pendingQualityRows = computed(() =>
-  rows.value.filter((item) => item.requires_quality && !['approved', 'not_required'].includes(item.quality_status))
-)
-const otherRows = computed(() =>
-  rows.value.filter((item) => !pendingQualityRows.value.some((pendingRow) => pendingRow.id === item.id))
-)
-const activeRows = computed(() => (activeTab.value === 'quality_pending' ? pendingQualityRows.value : otherRows.value))
-const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPagination(activeRows)
+function dateKey(date) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const todayKey = ref(dateKey(new Date()))
+const overdueCount = computed(() => arrivalOrders.value.filter((order) => order.expected_arrival_date && order.expected_arrival_date < todayKey.value).length)
+const arrivalDays = computed(() => {
+  const start = new Date(`${todayKey.value}T12:00:00`)
+  const counts = Array.from({ length: 7 }, (_, offset) => {
+    const date = new Date(start)
+    date.setDate(start.getDate() + offset)
+    const key = dateKey(date)
+    return { date: key, label: offset === 0 ? '今天' : `${date.getMonth() + 1}/${date.getDate()}`, count: arrivalOrders.value.filter((order) => order.expected_arrival_date === key).length }
+  })
+  const maxCount = Math.max(1, ...counts.map((day) => day.count))
+  return counts.map((day) => ({ ...day, percent: day.count ? Math.max(10, Math.round(day.count / maxCount * 100)) : 0 }))
+})
+
+function isOverdue(date) {
+  return Boolean(date && date < todayKey.value)
+}
 
 function resetForm() {
   selectedOrderId.value = null
@@ -268,11 +334,7 @@ function isInspectionWarehouseOption(warehouse) {
 }
 
 function canReceiveOrder(order) {
-  return order && !order.receivable_completed && receiptAllowedStatuses.includes(order.status)
-}
-
-function orderOptionLabel(order) {
-  return `${order.order_no} / ${order.supplier_name || '-'} / ${order.status_label || statusLabel(order.status)}`
+  return Boolean(order?.can_receive && receiptAllowedStatuses.includes(order.status))
 }
 
 function handleWarehouseChange() {
@@ -287,23 +349,28 @@ function currentDateTime() {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:00`
 }
 
-function openCreate() {
+async function openCreate(order) {
+  if (!canCreate.value || !canReceiveOrder(order)) return
   resetForm()
+  selectedOrderId.value = order.id
+  try {
+    await loadOrderDetail(order.id)
+  } catch (error) {
+    ElMessage.error(error.message || '读取采购单失败')
+    return
+  }
+  if (!selectedOrderId.value) return
   dialogVisible.value = true
 }
 
 async function load() {
-  rows.value = await get('/api/purchases/receipts')
-  if (!pendingQualityRows.value.length && otherRows.value.length) {
-    activeTab.value = 'others'
-  }
-  if (!canCreate.value) {
-    candidateOrders.value = []
-    return
-  }
-  const orderData = await get('/api/purchases/orders?tab=active&page=1&page_size=100')
-  const orders = Array.isArray(orderData) ? orderData : (orderData.items || [])
-  candidateOrders.value = orders.filter((item) => !item.receivable_completed && receiptVisibleStatuses.includes(item.status))
+  const [receiptRows, expectedOrders] = await Promise.all([
+    get('/api/purchases/receipts'),
+    get('/api/purchases/receipts/arrival-board')
+  ])
+  rows.value = receiptRows || []
+  arrivalOrders.value = expectedOrders || []
+  todayKey.value = dateKey(new Date())
 }
 
 async function openDetail(row) {
@@ -319,23 +386,28 @@ function canExecuteInventoryRequest(row) {
 
 async function executeInventoryRequest(row) {
   if (!row?.inventory_request_id) return
-  const requestDetail = await get(`/api/inventory/operation-requests/${row.inventory_request_id}`)
-  const items = (requestDetail.original_items || []).map((item) => ({
-    product_id: item.product_id || null,
-    material_id: item.material_id || null,
-    batch_no: item.batch_no || null,
-    quantity: Number(item.quantity || 0),
-    unit_cost: Number(item.unit_cost || 0)
-  }))
-  await post(`/api/inventory/operation-requests/${row.inventory_request_id}/complete`, {
-    items,
-    handled_remark: '采购到货一键入库',
-    adjust_reason: null,
-    quantity_difference_remark: null
-  })
-  ElMessage.success('采购到货已完成入库')
-  detail.value = await get(`/api/purchases/receipts/${row.id}`)
-  await load()
+  try {
+    const requestDetail = await get(`/api/inventory/operation-requests/${row.inventory_request_id}`)
+    const items = (requestDetail.original_items || []).map((item) => ({
+      product_id: item.product_id || null,
+      material_id: item.material_id || null,
+      packaging_config_id: item.packaging_config_id || null,
+      batch_no: item.batch_no || null,
+      quantity: item.quantity,
+      unit_cost: item.unit_cost || 0
+    }))
+    await post(`/api/inventory/operation-requests/${row.inventory_request_id}/complete`, {
+      items,
+      handled_remark: '采购到货一键入库',
+      adjust_reason: null,
+      quantity_difference_remark: null
+    })
+    ElMessage.success('采购到货已完成入库')
+    detail.value = await get(`/api/purchases/receipts/${row.id}`)
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || '执行入库失败')
+  }
 }
 
 function goInventoryExecute(row) {
@@ -356,7 +428,7 @@ async function loadOrderDetail(id) {
     form.items = []
     return
   }
-  const candidate = candidateOrders.value.find((item) => item.id === id)
+  const candidate = arrivalOrders.value.find((item) => item.id === id)
   if (candidate && !canReceiveOrder(candidate)) {
     ElMessage.warning(`该采购单当前为${candidate.status_label || statusLabel(candidate.status)}，暂不能登记到货`)
     selectedOrderId.value = null
@@ -428,7 +500,7 @@ async function submit() {
         difference_remark: item.difference_remark || null
       }))
     })
-    ElMessage.success(form.requires_quality ? '采购到货已提交并触发来料质检' : '采购到货已登记，并已生成库管入库作业')
+    ElMessage.success(isInspectionWarehouse.value || form.requires_quality ? '采购到货已登记，待来料质检' : '采购到货已登记，待执行库存入库作业')
     dialogVisible.value = false
     resetForm()
     await load()
@@ -440,13 +512,26 @@ async function submit() {
 }
 
 onMounted(async () => {
-  warehouses.value = await get('/api/master-data/warehouses')
-  await load()
+  try {
+    warehouses.value = await get('/api/master-data/warehouses')
+    await load()
+  } catch (error) {
+    ElMessage.error(error.message || '读取采购到货数据失败')
+  }
 })
 </script>
 
 <style scoped>
-.status-tabs { margin-bottom: 12px; }
+.arrival-overview { display: flex; align-items: stretch; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.overdue-summary, .arrival-day { flex: 1 0 118px; min-width: 118px; padding: 10px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+.overdue-summary { display: flex; flex-direction: column; justify-content: space-between; color: var(--el-color-warning-dark-2); }
+.overdue-summary strong { font-size: 22px; }
+.arrival-day { display: flex; flex-direction: column; gap: 8px; }
+.arrival-day-label { color: var(--el-text-color-secondary); font-size: 12px; }
+.arrival-day strong { align-self: flex-end; }
+.arrival-bar-track { height: 8px; background: var(--el-fill-color-light); border-radius: 8px; overflow: hidden; }
+.arrival-bar { display: block; height: 100%; background: var(--el-color-primary); border-radius: 8px; }
+.is-overdue { color: var(--el-color-danger); font-weight: 600; }
 .mt-16 { margin-top: 16px; }
 .detail-actions { display: flex; gap: 12px; justify-content: flex-end; }
 .receipt-photos { width: 100%; }

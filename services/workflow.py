@@ -458,9 +458,19 @@ def _sync_inventory_request_source(
         receipt = db.execute(select(PurchaseReceipt).where(PurchaseReceipt.id == source_id)).scalar_one_or_none()
         if receipt is None:
             return
-        receipt.status = "completed"
-        if receipt.requires_quality:
-            receipt.quality_status = "approved"
+        inbound_requests = db.execute(
+            select(InventoryOperationRequest).where(
+                InventoryOperationRequest.source_type == "purchase_receipt",
+                InventoryOperationRequest.source_id == receipt.id,
+                InventoryOperationRequest.request_category.in_(["purchase_receipt_inbound", "purchase_quality_inbound"]),
+            )
+        ).scalars().all()
+        if receipt.requires_quality and receipt.quality_status != "approved":
+            receipt.status = "pending_quality"
+        elif inbound_requests and all(item.status == "completed" for item in inbound_requests):
+            receipt.status = "completed"
+        else:
+            receipt.status = "pending_inbound"
         order = db.execute(
             select(PurchaseOrder)
             .options(joinedload(PurchaseOrder.items))
