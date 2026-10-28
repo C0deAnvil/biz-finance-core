@@ -461,7 +461,7 @@ def _placement_blocked_reason(db: Session, order: SalesOrder, stock_status: str)
         return "客户订单尚未完成财务审批，暂不可置货"
 
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
-    if payment_type == "先收定金后收尾款":
+    if payment_type in {"先收定金后收尾款", "先付定金后付尾款"}:
         # 只要"累计已收 >= 应收定金"就可以置货,不限定收款是哪个阶段登记的。
         # 原先只统计 payment_stage == "deposit" 的记录,而财务选择"直接收款"时
         # 登记的是 payment_stage == "direct"(库里已有 4 笔共 1 万余元),

@@ -643,6 +643,20 @@ def create_queue_replenishment_demands(
     )
 
 
+def shipment_blocked_conditions(db: Session, order: SalesOrder) -> list[str]:
+    """Check payment against the actual receipt ledger before shipping."""
+    conditions: list[str] = []
+    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
+    if payment_type in {"全款发货", "先收定金后收尾款", "先付定金后付尾款"}:
+        total = Decimal(order.total_amount or 0)
+        received = Decimal(_sales_received_amount(db, order.id) or 0)
+        remaining = max(total - received, Decimal("0"))
+        if remaining > 0:
+            stage = "尾款" if payment_type in {"先收定金后收尾款", "先付定金后付尾款"} else "货款"
+            conditions.append(f"{stage}尚有 ¥{remaining:.4f} 未收（订单 ¥{total:.4f}，已收 ¥{received:.4f}）")
+    return conditions
+
+
 @router.post("/queues/{queue_id}/shipment")
 def mark_shipment(
     queue_id: int,
@@ -674,40 +688,9 @@ def mark_shipment(
     if order.finance_edit_pending:
         raise HTTPException(status_code=409, detail="财务修改待销售和库存确认，暂不能发货")
 
-    # ---- 发货条件检查：财务收款 / 质检 / 库存 / 置货 ----
-    process_status = sync_sales_order_process_status(db, order)
-    dimensions = {d.get("dimension") or d.get("status_dimension"): d for d in process_status.get("dimensions", [])}
-
-    def _dim_stage(name: str) -> str:
-        return (dimensions.get(name) or {}).get("current_stage") or ""
-
-    finance_stage = _dim_stage("finance")
-    quality_stage = _dim_stage("quality")
-    inbound_stage = _dim_stage("inbound")
-    blocked_conditions: list[str] = []
-
-    # 财务收款条件按付款方式差异化:
-    # 全款发货 → 需收齐全款;先付定金后付尾款 → 需收齐定金;货到付款/分期 → 不阻止
-    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
-    received_amount = _sales_received_amount(db, order.id)
-    if payment_type == "全款发货":
-        if received_amount < Decimal(order.total_amount or 0):
-            blocked_conditions.append(
-                f"全款发货需收齐全款 ¥{float(order.total_amount or 0):g}，已收 ¥{float(received_amount):g}"
-            )
-    elif payment_type == "先付定金后付尾款":
-        # 需求:定金单需尾款付清才能发货(收齐定金+尾款=全款)
-        if received_amount < Decimal(order.total_amount or 0):
-            blocked_conditions.append(
-                f"先付定金后付尾款需尾款付清(全款 ¥{float(order.total_amount or 0):g}，已收 ¥{float(received_amount):g})"
-            )
-    # 货到付款/分期付款:发货前不校验收款
-    if finance_stage in ("rejected", "pending_finance_check") and not blocked_conditions:
-        blocked_conditions.append("财务收款条件未满足")
-    if quality_stage not in ("passed", "qualified", "completed", "not_required", "done", "complete", "approved"):
-        blocked_conditions.append("质检条件未满足")
-    if inbound_stage not in ("completed", "done", "complete", "approved", "not_required", "passed"):
-        blocked_conditions.append("入库条件未满足")
+    # 订单已置货后，关联补货的质检/入库进度不能再阻止本单发货。
+    # 真正扣库前仍会逐行核对本单占用量、实有成品与包装库存。
+    blocked_conditions = shipment_blocked_conditions(db, order)
 
     force_shipment = bool(getattr(payload, "force", False)) if not isinstance(payload, QueueActionRequest) else False
     if blocked_conditions and not force_shipment:
@@ -716,9 +699,6 @@ def mark_shipment(
             msg="存在未满足的发货条件，是否继续发货？",
             data={
                 "blocked_conditions": blocked_conditions,
-                "finance_stage": finance_stage,
-                "quality_stage": quality_stage,
-                "inbound_stage": inbound_stage,
                 "require_force": True,
             },
         )

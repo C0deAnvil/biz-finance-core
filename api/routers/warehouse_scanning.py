@@ -20,7 +20,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from api.routers.inventory._common import _placement_blocked_reason, _placement_stock_status
-from api.routers.inventory.queues import mark_placement, mark_shipment
+from api.routers.inventory.queues import mark_placement, mark_shipment, shipment_blocked_conditions
 from config import settings
 from database import get_db
 from dependencies import get_current_user
@@ -40,6 +40,7 @@ from models import (
 from responses import api_response
 from schemas.sales import PlacementActionRequest, PlacementItemInput, SalesShipmentItemInput, SalesShipmentRequest
 from services.core import next_business_no
+from services.display import status_label
 from services.organization import warehouse_in_scope
 from services.time_utils import now_local
 
@@ -161,6 +162,43 @@ def _order(db: Session, queue: InventoryDispatchQueue) -> SalesOrder:
     if order is None:
         raise HTTPException(status_code=404, detail="作业单关联的客户订单不存在")
     return order
+
+
+def _placement_stock_detail(stock: dict) -> str | None:
+    shortages = []
+    for item in stock.get("items", []):
+        name = item.get("product_name") or "商品"
+        product_short = Decimal(str(item.get("shortage_quantity") or 0))
+        packaging_short = Decimal(str(item.get("packaging_shortage_quantity") or 0))
+        if product_short > 0:
+            shortages.append(f"{name}成品缺 {product_short:g}")
+        if packaging_short > 0:
+            packaging_name = item.get("packaging_name") or "包装"
+            shortages.append(f"{name}的{packaging_name}缺 {packaging_short:g}")
+    return "；".join(shortages) if shortages else None
+
+
+def _placement_reason(db: Session, order: SalesOrder, stock: dict) -> str | None:
+    reason = _placement_blocked_reason(db, order, stock["stock_status"])
+    # 扫码始终是整单置货；黄色的部分可置状态也要指出具体缺口。
+    if reason and stock["stock_status"] == "red" and order.status == "pending_shipment":
+        detail = _placement_stock_detail(stock)
+        return f"整单置货库存不足：{detail}" if detail else reason
+    if reason:
+        return reason
+    detail = _placement_stock_detail(stock)
+    return f"整单置货条件未满足：{detail}" if detail else None
+
+
+def _shipment_reason(db: Session, order: SalesOrder, queue: InventoryDispatchQueue) -> str | None:
+    if queue.placement_status != "hidden":
+        return "该订单尚未完成置货，请先扫描置货码"
+    if order.status != "pending_shipment":
+        return f"订单当前状态为{status_label(order.status)}，不处于待发货状态"
+    if order.finance_edit_pending:
+        return "财务修改待销售和库存确认，暂不能发货"
+    conditions = shipment_blocked_conditions(db, order)
+    return "；".join(conditions) if conditions else None
 
 
 def _serialize_event(row: WarehouseScanEvent) -> dict:
@@ -355,14 +393,15 @@ def resolve_scan(
     order = _order(db, queue)
     if action == "placement":
         stock = _placement_stock_status(db, order, queue.warehouse_id)
-        reason = _placement_blocked_reason(db, order, stock["stock_status"])
+        reason = _placement_reason(db, order, stock)
         completed = queue.placement_status == "hidden"
         allowed = completed or reason is None
         message = "该订单已经完成置货" if completed else (reason or "可整单置货")
     else:
         completed = queue.shipment_status == "completed"
-        allowed = completed or queue.placement_status == "hidden"
-        message = "该订单已经完成发货" if completed else ("请先完成置货" if not allowed else "请拍摄并上传发货凭证后再次扫描发货码")
+        reason = _shipment_reason(db, order, queue)
+        allowed = completed or reason is None
+        message = "该订单已经完成发货" if completed else (reason or "请拍摄并上传发货凭证后再次扫描发货码")
     return api_response(data={
         "action": action,
         "allowed": allowed,
@@ -398,7 +437,7 @@ def confirm_placement(
         event = _record_event(db, device=device, request=request, queue=queue, action="placement", key=payload.idempotency_key, barcode=payload.barcode, result="success", message="该订单已经完成置货，本次未重复处理", metadata={"already_completed": True, "order_no": order.order_no})
         return api_response(msg=event.message, data=_serialize_event(event))
     stock = _placement_stock_status(db, order, queue.warehouse_id)
-    blocked = _placement_blocked_reason(db, order, stock["stock_status"])
+    blocked = _placement_reason(db, order, stock)
     if blocked:
         return _failure(db, device=device, request=request, queue=queue, action="placement", key=payload.idempotency_key, barcode=payload.barcode, message=blocked, metadata={"stock_status": stock["stock_status"], "items": stock["items"]})
     items = [
@@ -425,7 +464,16 @@ def confirm_placement(
     except HTTPException as exc:
         return _failure(db, device=device, request=request, queue=queue, action="placement", key=payload.idempotency_key, barcode=payload.barcode, message=str(exc.detail))
     if result.get("code") != 200:
-        return _failure(db, device=device, request=request, queue=queue, action="placement", key=payload.idempotency_key, barcode=payload.barcode, message=result.get("msg") or "整单置货失败", metadata=result.get("data") or {})
+        data = result.get("data") or {}
+        shortages = data.get("shortages") or []
+        details = [
+            f"{row.get('product_name') or '商品'}的{row.get('packaging_name') or ('包装' if row.get('shortage_type') == 'packaging' else '成品')}缺 {row.get('shortage_quantity', 0)}"
+            for row in shortages if isinstance(row, dict)
+        ]
+        message = result.get("msg") or "整单置货失败"
+        if details:
+            message += "：" + "；".join(details)
+        return _failure(db, device=device, request=request, queue=queue, action="placement", key=payload.idempotency_key, barcode=payload.barcode, message=message, metadata=data)
     db.refresh(event)
     return api_response(msg=event.message, data=_serialize_event(event))
 
@@ -443,11 +491,13 @@ async def upload_shipment_proof(
     if action != "shipment":
         raise HTTPException(status_code=409, detail="发货照片必须关联发货条码")
     _assert_device_queue(device, queue)
-    if queue.placement_status != "hidden":
-        raise HTTPException(status_code=409, detail="该订单尚未完成置货，不能上传发货凭证")
     if queue.shipment_status == "completed":
         raise HTTPException(status_code=409, detail="该订单已经完成发货")
-    content = await file.read()
+    order = _order(db, queue)
+    blocked = _shipment_reason(db, order, queue)
+    if blocked:
+        raise HTTPException(status_code=409, detail=blocked)
+    content = await file.read(MAX_PROOF_BYTES + 1)
     await file.close()
     filename = file.filename or "shipment-proof.jpg"
     suffix = Path(filename).suffix.lower()
@@ -587,7 +637,10 @@ def confirm_shipment(
     except HTTPException as exc:
         return _failure(db, device=device, request=request, queue=queue, action="shipment", key=payload.idempotency_key, barcode=payload.barcode, message=str(exc.detail))
     if result.get("code") != 200:
-        return _failure(db, device=device, request=request, queue=queue, action="shipment", key=payload.idempotency_key, barcode=payload.barcode, message=result.get("msg") or "整单发货失败", metadata=result.get("data") or {})
+        data = result.get("data") or {}
+        conditions = data.get("blocked_conditions") or []
+        message = "；".join(str(condition) for condition in conditions) if conditions else (result.get("msg") or "整单发货失败")
+        return _failure(db, device=device, request=request, queue=queue, action="shipment", key=payload.idempotency_key, barcode=payload.barcode, message=message, metadata=data)
     db.refresh(event)
     return api_response(msg=event.message, data=_serialize_event(event))
 

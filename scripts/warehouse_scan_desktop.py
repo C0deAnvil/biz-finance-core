@@ -37,6 +37,38 @@ from scripts.warehouse_scan_config import (  # noqa: E402
 DEFAULT_SERVER = "https://www.cphwchem.xyz:8001"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 BARCODE_RE = re.compile(r"^(?:YCP01|YCS01)[A-F0-9]{24}$")
+MAX_PROOF_BYTES = 10 * 1024 * 1024
+
+
+def api_error_message(body: dict, http_status: int) -> str:
+    """Display both business errors and FastAPI validation/HTTP errors."""
+    detail = body.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        return detail
+    if isinstance(detail, list):
+        issues = []
+        for item in detail:
+            if isinstance(item, dict):
+                field = " / ".join(str(part) for part in item.get("loc", []) if part != "body")
+                issues.append(f"{field}：{item.get('msg', '输入无效')}" if field else str(item.get("msg", "输入无效")))
+        if issues:
+            return "；".join(issues)
+    message = body.get("msg") or body.get("message")
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    conditions = data.get("blocked_conditions")
+    if conditions:
+        return "；".join(str(condition) for condition in conditions)
+    shortages = data.get("shortages")
+    if shortages:
+        details = []
+        for row in shortages:
+            if isinstance(row, dict):
+                name = row.get("product_name") or "商品"
+                item_type = row.get("packaging_name") or ("包装" if row.get("shortage_type") == "packaging" else "成品")
+                details.append(f"{name}的{item_type}缺 {row.get('shortage_quantity', 0)}")
+        if details:
+            return f"{message or '库存不足'}：{'；'.join(details)}"
+    return str(message or f"请求失败（HTTP {http_status}）")
 
 
 def activate_english_keyboard(window_id: int | None = None) -> None:
@@ -235,7 +267,7 @@ class WarehouseScanDesktop(tk.Tk):
         except Exception as exc:
             raise RuntimeError(f"服务器返回了无法识别的内容（HTTP {response.status_code}）") from exc
         if response.status_code >= 400 or body.get("code") != 200:
-            raise RuntimeError(body.get("msg") or f"请求失败（HTTP {response.status_code}）")
+            raise RuntimeError(api_error_message(body, response.status_code))
         return body.get("data") or {}
 
     def _latest_photo(self, config: dict) -> tuple[Path, str]:
@@ -257,6 +289,10 @@ class WarehouseScanDesktop(tk.Tk):
             after = path.stat()
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 raise RuntimeError("最新照片仍在写入，请稍等一秒后重新扫描")
+            if age <= max_age and after.st_size == 0:
+                raise RuntimeError(f"最新照片 {path.name} 是空文件，请重新拍摄")
+            if age <= max_age and after.st_size > MAX_PROOF_BYTES:
+                raise RuntimeError(f"最新照片 {path.name} 大小为 {after.st_size / 1024 / 1024:.1f}MB，超过 10MB 上限；请压缩或重拍")
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             if age <= max_age and digest not in self.used_photo_hashes:
                 return path, digest
