@@ -490,7 +490,7 @@ def confirm_purchase_order(order_id: int, current_user: User = Depends(require_r
 @router.post("/settlements/payment-requests")
 def submit_purchase_payment_request(
     payload: PurchasePaymentRequestCreate,
-    current_user: User = Depends(require_roles("purchase", "finance", "system_admin")),
+    current_user: User = Depends(require_roles("purchase")),
     db: Session = Depends(get_db),
 ):
     return submit_purchase_payment_request_service(payload, current_user, db)
@@ -499,7 +499,7 @@ def submit_purchase_payment_request(
 @router.post("/settlements/payment-requests/merged")
 def submit_merged_purchase_payment_request(
     payload: PurchaseMergedPaymentRequestCreate,
-    current_user: User = Depends(require_roles("purchase", "finance", "system_admin")),
+    current_user: User = Depends(require_roles("purchase")),
     db: Session = Depends(get_db),
 ):
     return submit_merged_purchase_payment_request_service(payload, current_user, db)

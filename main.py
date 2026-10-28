@@ -15,8 +15,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.router import api_router
-from api.routers.printing import purge_old_print_access_logs
-from api.routers.warehouse_scanning import purge_old_scan_access_logs
+from api.routers.printing import purge_old_completed_print_jobs, purge_old_print_access_logs
+from api.routers.warehouse_scanning import purge_old_scan_access_logs, purge_old_scan_events
 from config import settings
 from database import SessionLocal
 from exceptions import BusinessError
@@ -58,17 +58,19 @@ async def lifespan(app: FastAPI):
         db.commit()
     finally:
         db.close()
-    async def clean_print_logs():
+    async def clean_device_records():
         while True:
             try:
                 with SessionLocal() as cleanup_db:
                     purge_old_print_access_logs(cleanup_db)
+                    purge_old_completed_print_jobs(cleanup_db)
                     purge_old_scan_access_logs(cleanup_db)
+                    purge_old_scan_events(cleanup_db)
             except Exception:
-                logging.exception("Failed to purge expired print access logs")
+                logging.exception("Failed to purge expired print or scan records")
             await asyncio.sleep(3600)
 
-    cleanup_task = asyncio.create_task(clean_print_logs())
+    cleanup_task = asyncio.create_task(clean_device_records())
     try:
         yield
     finally:

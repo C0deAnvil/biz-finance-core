@@ -59,7 +59,7 @@ def test_new_sales_line_snapshots_product_grade_not_packaging_weight(db):
     product = Product(product_code="CP-SALE-GRADE", name="食品级产品", price=Decimal("10"), specification="食品级")
     packaging = PackagingConfig(
         entity_type="global", entity_id=0, packaging_name="50kg纸袋",
-        kg_per_bag=Decimal("50"), is_default=True, is_active=True,
+        kg_per_bag=Decimal("50"), unit_price=Decimal("2.5000"), is_default=True, is_active=True,
     )
     order = SalesOrder(
         order_no="XS-GRADE", sales_user_id=1, operator_user_id=1, consignee="测试",
@@ -68,7 +68,7 @@ def test_new_sales_line_snapshots_product_grade_not_packaging_weight(db):
     db.add_all([product, packaging, order])
     db.flush()
 
-    _build_order_items(
+    subtotal = _build_order_items(
         db, order_id=order.id,
         payload_items=[{"product_id": product.id, "quantity": 100, "unit_price": 10, "packaging_config_id": packaging.id}],
         enforce_price_remark=False, create_price_approval=False,
@@ -76,3 +76,6 @@ def test_new_sales_line_snapshots_product_grade_not_packaging_weight(db):
     item = db.execute(select(SalesOrderItem).where(SalesOrderItem.sales_order_id == order.id)).scalar_one()
     assert item.display_specification == "食品级"
     assert item.kg_per_bag == Decimal("50")
+    assert item.packaging_fee == Decimal("5.0000")
+    assert item.total_amount == Decimal("1000.0000")
+    assert subtotal == Decimal("1000.0000")

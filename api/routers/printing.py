@@ -384,3 +384,14 @@ def purge_old_print_access_logs(db: Session) -> int:
     ))
     db.commit()
     return result.rowcount or 0
+
+
+def purge_old_completed_print_jobs(db: Session) -> int:
+    """清除过期打印历史，保留未确认、失败和待重试任务以防漏单。"""
+    cutoff = now_local() - timedelta(days=3)
+    result = db.execute(delete(PlacementPrintJob).where(
+        PlacementPrintJob.status.in_(("printed", "manual_printed")),
+        PlacementPrintJob.printed_at < cutoff,
+    ))
+    db.commit()
+    return result.rowcount or 0

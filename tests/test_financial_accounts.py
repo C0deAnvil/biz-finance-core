@@ -193,6 +193,12 @@ def test_direct_registration_requires_and_records_company_account(client, login,
     else:
         endpoint = "/api/finance/payables/merged-register"
         payload.update(supplier_id=supplier_id, actual_amount=10, items=[{"purchase_order_id": purchase_id, "order_amount": 10}])
+        # 财务不能绕过采购付款申请直接形成应付或登记出账。
+        response = client.post(endpoint, json=payload)
+        assert response.status_code == 409, response.text
+        with SessionLocal() as db:
+            assert db.scalar(select(PayableRecord).where(PayableRecord.purchase_order_id == purchase_id)) is None
+        return
     missing = {**payload, "company_account_id": None}
     response = client.post(endpoint, json=missing)
     assert response.status_code == 409, response.text

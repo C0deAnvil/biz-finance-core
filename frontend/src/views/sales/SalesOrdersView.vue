@@ -166,7 +166,7 @@
 
         <div class="order-total-bar">
           <span>商品金额：{{ formatMoney(orderGoodsAmount) }}</span>
-          <span>包装费：{{ formatMoney(orderPackagingAmount) }}</span>
+          <span>包装成本（已含在商品单价，不重复计费）：{{ formatMoney(orderPackagingAmount) }}</span>
           <span>订单总额：{{ formatMoney(orderTotalAmount) }}</span>
         </div>
 
@@ -268,10 +268,10 @@
           <el-table-column label="袋数" width="110">
             <template #default="scope">{{ packagingBagCount(scope.row) }}</template>
           </el-table-column>
-          <el-table-column label="包装单价" width="120">
+          <el-table-column label="包装采购价" width="120">
             <template #default="scope">{{ formatNumber(packagingUnitPrice(scope.row)) }}</template>
           </el-table-column>
-          <el-table-column label="包装费" width="120">
+          <el-table-column label="包装成本" width="120">
             <template #default="scope">{{ formatNumber(packagingFee(scope.row)) }}</template>
           </el-table-column>
           <el-table-column label="单价" width="140">
@@ -330,7 +330,7 @@
         <el-descriptions-item label="收货地址" :span="2">{{ detail.finance_edit_snapshot.before_data?.delivery_address || '-' }}</el-descriptions-item>
         <el-descriptions-item label="定金">{{ formatMoney(detail.finance_edit_snapshot.before_data?.deposit_amount) }}</el-descriptions-item>
         <el-descriptions-item label="运费">{{ formatMoney(detail.finance_edit_snapshot.before_data?.transport_fee) }}</el-descriptions-item>
-        <el-descriptions-item label="包装费（明细汇总）">{{ formatMoney(detail.finance_edit_snapshot.before_data?.packaging_fee) }}</el-descriptions-item>
+        <el-descriptions-item label="包装成本参考（不计入订单金额）">{{ formatMoney(detail.finance_edit_snapshot.before_data?.packaging_fee) }}</el-descriptions-item>
         <el-descriptions-item label="整单备注" :span="2">{{ detail.finance_edit_snapshot.before_data?.order_remark || '-' }}</el-descriptions-item>
       </el-descriptions>
       <el-table v-if="detail?.finance_edit_snapshot" :data="detail.finance_edit_snapshot.before_data?.items || []" border class="mt-16">
@@ -343,10 +343,10 @@
         <el-table-column prop="bag_count" label="袋数" width="110">
           <template #default="scope">{{ formatNumber(scope.row.bag_count) }}</template>
         </el-table-column>
-        <el-table-column prop="packaging_unit_price" label="包装单价" width="110">
+        <el-table-column prop="packaging_unit_price" label="包装采购价" width="110">
           <template #default="scope">{{ formatMoney(scope.row.packaging_unit_price) }}</template>
         </el-table-column>
-        <el-table-column prop="packaging_fee" label="包装费" width="110">
+        <el-table-column prop="packaging_fee" label="包装成本" width="110">
           <template #default="scope">{{ formatMoney(scope.row.packaging_fee) }}</template>
         </el-table-column>
         <el-table-column prop="unit_price" label="单价" width="110">
@@ -413,10 +413,10 @@
         <el-table-column prop="bag_count" label="袋数" width="110">
           <template #default="scope">{{ formatNumber(scope.row.bag_count) }}</template>
         </el-table-column>
-        <el-table-column prop="packaging_unit_price" label="包装单价" width="110">
+        <el-table-column prop="packaging_unit_price" label="包装采购价" width="110">
           <template #default="scope">{{ formatMoney(scope.row.packaging_unit_price) }}</template>
         </el-table-column>
-        <el-table-column prop="packaging_fee" label="包装费" width="110">
+        <el-table-column prop="packaging_fee" label="包装成本" width="110">
           <template #default="scope">{{ formatMoney(scope.row.packaging_fee) }}</template>
         </el-table-column>
         <el-table-column prop="unit_price" label="单价">
@@ -697,7 +697,7 @@ const orderGoodsAmount = computed(() =>
 const orderPackagingAmount = computed(() =>
   form.items.reduce((sum, item) => sum + packagingFee(item), 0)
 )
-const orderTotalAmount = computed(() => orderGoodsAmount.value + orderPackagingAmount.value + Number(form.transport_fee || 0))
+const orderTotalAmount = computed(() => orderGoodsAmount.value + Number(form.transport_fee || 0))
 const stockShortageWarnings = computed(() => {
   const quantityMap = new Map()
   for (const item of form.items) {

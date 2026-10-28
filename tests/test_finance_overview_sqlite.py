@@ -8,6 +8,7 @@ from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -17,9 +18,46 @@ from models import (  # noqa: E402
     SalesOrderItem, Supplier, User,
 )
 from services.finance_overview import build_finance_overview  # noqa: E402
+from api.routers.finance import list_payables, register_merged_purchase_payment  # noqa: E402
 
 
 class FinanceOverviewTests(unittest.TestCase):
+    def test_payables_exclude_purchase_orders_without_payment_request(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            role = Role(code="system_admin", name="管理员", home_route="/dashboard")
+            db.add(role)
+            db.flush()
+            user = User(username="payable-test", full_name="测试", hashed_password="unused", role_id=role.id)
+            supplier = Supplier(code="S-PAYABLE", name="测试供应商", contact_name="乙", phone="2", address="测试地址")
+            db.add_all([user, supplier])
+            db.flush()
+            orders = [PurchaseOrder(
+                order_no=f"CG-PAYABLE-{index}", supplier_id=supplier.id,
+                purchaser_user_id=user.id, operator_user_id=user.id,
+                payment_type="before_arrival", status="purchasing",
+                total_amount=Decimal("8.1111"),
+            ) for index in (1, 2)]
+            db.add_all(orders)
+            db.flush()
+            db.add(PurchasePaymentRequest(
+                request_no="FK-PAYABLE", purchase_order_id=orders[1].id,
+                requested_by_id=user.id, requested_amount=Decimal("3.0000"),
+                order_amount=Decimal("3.0000"), status="pending_finance_payment",
+            ))
+            db.flush()
+            result = list_payables(date_from=None, date_to=None, current_user=user, db=db)["data"]
+            self.assertEqual(result["summary"]["pending_request_count"], 1)
+            self.assertNotIn("pending_orders", result)
+            self.assertEqual(len(result["payment_requests"]), 1)
+            self.assertEqual(result["payment_requests"][0]["purchase_order_no"], "CG-PAYABLE-2")
+            self.assertEqual(result["payment_requests"][0]["purchase_total_amount"], 8.1111)
+            with self.assertRaises(HTTPException) as error:
+                register_merged_purchase_payment(payload=None, current_user=user, db=db)
+            self.assertEqual(error.exception.status_code, 409)
+        engine.dispose()
+
     def test_period_and_money_reconcile_to_details(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -98,8 +136,10 @@ class FinanceOverviewTests(unittest.TestCase):
             self.assertEqual(payload["details"]["products"][0]["amount"], "10.0000")
             self.assertEqual(summary["receivable_amount"], "5.0000")
             self.assertEqual(summary["receivable_balance"], "3.0000")
-            self.assertEqual(summary["payable_amount"], "8.1111")
-            self.assertEqual(summary["payable_balance"], "5.1111")
+            self.assertEqual(summary["payable_amount"], "4.0000")
+            self.assertEqual(summary["payable_balance"], "4.0000")
+            self.assertEqual(summary["payable_count"], 1)
+            self.assertEqual(payload["details"]["payables"][0]["no"], "FK-OTHER")
             self.assertEqual(summary["reimbursement_count"], 2)
             self.assertEqual(summary["reimbursement_amount"], "2.0000")
             self.assertEqual(summary["reimbursement_paid_amount"], "0.7778")

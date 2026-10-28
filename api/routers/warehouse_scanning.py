@@ -651,3 +651,12 @@ def purge_old_scan_access_logs(db: Session) -> int:
     ))
     db.commit()
     return result.rowcount or 0
+
+
+def purge_old_scan_events(db: Session) -> int:
+    """扫码处理结果仅保留三天；订单、出入库和发货凭证不在清理范围内。"""
+    result = db.execute(delete(WarehouseScanEvent).where(
+        WarehouseScanEvent.created_at < now_local() - timedelta(days=3)
+    ))
+    db.commit()
+    return result.rowcount or 0

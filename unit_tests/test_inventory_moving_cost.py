@@ -158,9 +158,14 @@ def test_sales_profit_uses_posted_cost_and_refuses_unpriced(db):
         product_id=105, quantity=Decimal("-2"), unit_cost=Decimal("20"),
         total_cost=Decimal("-40"), cost_status="actual", related_type="sales_order", related_id=500,
     ))
+    db.add(InventoryTransaction(
+        transaction_no="TX500P", transaction_type="sales_packaging_outbound", warehouse_id=1,
+        packaging_config_id=106, quantity=Decimal("-1"), unit_cost=Decimal("2"),
+        total_cost=Decimal("-2"), cost_status="actual", related_type="sales_order", related_id=500,
+    ))
     db.flush()
     sync_sales_order_cost(db, order)
-    assert order.cost_amount == Decimal("40")
+    assert order.cost_amount == Decimal("42")
     assert order.profit_amount == Decimal("53")
     assert order.cost_status == "actual"
     db.add(InventoryTransaction(

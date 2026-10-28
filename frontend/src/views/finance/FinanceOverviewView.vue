@@ -11,7 +11,7 @@
         <span class="period-note">{{ report.period?.date_from || '-' }} 至 {{ report.period?.date_to || '-' }}</span>
       </div>
       <div class="basis-note">
-        销售按发货日；新增应收按应收计划创建日；采购应付按审批通过日（无需审批的按创建日）；报销按提交日；实际收付款按发生日。未收、未付余额为这些单据的当前余额。
+        销售按发货日；新增应收按应收计划创建日；采购应付按付款申请提交日；报销按提交日；实际收付款按发生日。未收、未付余额为这些申请的当前余额。
       </div>
     </PageSection>
 
@@ -123,9 +123,9 @@ const salesMetrics = [
   { key: 'cash_in', title: '资金流入', detail: 'cash_in', caption: '按资金流水日期', count: false },
 ]
 const expenseMetrics = [
-  { key: 'payable_amount', title: '新增采购应付', detail: 'payables', caption: '已生效采购单', count: false },
-  { key: 'payable_count', title: '采购应付单数', detail: 'payables', caption: '查看采购单', count: true },
-  { key: 'payable_balance', title: '上述采购当前未付', detail: 'payables', caption: '当前余额', count: false },
+  { key: 'payable_amount', title: '新增采购应付', detail: 'payables', caption: '已提交付款申请', count: false },
+  { key: 'payable_count', title: '采购付款申请数', detail: 'payables', caption: '查看付款申请', count: true },
+  { key: 'payable_balance', title: '上述申请当前未付', detail: 'payables', caption: '当前余额', count: false },
   { key: 'payment_amount', title: '实际采购付款', detail: 'payments', caption: '按付款日期', count: false },
   { key: 'reimbursement_amount', title: '报销申请额', detail: 'reimbursements', caption: '不含已驳回', count: false },
   { key: 'reimbursement_count', title: '报销申请单数', detail: 'reimbursements', caption: '查看报销单', count: true },

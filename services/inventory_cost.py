@@ -28,11 +28,11 @@ def sync_sales_order_cost(db: Session, order: SalesOrder) -> None:
         order.cost_status = "actual"
 
     # 只有订单全部发货、且每笔发货均有成本，才显示订单级利润。
-    # 沿用当前系统的运费/包装费用扣减口径；期间费用不在本库存成本模块中。
+    # 包装出库成本已包含在 sales_packaging_outbound 流水中，不能再次扣减。
     if order.status in {"shipped", "completed"} and order.cost_status != "unpriced":
         order.profit_amount = (
             Decimal(order.total_amount or 0) - Decimal(order.cost_amount or 0)
-            - Decimal(order.transport_fee or 0) - Decimal(order.packaging_fee or 0)
+            - Decimal(order.transport_fee or 0)
         )
     else:
         order.profit_amount = Decimal("0")

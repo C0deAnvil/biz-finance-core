@@ -106,27 +106,30 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
         for row in receivable_map.values()
     ]
 
-    purchases = db.execute(
-        select(PurchaseOrder).options(joinedload(PurchaseOrder.supplier))
-        .where(func.coalesce(PurchaseOrder.approved_at, PurchaseOrder.created_at).between(start, end), PurchaseOrder.status.notin_(["draft", "pending_approval", "cancelled", "rejected"]))
-        .order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc())
+    # 采购订单生效不代表已经形成应付；以采购提交的付款申请为确认时点。
+    requests = db.execute(
+        select(PurchasePaymentRequest)
+        .options(joinedload(PurchasePaymentRequest.purchase_order).joinedload(PurchaseOrder.supplier))
+        .where(PurchasePaymentRequest.created_at.between(start, end), PurchasePaymentRequest.status != "rejected")
+        .order_by(PurchasePaymentRequest.created_at.desc(), PurchasePaymentRequest.id.desc())
     ).scalars().all()
-    purchase_ids = [row.id for row in purchases]
+    request_ids = [row.id for row in requests]
     paid_totals = dict(db.execute(
-        select(PayableRecord.purchase_order_id, func.sum(PayableRecord.amount))
-        .where(PayableRecord.purchase_order_id.in_(purchase_ids or [-1]),
+        select(PayableRecord.purchase_payment_request_id, func.sum(PayableRecord.amount))
+        .where(PayableRecord.purchase_payment_request_id.in_(request_ids or [-1]),
                PayableRecord.status.in_(PAYMENT_RECORDED_STATUSES))
-        .group_by(PayableRecord.purchase_order_id)
+        .group_by(PayableRecord.purchase_payment_request_id)
     ).all())
     payable_rows = []
-    for order in purchases:
-        amount = Decimal(order.total_amount or 0)
-        paid = Decimal(paid_totals.get(order.id) or 0)
+    for request in requests:
+        order = request.purchase_order
+        amount = Decimal(request.requested_amount or 0)
+        paid = Decimal(paid_totals.get(request.id) or 0)
         payable_rows.append({
-            "id": order.id, "no": order.order_no, "date": (order.approved_at or order.created_at).isoformat(),
-            "party": order.supplier.name if order.supplier else "-", "amount": _money(amount),
+            "id": request.id, "no": request.request_no, "date": request.created_at.isoformat(),
+            "party": order.supplier.name if order and order.supplier else "-", "amount": _money(amount),
             "paid": _money(paid), "balance": _money(max(amount - paid, ZERO)),
-            "status": status_label(order.status), "route": "/finance/payables", "focus_type": "purchase_order",
+            "status": status_label(request.status), "route": "/finance/payables", "focus_type": "purchase_payment_request",
         })
 
     reimbursements = db.execute(
@@ -197,7 +200,7 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
         "id": row.id, "no": payment_orders[row.purchase_order_id].order_no, "date": row.paid_at.isoformat(),
         "party": payment_orders[row.purchase_order_id].supplier.name if payment_orders[row.purchase_order_id].supplier else "-",
         "amount": _money(row.amount), "name": row.payment_method or "付款",
-        "route": "/finance/payables", "focus_type": "purchase_order", "focus_id": row.purchase_order_id,
+        "route": "/finance/payables", "focus_type": "payable_record",
     } for row in payments if row.purchase_order_id in payment_orders]
 
     cash_flows = db.execute(

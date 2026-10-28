@@ -1,99 +1,18 @@
 <template>
   <div class="page-stack">
     <el-row :gutter="12" class="summary-row">
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待付款订单</div><div class="summary-value">{{ summary.pending_order_count || 0 }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待出账申请</div><div class="summary-value">{{ pendingRequestCount }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">付款记录</div><div class="summary-value">{{ summary.record_count || 0 }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待付总额</div><div class="summary-value">{{ formatMoney(totalRemainingAmount) }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待出账金额</div><div class="summary-value">{{ formatMoney(pendingRequestAmount) }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">已付总额</div><div class="summary-value">{{ formatMoney(totalPaidAmount) }}</div></el-card></el-col>
     </el-row>
 
-    <div ref="pendingSectionRef">
-      <PageSection title="待付款订单" description="仅展示仍未结清的采购订单与已登记付款记录。主流程仍由采购侧提交付款申请，当前页保留经理/财务在特殊场景下的直接登记能力。">
-        <template #actions>
-          <el-button @click="load">刷新</el-button>
-          <el-button v-if="canRegisterPayment" type="success" plain @click="openMergedRegisterDialog">登记付款</el-button>
-          <el-button @click="exportPendingOrders">导出待付款订单</el-button>
-        </template>
-        <el-row :gutter="12" class="filters-row">
-          <el-col :span="8">
-            <!-- 财务对账要按时间段查:原先本页只有弹窗里的"收付款日期"输入框,
-                   列表本身无法按区间过滤。 -->
-            <el-date-picker
-                v-model="filters.dateRange"
-                type="daterange"
-                range-separator="至"
-                start-placeholder="开始日期"
-                end-placeholder="结束日期"
-                value-format="YYYY-MM-DD"
-                style="width: 100%"
-                @change="load"
-            />
-          </el-col>
-        </el-row>
-
-
-        <el-table :data="pagedPendingOrders" stripe :row-class-name="pendingRowClassName" @selection-change="handlePendingSelectionChange">
-          <el-table-column v-if="canRegisterPayment" type="selection" width="52" />
-          <el-table-column type="expand" width="52">
-            <template #default="scope">
-              <el-table :data="scope.row.items || []" border size="small">
-                <el-table-column prop="item_code" label="编码" width="140" />
-                <el-table-column prop="item_name" label="物料/产品" min-width="180" />
-                <el-table-column prop="display_specification" label="规格" width="140" />
-                <el-table-column prop="quantity" label="订单数量" width="120">
-                  <template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template>
-                </el-table-column>
-                <el-table-column prop="received_quantity" label="已到货" width="120">
-                  <template #default="innerScope">{{ formatNumber(innerScope.row.received_quantity) }}</template>
-                </el-table-column>
-                <el-table-column prop="unit_price" label="单价" width="120">
-                  <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
-                </el-table-column>
-                <el-table-column prop="total_amount" label="金额" width="120">
-                  <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
-                </el-table-column>
-              </el-table>
-            </template>
-          </el-table-column>
-          <el-table-column prop="order_no" label="采购单号" width="160" />
-          <el-table-column prop="supplier_name" label="供应商" min-width="180" />
-          <el-table-column prop="status_label" label="采购状态" width="120">
-            <template #default="scope">
-              <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="settlement_status_label" label="结算状态" width="120">
-            <template #default="scope">
-              <el-tag :type="statusType(scope.row.settlement_status)">{{ scope.row.settlement_status_label || statusLabel(scope.row.settlement_status) }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="item_summary" label="订单明细摘要" min-width="220" show-overflow-tooltip />
-          <el-table-column prop="total_amount" label="订单金额" width="120">
-            <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
-          </el-table-column>
-          <el-table-column prop="paid_amount" label="已付金额" width="120">
-            <template #default="scope">{{ formatMoney(scope.row.paid_amount) }}</template>
-          </el-table-column>
-          <el-table-column prop="remaining_amount" label="待付金额" width="120">
-            <template #default="scope">{{ formatMoney(scope.row.remaining_amount) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="100" fixed="right">
-            <template #default="scope">
-              <el-button size="small" text type="primary" @click="goToPurchaseOrder(scope.row.id)">查看订单</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-        <AppPagination
-          v-model:page="pendingPagination.page"
-          v-model:page-size="pendingPagination.pageSize"
-          :total="pendingTotal"
-          :page-sizes="pageSizes"
-        />
-      </PageSection>
-    </div>
-
     <div ref="recordSectionRef">
-      <PageSection title="付款申请协同台账" description="采购侧发起的付款申请、经理确认结果与流程完成状态统一在此留痕；主流程不变，当前页仅补充直接登记与合并登记的例外入口。">
+      <PageSection title="采购付款申请" description="仅展示采购人员已提交的付款申请。财务从申请中登记出账，未申请的采购订单不会进入应付。">
+        <template #actions>
+          <el-date-picker v-model="filters.dateRange" type="daterange" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" value-format="YYYY-MM-DD" @change="load" />
+          <el-button @click="load">刷新</el-button>
+        </template>
         <el-table :data="pagedPaymentRequests" stripe :row-class-name="paymentRequestRowClassName">
           <el-table-column type="expand" width="52">
             <template #default="scope">
@@ -120,7 +39,7 @@
             <template #default="scope">{{ scope.row.merge_no || '-' }}</template>
           </el-table-column>
           <el-table-column prop="company_account_label" label="企业账户" min-width="240" show-overflow-tooltip />
-      <el-table-column prop="request_no" label="申请单号" width="160" />
+          <el-table-column prop="request_no" label="申请单号" width="160" />
           <el-table-column prop="purchase_order_no" label="采购单号" width="160" />
           <el-table-column prop="supplier_name" label="供应商" min-width="180" />
           <el-table-column prop="arrival_status_label" label="到货状态" width="120">
@@ -133,7 +52,10 @@
               <el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="order_amount" label="订单金额" width="120">
+          <el-table-column prop="purchase_total_amount" label="采购单总额" width="130">
+            <template #default="scope">{{ formatMoney(scope.row.purchase_total_amount) }}</template>
+          </el-table-column>
+          <el-table-column prop="order_amount" label="本次申请订单款" width="150">
             <template #default="scope">{{ formatMoney(scope.row.order_amount) }}</template>
           </el-table-column>
           <el-table-column prop="other_fee_amount" label="其他费用" width="120">
@@ -175,7 +97,7 @@
       </PageSection>
     </div>
 
-    <div>
+    <div ref="paymentRecordSectionRef">
       <PageSection title="付款记录" description="付款按采购订单累计；小于订单总额记为部分结算，达到或超过订单总额记为已结算。">
         <template #actions>
           <el-button @click="exportRecords">导出付款记录</el-button>
@@ -224,7 +146,8 @@
         <el-descriptions-item label="采购订单">{{ activePaymentRequest.purchase_order_no }}</el-descriptions-item>
         <el-descriptions-item label="供应商">{{ activePaymentRequest.supplier_name || '-' }}</el-descriptions-item>
         <el-descriptions-item label="到货状态">{{ activePaymentRequest.arrival_status_label || statusLabel(activePaymentRequest.arrival_status) }}</el-descriptions-item>
-        <el-descriptions-item label="订单金额">{{ formatMoney(activePaymentRequest.order_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="采购单总额">{{ formatMoney(activePaymentRequest.purchase_total_amount) }}</el-descriptions-item>
+        <el-descriptions-item label="本次申请订单款">{{ formatMoney(activePaymentRequest.order_amount) }}</el-descriptions-item>
         <el-descriptions-item label="其他费用">{{ formatMoney(activePaymentRequest.other_fee_amount) }}</el-descriptions-item>
         <el-descriptions-item label="申请总额">{{ formatMoney(activePaymentRequest.requested_amount) }}</el-descriptions-item>
         <el-descriptions-item label="申请人">{{ activePaymentRequest.requested_by_name || '-' }}</el-descriptions-item>
@@ -343,70 +266,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="mergedRegisterVisible" title="登记付款" width="980px">
-      <el-descriptions v-if="mergedSupplierName" :column="2" border class="mb-16">
-        <el-descriptions-item label="供应商">{{ mergedSupplierName }}</el-descriptions-item>
-        <el-descriptions-item label="订单数量">{{ mergedRegisterForm.items.length }}</el-descriptions-item>
-        <el-descriptions-item label="实付总额">{{ formatMoney(mergedActualAmount) }}</el-descriptions-item>
-        <el-descriptions-item label="说明">支持同一供应商的单单或多单付款登记</el-descriptions-item>
-      </el-descriptions>
-      <el-table :data="mergedRegisterForm.items" stripe border>
-        <el-table-column type="expand" width="52">
-          <template #default="scope">
-            <el-table :data="scope.row.items || []" border size="small">
-              <el-table-column prop="item_code" label="编码" width="140" />
-              <el-table-column prop="item_name" label="物料/产品" min-width="180" />
-              <el-table-column prop="display_specification" label="规格" width="140" />
-              <el-table-column prop="quantity" label="订单数量" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template>
-              </el-table-column>
-              <el-table-column prop="received_quantity" label="已到货" width="120">
-                <template #default="innerScope">{{ formatNumber(innerScope.row.received_quantity) }}</template>
-              </el-table-column>
-              <el-table-column prop="unit_price" label="单价" width="120">
-                <template #default="innerScope">{{ formatMoney(innerScope.row.unit_price) }}</template>
-              </el-table-column>
-              <el-table-column prop="total_amount" label="金额" width="120">
-                <template #default="innerScope">{{ formatMoney(innerScope.row.total_amount) }}</template>
-              </el-table-column>
-            </el-table>
-          </template>
-        </el-table-column>
-        <el-table-column prop="order_no" label="采购单号" width="160" />
-        <el-table-column prop="supplier_name" label="供应商" min-width="180" />
-        <el-table-column prop="item_summary" label="订单摘要" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="remaining_amount" label="待付金额" width="130">
-          <template #default="scope">{{ formatMoney(scope.row.remaining_amount) }}</template>
-        </el-table-column>
-        <el-table-column label="本次订单金额" width="150">
-          <template #default="scope">
-            <el-input-number v-model="scope.row.order_amount" :min="0" :max="scope.row.remaining_amount" :precision="4" style="width: 100%" />
-          </template>
-        </el-table-column>
-        <el-table-column label="其他费用" width="140">
-          <template #default="scope">
-            <el-input-number v-model="scope.row.other_fee_amount" :min="0" :precision="4" style="width: 100%" />
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-form class="mt-16" :model="mergedRegisterForm" label-width="100px">
-        <SettlementAccounts v-model:company-account-id="mergedRegisterForm.company_account_id" v-model:counterparty-account-id="mergedRegisterForm.counterparty_account_id" :party-id="mergedRegisterForm.supplier_id" direction="payment" />
-        <el-form-item label="付款时间">
-          <el-date-picker v-model="mergedRegisterForm.paid_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="银行回单">
-          <input type="file" accept=".jpg,.jpeg,.png,.pdf,.xls,.xlsx" @change="(event) => handlePaymentFileChange(event, 'direct')" />
-          <el-button v-if="mergedRegisterForm.bank_receipt_attachment_id" class="ml-8" text type="primary" @click="openAttachment(mergedRegisterForm.bank_receipt_attachment_id)">查看回单</el-button>
-        </el-form-item>
-        <el-form-item label="处理说明">
-          <el-input v-model="mergedRegisterForm.remark" type="textarea" :rows="3" placeholder="可填写合并付款凭证、银行流水说明等" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="mergedRegisterVisible = false">取消</el-button>
-        <DelayedActionButton type="primary" :loading="paymentRegisterSubmitting" @click="submitMergedRegister">确认登记</DelayedActionButton>
-      </template>
-    </el-dialog>
 
   </div>
 </template>
@@ -458,33 +317,20 @@ const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
-const pendingSectionRef = ref(null)
 const recordSectionRef = ref(null)
+const paymentRecordSectionRef = ref(null)
 const summary = reactive({})
-const pendingOrders = ref([])
 const paymentRequests = ref([])
 const records = ref([])
-const focusedOrderId = ref(null)
 const focusedRecordId = ref(null)
 const focusedPaymentRequestId = ref(null)
 const paymentRegisterVisible = ref(false)
 const mergedPaymentRequestVisible = ref(false)
-const mergedRegisterVisible = ref(false)
 const activePaymentRequest = ref(null)
-const selectedPendingOrders = ref([])
 const paymentRegisterForm = reactive({
   company_account_id: null,
   counterparty_account_id: null,
   actual_amount: 0,
-  remark: '',
-  bank_receipt_attachment_id: null,
-  paid_at: ''
-})
-const mergedRegisterForm = reactive({
-  company_account_id: null,
-  counterparty_account_id: null,
-  supplier_id: null,
-  items: [],
   remark: '',
   bank_receipt_attachment_id: null,
   paid_at: ''
@@ -498,14 +344,11 @@ const mergedPaymentRequestForm = reactive({
   paid_at: ''
 })
 const paymentRegisterSubmitting = ref(false)
-const selectedPaymentFiles = reactive({ single: null, mergedRequest: null, direct: null })
-const canRegisterPayment = computed(() => ['finance', 'system_admin'].includes(auth.user?.role_code))
-const totalRemainingAmount = computed(() => pendingOrders.value.reduce((sum, item) => sum + Number(item.remaining_amount || 0), 0))
+const selectedPaymentFiles = reactive({ single: null, mergedRequest: null })
+const canRegisterPayment = computed(() => ['finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
+const pendingRequestCount = computed(() => paymentRequests.value.filter((item) => item.status === 'pending_finance_payment').length)
+const pendingRequestAmount = computed(() => paymentRequests.value.filter((item) => item.status === 'pending_finance_payment').reduce((sum, item) => sum + Number(item.requested_amount || 0), 0))
 const totalPaidAmount = computed(() => records.value.reduce((sum, item) => sum + Number(item.amount || 0), 0))
-const mergedSupplierName = computed(() => mergedRegisterForm.items[0]?.supplier_name || '')
-const mergedActualAmount = computed(() =>
-  mergedRegisterForm.items.reduce((sum, item) => sum + Number(item.order_amount || 0) + Number(item.other_fee_amount || 0), 0)
-)
 const mergedPaymentRequestSupplierName = computed(() => mergedPaymentRequestForm.items[0]?.supplier_name || '')
 const mergedPaymentRequestRequestedTotal = computed(() =>
   mergedPaymentRequestForm.items.reduce((sum, item) => sum + Number(item.requested_amount || 0), 0)
@@ -515,15 +358,9 @@ const mergedPaymentRequestActualTotal = computed(() =>
 )
 
 const {
-  pagination: pendingPagination,
-  total: pendingTotal,
-  pageSizes,
-  pagedItems: pagedPendingOrders,
-  ensureVisible: ensurePendingVisible
-} = useLocalPagination(pendingOrders)
-const {
   pagination: requestPagination,
   total: requestTotal,
+  pageSizes,
   pagedItems: pagedPaymentRequests,
   ensureVisible: ensureRequestVisible
 } = useLocalPagination(paymentRequests)
@@ -533,10 +370,6 @@ const {
   pagedItems: pagedRecords,
   ensureVisible: ensureRecordVisible
 } = useLocalPagination(records)
-
-function pendingRowClassName({ row }) {
-  return focusedOrderId.value === row.id ? 'is-focused-row' : ''
-}
 
 function recordRowClassName({ row }) {
   return focusedRecordId.value === row.id ? 'is-focused-row' : ''
@@ -553,7 +386,6 @@ async function scrollToSection(sectionRef) {
 }
 
 async function applyFocus() {
-  focusedOrderId.value = null
   focusedRecordId.value = null
   focusedPaymentRequestId.value = null
   const focusId = parseFocusId(route.query.focusId)
@@ -572,13 +404,16 @@ async function applyFocus() {
   if ((focusType === 'payable_record' || !focusType) && records.value.some((item) => item.id === focusId)) {
     focusedRecordId.value = focusId
     ensureRecordVisible((item) => item.id === focusId)
-    await scrollToSection(recordSectionRef)
+    await scrollToSection(paymentRecordSectionRef)
     return
   }
-  if ((focusType === 'purchase_order' || !focusType) && pendingOrders.value.some((item) => item.id === focusId)) {
-    focusedOrderId.value = focusId
-    ensurePendingVisible((item) => item.id === focusId)
-    await scrollToSection(pendingSectionRef)
+  if (focusType === 'purchase_order') {
+    const target = paymentRequests.value.find((item) => item.purchase_order_id === focusId)
+    if (target) {
+      focusedPaymentRequestId.value = target.id
+      ensureRequestVisible((item) => item.id === target.id)
+      await scrollToSection(recordSectionRef)
+    }
   }
 }
 
@@ -598,16 +433,10 @@ function payablesUrl() {
 async function load() {
   const data = await get(payablesUrl())
   Object.assign(summary, data.summary || {})
-  pendingOrders.value = data.pending_orders || []
   paymentRequests.value = data.payment_requests || []
   records.value = data.records || []
-  selectedPendingOrders.value = []
 
   await applyFocus()
-}
-
-function handlePendingSelectionChange(selection) {
-  selectedPendingOrders.value = selection || []
 }
 
 function goToPurchaseOrder(orderId) {
@@ -673,38 +502,6 @@ function openPaymentRegister(row) {
   paymentRegisterVisible.value = true
 }
 
-function openMergedRegisterDialog() {
-  if (selectedPendingOrders.value.length < 1) {
-    ElMessage.warning('请至少选择一张同一供应商的采购订单')
-    return
-  }
-  const supplierIds = new Set(selectedPendingOrders.value.map((item) => item.supplier_id).filter(Boolean))
-  if (supplierIds.size !== 1) {
-    ElMessage.warning('合并付款仅支持同一供应商的采购订单')
-    return
-  }
-  mergedRegisterForm.supplier_id = selectedPendingOrders.value[0].supplier_id
-  mergedRegisterForm.items = selectedPendingOrders.value.map((item) => ({
-    purchase_order_id: item.id,
-    order_no: item.order_no,
-    supplier_id: item.supplier_id,
-        counterparty_account_id: item.counterparty_account_id,
-        supplier_name: item.supplier_name,
-    item_summary: item.item_summary,
-    items: item.items || [],
-    remaining_amount: Number(item.remaining_amount || 0),
-    order_amount: Number(item.remaining_amount || 0),
-    other_fee_amount: 0
-  }))
-  mergedRegisterForm.remark = ''
-  mergedRegisterForm.company_account_id = null
-  mergedRegisterForm.counterparty_account_id = null
-  mergedRegisterForm.bank_receipt_attachment_id = null
-  mergedRegisterForm.paid_at = currentDateTime()
-  selectedPaymentFiles.direct = null
-  mergedRegisterVisible.value = true
-}
-
 function currentDateTime() {
   const date = new Date()
   const pad = (value) => String(value).padStart(2, '0')
@@ -735,47 +532,6 @@ async function submitPaymentRegister() {
     await load()
   } catch (error) {
     ElMessage.error(error.message || '登记出账失败')
-  } finally {
-    paymentRegisterSubmitting.value = false
-  }
-}
-
-async function submitMergedRegister() {
-  if (!mergedRegisterForm.company_account_id) { ElMessage.warning('请选择企业收付款账户'); return }
-  if (paymentRegisterSubmitting.value) return
-  if (mergedRegisterForm.items.length < 1 || !mergedRegisterForm.supplier_id) {
-    ElMessage.warning('请先选择同一供应商的采购订单')
-    return
-  }
-  paymentRegisterSubmitting.value = true
-  try {
-    const uploadedId = await uploadPaymentFileIfNeeded('direct', 'purchase_order', mergedRegisterForm.items[0]?.purchase_order_id)
-    await post('/api/finance/payables/merged-register', {
-      supplier_id: mergedRegisterForm.supplier_id,
-      actual_amount: mergedActualAmount.value,
-      company_account_id: mergedRegisterForm.company_account_id,
-      counterparty_account_id: mergedRegisterForm.counterparty_account_id,
-      remark: mergedRegisterForm.remark,
-      bank_receipt_attachment_id: uploadedId || mergedRegisterForm.bank_receipt_attachment_id || null,
-      paid_at: mergedRegisterForm.paid_at || null,
-      items: mergedRegisterForm.items.map((item) => ({
-        purchase_order_id: item.purchase_order_id,
-        order_amount: Number(item.order_amount || 0),
-        other_fee_amount: Number(item.other_fee_amount || 0)
-      }))
-    })
-    ElMessage.success('合并付款已登记')
-    mergedRegisterVisible.value = false
-    mergedRegisterForm.supplier_id = null
-    mergedRegisterForm.items = []
-    mergedRegisterForm.remark = ''
-    mergedRegisterForm.company_account_id = null
-    mergedRegisterForm.counterparty_account_id = null
-    mergedRegisterForm.bank_receipt_attachment_id = null
-    mergedRegisterForm.paid_at = ''
-    await load()
-  } catch (error) {
-    ElMessage.error(error.message || '合并付款登记失败')
   } finally {
     paymentRegisterSubmitting.value = false
   }
@@ -812,10 +568,6 @@ async function submitMergedPaymentRequestRegister() {
   } finally {
     paymentRegisterSubmitting.value = false
   }
-}
-
-function exportPendingOrders() {
-  exportRowsToCsv('finance_pending_payables', pendingOrders.value)
 }
 
 function exportRecords() {

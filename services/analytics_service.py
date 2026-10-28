@@ -1258,8 +1258,8 @@ def _sales_cost_profit_monthly(ctx: AnalyticsContext, metric: AnalyticsMetricDef
                 total_quantity = sum((Decimal(item.quantity or 0) for item in order.items), Decimal("0"))
                 if matching_quantity > 0:
                     line_revenue = sum((Decimal(item.total_amount or 0) for item in matching), Decimal("0"))
-                    packaging_fee = sum((Decimal(item.packaging_fee or 0) for item in matching), Decimal("0"))
-                    bucket[month]["profit"] += shipped * (line_revenue - packaging_fee) / matching_quantity
+                    # 包装出库流水已计入成本；销售明细金额也不再单独含包装费。
+                    bucket[month]["profit"] += shipped * line_revenue / matching_quantity
                 # transport_fee is treated as a pass-through: order's existing profit
                 # calculation subtracts the same amount it includes in revenue.
     categories = [_month_bucket(month) for month in months]

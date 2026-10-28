@@ -79,7 +79,7 @@
         <el-table-column prop="transport_fee" label="运输费" width="110">
           <template #default="scope">{{ formatNumber(scope.row.transport_fee) }}</template>
         </el-table-column>
-        <el-table-column prop="packaging_fee" label="包装费" width="110">
+        <el-table-column prop="packaging_fee" label="包装成本参考" width="130">
           <template #default="scope">{{ formatNumber(scope.row.packaging_fee) }}</template>
         </el-table-column>
         <el-table-column prop="profit_amount" label="利润" width="120">

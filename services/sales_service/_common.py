@@ -282,7 +282,8 @@ def _build_order_items(
         packaging = _resolve_line_packaging(db, product_id=product_id, packaging_config_id=packaging_config_id)
         bag_count, packaging_unit_price, packaging_fee = _calculate_packaging_fee(quantity, packaging)
         product_amount = money(quantity * unit_price)
-        line_total = product_amount + packaging_fee
+        # 包装采购价用于内部成本核算，销售单价已包含包装，不重复向客户计费。
+        line_total = product_amount
         total_amount += line_total
         packaging_total += packaging_fee
         order_item = SalesOrderItem(

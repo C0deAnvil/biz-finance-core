@@ -14,7 +14,7 @@
       </el-table>
     </PageSection>
 
-    <PageSection title="自动打印任务" description="只有 Windows 打印队列确认完成后才记为已打印；驱动无法确认时显示待人工确认。">
+    <PageSection title="自动打印任务" description="已完成记录保留三天；待确认、失败和待重试任务继续保留，避免漏单。">
       <el-table :data="jobs" stripe>
         <el-table-column prop="id" label="任务编号" width="110" />
         <el-table-column prop="order_id" label="订单 ID" width="110" />
@@ -53,7 +53,7 @@
       </el-table>
     </PageSection>
 
-    <PageSection title="扫码业务记录" description="永久保留置货、发货结果和幂等请求号；重复扫码不会重复扣减库存。">
+    <PageSection title="扫码业务记录" description="置货、发货处理结果保留三天；正式出入库与发货凭证独立留存。">
       <el-table :data="scanEvents" stripe>
         <el-table-column label="时间" width="185"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
         <el-table-column prop="action" label="动作" width="100"><template #default="scope">{{ scope.row.action === 'placement' ? '整单置货' : '整单发货' }}</template></el-table-column>

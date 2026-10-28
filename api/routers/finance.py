@@ -54,7 +54,6 @@ from services.core import FINANCE_ROLE_CODES, complete_todos, create_cash_flow, 
 from services.finance_service import create_refund_record as create_refund_record_service, update_sales_cost as update_sales_cost_service, recognize_quality_cost as recognize_quality_cost_service
 from services.finance_overview import build_finance_overview
 from services.purchase_service import (
-    register_merged_purchase_payment as register_merged_purchase_payment_service,
     register_purchase_payment_requests_batch as register_purchase_payment_requests_batch_service,
     register_purchase_payment_request as register_purchase_payment_request_service,
 )
@@ -1036,62 +1035,17 @@ def list_payables(
     } if (record_order_ids or request_order_ids) else {}
     user_map = {row.id: row for row in db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()} if user_ids else {}
 
-    orders = (
-        db.execute(
-            select(PurchaseOrder)
-            .options(joinedload(PurchaseOrder.supplier), joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.product), joinedload(PurchaseOrder.items).joinedload(PurchaseOrderItem.material))
-            .where(PurchaseOrder.status.notin_(["draft", "cancelled", "rejected"]))
-            .order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc())
-        )
-        .unique()
-        .scalars()
-        .all()
-    )
-    paid_amount_map = _purchase_paid_amount_map(orders, db)
-    pending_orders = []
-    for row in orders:
-        total_amount = Decimal(row.total_amount or 0)
-        paid_amount = paid_amount_map.get(row.id, Decimal("0"))
-        remaining_amount = max(total_amount - paid_amount, Decimal("0"))
-        settlement_status = _settlement_status(total_amount, paid_amount)
-        if settlement_status == "settled":
-            continue
-        pending_orders.append(
-            {
-                "id": row.id,
-                "order_no": row.order_no,
-                "supplier_id": row.supplier_id,
-                "supplier_name": row.supplier.name if row.supplier else None,
-                "status": row.status,
-                "status_label": status_label(row.status),
-                "payment_type": row.payment_type,
-                "payment_type_label": payment_type_label(row.payment_type, module="purchase"),
-                "total_amount": float(total_amount),
-                "paid_amount": float(paid_amount),
-                "remaining_amount": float(remaining_amount),
-                "settlement_status": settlement_status,
-                "settlement_status_label": status_label(settlement_status),
-                "item_summary": "；".join(
-                    dict.fromkeys(
-                        (item.product.name if item.product else (item.material.name if item.material else None))
-                        for item in row.items
-                        if (item.product and item.product.name) or (item.material and item.material.name)
-                    )
-                ),
-                "item_count": len(row.items),
-                "items": _serialize_purchase_items(row),
-                "created_at": row.created_at.isoformat() if row.created_at else None,
-            }
-        )
+    # 应付只由采购已提交的付款申请产生。订单本身不作为财务待付款项。
+    paid_amount_map = _purchase_paid_amount_map(list(order_map.values()), db)
+    pending_requests = [row for row in payment_requests if row.status in {"pending_finance_payment", "pending_chairman_approval", "pending_manager_approval"}]
 
     return api_response(
         data={
             "summary": {
-                "pending_order_count": len(pending_orders),
+                "pending_request_count": len(pending_requests),
                 "record_count": len(records),
                 "payment_request_count": len(payment_requests),
             },
-            "pending_orders": pending_orders,
             "payment_requests": [
                 {
                     "id": row.id,
@@ -1104,6 +1058,9 @@ def list_payables(
                     "supplier_name": order_map[row.purchase_order_id].supplier.name if row.purchase_order_id in order_map and order_map[row.purchase_order_id].supplier else None,
                     "requested_amount": float(row.requested_amount or 0),
                     "order_amount": float(row.order_amount or 0),
+                    "purchase_total_amount": float(order_map[row.purchase_order_id].total_amount or 0) if row.purchase_order_id in order_map else 0,
+                    "purchase_paid_amount": float(paid_amount_map.get(row.purchase_order_id, Decimal("0"))),
+                    "purchase_remaining_amount": float(max(Decimal(order_map[row.purchase_order_id].total_amount or 0) - paid_amount_map.get(row.purchase_order_id, Decimal("0")), Decimal("0"))) if row.purchase_order_id in order_map else 0,
                     "other_fee_amount": float(row.other_fee_amount or 0),
                     "actual_amount": float(row.actual_amount or 0),
                     # arrival_status 列是建申请时的快照,质检通过后不会刷新,
@@ -1220,23 +1177,7 @@ def register_merged_purchase_payment(
     current_user: User = Depends(require_roles(*FINANCE_POSTING_ROLES)),
     db: Session = Depends(get_db),
 ):
-    response = register_merged_purchase_payment_service(payload, current_user, db)
-    order_ids = [item.purchase_order_id for item in payload.items]
-    if order_ids:
-        records = db.execute(
-            select(PayableRecord)
-            .where(PayableRecord.purchase_order_id.in_(order_ids))
-            .order_by(PayableRecord.id.desc())
-        ).scalars().all()
-        for record in records:
-            if payload.payment_method:
-                record.payment_method = payload.payment_method
-            if payload.bank_receipt_attachment_id:
-                record.bank_receipt_attachment_id = payload.bank_receipt_attachment_id
-            if payload.paid_at:
-                record.paid_at = payload.paid_at
-        db.commit()
-    return response
+    raise HTTPException(status_code=409, detail="请先由采购人员提交付款申请，再由财务登记出账")
 
 
 @router.post("/receivables/direct-register")

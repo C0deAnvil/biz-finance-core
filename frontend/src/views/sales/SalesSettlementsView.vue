@@ -26,7 +26,7 @@
               <el-table-column prop="display_specification" label="规格" width="140" />
               <el-table-column prop="packaging_name" label="包装" width="140" />
               <el-table-column prop="bag_count" label="袋数" width="100"><template #default="innerScope">{{ formatNumber(innerScope.row.bag_count) }}</template></el-table-column>
-              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
+              <el-table-column prop="packaging_fee" label="包装成本参考" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
               <el-table-column prop="quantity" label="订单数量" width="120">
                 <template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template>
               </el-table-column>
@@ -176,7 +176,7 @@
           <el-table-column prop="display_specification" label="规格" width="140" />
           <el-table-column prop="packaging_name" label="包装" width="140" />
           <el-table-column prop="bag_count" label="袋数" width="100"><template #default="scope">{{ formatNumber(scope.row.bag_count) }}</template></el-table-column>
-          <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="scope">{{ formatNumber(scope.row.packaging_fee) }}</template></el-table-column>
+          <el-table-column prop="packaging_fee" label="包装成本参考" width="110"><template #default="scope">{{ formatNumber(scope.row.packaging_fee) }}</template></el-table-column>
           <el-table-column prop="quantity" label="订单数量" width="120"><template #default="scope">{{ formatNumber(scope.row.quantity) }}</template></el-table-column>
           <el-table-column prop="shipped_quantity" label="已发货" width="120"><template #default="scope">{{ formatNumber(scope.row.shipped_quantity) }}</template></el-table-column>
           <el-table-column prop="unit_price" label="单价" width="120"><template #default="scope">{{ formatNumber(scope.row.unit_price) }}</template></el-table-column>
@@ -256,7 +256,7 @@
               <el-table-column prop="display_specification" label="规格" width="140" />
               <el-table-column prop="packaging_name" label="包装" width="140" />
               <el-table-column prop="bag_count" label="袋数" width="100"><template #default="innerScope">{{ formatNumber(innerScope.row.bag_count) }}</template></el-table-column>
-              <el-table-column prop="packaging_fee" label="包装费" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
+              <el-table-column prop="packaging_fee" label="包装成本参考" width="110"><template #default="innerScope">{{ formatNumber(innerScope.row.packaging_fee) }}</template></el-table-column>
               <el-table-column prop="quantity" label="订单数量" width="120"><template #default="innerScope">{{ formatNumber(innerScope.row.quantity) }}</template></el-table-column>
               <el-table-column prop="shipped_quantity" label="已发货" width="120"><template #default="innerScope">{{ formatNumber(innerScope.row.shipped_quantity) }}</template></el-table-column>
               <el-table-column prop="unit_price" label="单价" width="120"><template #default="innerScope">{{ formatNumber(innerScope.row.unit_price) }}</template></el-table-column>
