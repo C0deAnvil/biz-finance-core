@@ -809,7 +809,9 @@ async function prefillDemand(row) {
   selectedDemands.value = [row]
   const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material'
   const isLowStockDemand = row.demand_type === 'low_stock_product' || row.demand_type === 'low_stock_material'
-  const sourceItems = (row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length
+  // 生产人员提交的原料需求允许逐项转采购单。旧数据可能在同一 YL 下包含
+  // 多种原料，此处也只回填采购人员当前点击的这一行。
+  const sourceItems = row.source_type !== 'production_material_replenishment' && (row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length
     ? row.source_items
     : [row]
   form.items = sourceItems.map((item) => ({
@@ -882,7 +884,7 @@ async function mergeDemands() {
 
 async function fetchDemandSuppliers(row) {
   const isRawDemand = row.demand_type === 'raw_material' || row.demand_type === 'low_stock_material' || row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material'
-  if ((row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length) {
+  if (row.source_type !== 'production_material_replenishment' && (row.demand_type === 'sales_order_raw_material' || row.demand_type === 'low_stock_product_raw_material') && row.source_items?.length) {
     const optionLists = await Promise.all(
       row.source_items
         .filter((item) => item.material_id)

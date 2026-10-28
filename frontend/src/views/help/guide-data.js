@@ -67,15 +67,15 @@ export const roleGuides = [
   {
     key: 'finance', icon: '💰', name: '财务人员', color: '#a76f2b',
     summary: '审核客户订单并确认收款，管理应收、采购付款、企业账户与资金流水。',
-    startPath: '/sales/approvals', startLabel: '打开客户订单审批',
+    startPath: '/sales/approvals', startLabel: '打开客户订单收款确认',
     checklist: [
-      '客户订单提交后先进入客户订单审批，不应直接生成应收。',
+      '客户订单提交后先进入客户订单收款确认，不应直接生成应收。',
       '全款订单通过表示已收款；定金订单通过后尾款进入应收。',
       '应收发货或“转为应收”会放行后续流程并生成应收记录。',
       '采购付款申请按指定财务分派；未指定时所有财务可处理。',
       '登记收付款时选择企业账户，资金流水与企业账户余额同步。'
     ],
-    pages: [['客户订单审批', '/sales/approvals'], ['应收管理', '/finance/receivables'], ['应付管理', '/finance/payables'], ['收付款账户', '/finance/accounts'], ['资金流水', '/finance/cash-flows'], ['报销管理', '/finance/reimbursements']]
+    pages: [['客户订单收款确认', '/sales/approvals'], ['应收管理', '/finance/receivables'], ['应付管理', '/finance/payables'], ['收付款账户', '/finance/accounts'], ['资金流水', '/finance/cash-flows'], ['报销管理', '/finance/reimbursements']]
   },
   {
     key: 'manager', icon: '✅', name: '经理 / 董事长', color: '#7653ba',
@@ -198,7 +198,7 @@ export const moduleGroups = [
   { name: '库存', icon: '📦', pages: [['库存作业看板', '/inventory/queues'], ['库存状态', '/inventory/stocks'], ['库存转移', '/inventory/transfers'], ['库存盘点', '/inventory/stock-takes'], ['库存异常', '/inventory/exceptions']] },
   { name: '采购', icon: '🛒', pages: [['采购订单', '/purchases/orders'], ['采购付款申请', '/purchases/settlements'], ['采购到货', '/purchases/receipts'], ['采购退货', '/purchases/returns']] },
   { name: '生产与质检', icon: '🏗️', pages: [['配方管理', '/production/boms'], ['生产计划', '/production/plans'], ['生产任务', '/production/tasks'], ['领料审批', '/production/approvals'], ['质检任务', '/quality/tasks']] },
-  { name: '财务', icon: '💰', pages: [['客户订单审批', '/sales/approvals'], ['应收管理', '/finance/receivables'], ['应付管理', '/finance/payables'], ['收付款账户', '/finance/accounts'], ['资金流水', '/finance/cash-flows'], ['报销管理', '/finance/reimbursements']] },
+  { name: '财务', icon: '💰', pages: [['客户订单收款确认', '/sales/approvals'], ['应收管理', '/finance/receivables'], ['应付管理', '/finance/payables'], ['收付款账户', '/finance/accounts'], ['资金流水', '/finance/cash-flows'], ['报销管理', '/finance/reimbursements']] },
   { name: '系统管理', icon: '⚙️', pages: [['组织架构', '/admin/org-units'], ['用户管理', '/admin/users'], ['模块权限分配', '/admin/module-permissions'], ['打印设备与记录', '/admin/print-agents'], ['系统日志', '/admin/logs']] }
 ]
 

@@ -15,7 +15,7 @@
       <el-table-column label="状态" width="150"><template #default="scope">{{ scope.row.status === 'pending' ? '待采购处理' : scope.row.status === 'ordered' ? '已关联采购单' : '已关闭（无采购单）' }}</template></el-table-column>
       <el-table-column prop="purchase_order_no" label="采购订单" width="160" />
       <el-table-column prop="process_note" label="处理说明" min-width="150" show-overflow-tooltip />
-      <el-table-column v-if="purchaseMode" label="操作" width="100"><template #default="scope"><el-button v-if="scope.row.status === 'pending'" text type="primary" @click="openProcess(scope.row)">处理</el-button></template></el-table-column>
+      <el-table-column v-if="purchaseMode" label="操作" width="100" fixed="right"><template #default="scope"><el-button v-if="scope.row.status === 'pending'" text type="primary" @click="openProcess(scope.row)">处理</el-button></template></el-table-column>
     </el-table>
   </PageSection>
 

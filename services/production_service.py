@@ -128,7 +128,7 @@ def _is_special_material_request(task: ProductionTask, usage: ProductionMaterial
 
 
 def _create_raw_material_demands_for_task(db: Session, *, task, demand, raw_material_demands, current_user) -> list[str]:
-    """每次人工提交创建独立 YL 需求，已有数量和采购单保持独立。"""
+    """每种原料创建一条独立 YL 需求，采购可逐项下单或主动合并下单。"""
     import json
     from models import MaterialReplenishmentDemand
     from services.material_replenishment_service import SOURCE_TYPE, material_demand_progress
@@ -154,24 +154,62 @@ def _create_raw_material_demands_for_task(db: Session, *, task, demand, raw_mate
                                "required_quantity": item["required_quantity"],
                                "expected_available_quantity": item["stock_available_quantity"],
                                "shortage_quantity": float(quantity)})
-    batch = MaterialReplenishmentDemand(demand_no=next_business_no(db, "YL"), fulfillment_demand_id=demand.id,
-                                        created_by_id=current_user.id, items_json=shortage_items)
-    db.add(batch)
-    db.flush()
-    payload = {"sales_order_id": demand.sales_order_id, "sales_order_no": demand.source_order_no,
-               "fulfillment_demand_id": demand.id, "fulfillment_demand_no": demand.demand_no,
-               "raw_material_demand_no": batch.demand_no, "product_id": demand.product_id,
-               "product_name": demand.product.name if demand.product else None, "items": shortage_items}
-    recipients = resolve_workflow_recipients(db, "purchase", workflow="sales_order_material_replenishment",
-                                              business_type=SOURCE_TYPE, business_id=batch.id)
-    for user_id in recipients:
-        create_todo(db, title=f"待采购原料 {batch.demand_no}",
-                    description=f"原料补货需求 {batch.demand_no}，来源 {demand.demand_no}。|sales_order_material_replenishment:{json.dumps(payload, ensure_ascii=False)}",
-                    module="purchase", assigned_user_id=user_id, business_type=SOURCE_TYPE, business_id=batch.id, priority="high")
-    create_notification(db, title="新增原料采购补货需求", content=f"{demand.demand_no} 已提交独立原料补货需求 {batch.demand_no}。",
-                        module="purchase", recipient_user_ids=list(dict.fromkeys([*recipients, current_user.id])),
-                        created_by_id=current_user.id, category="warning")
-    return [batch.demand_no]
+    demand_nos = []
+    all_recipients = []
+    for shortage_item in shortage_items:
+        # MaterialReplenishmentDemand 与采购单是一对一关系，因此不能把多种原料
+        # 塞进同一批次，否则采购其中一种时会被迫同时提交其余原料。
+        batch = MaterialReplenishmentDemand(
+            demand_no=next_business_no(db, "YL"),
+            fulfillment_demand_id=demand.id,
+            created_by_id=current_user.id,
+            items_json=[shortage_item],
+        )
+        db.add(batch)
+        db.flush()
+        payload = {
+            "sales_order_id": demand.sales_order_id,
+            "sales_order_no": demand.source_order_no,
+            "fulfillment_demand_id": demand.id,
+            "fulfillment_demand_no": demand.demand_no,
+            "raw_material_demand_no": batch.demand_no,
+            "product_id": demand.product_id,
+            "product_name": demand.product.name if demand.product else None,
+            "items": [shortage_item],
+        }
+        recipients = resolve_workflow_recipients(
+            db,
+            "purchase",
+            workflow="sales_order_material_replenishment",
+            business_type=SOURCE_TYPE,
+            business_id=batch.id,
+        )
+        all_recipients.extend(recipients)
+        for user_id in recipients:
+            create_todo(
+                db,
+                title=f"待采购原料 {batch.demand_no}",
+                description=(
+                    f"原料补货需求 {batch.demand_no}，来源 {demand.demand_no}。"
+                    f"|sales_order_material_replenishment:{json.dumps(payload, ensure_ascii=False)}"
+                ),
+                module="purchase",
+                assigned_user_id=user_id,
+                business_type=SOURCE_TYPE,
+                business_id=batch.id,
+                priority="high",
+            )
+        demand_nos.append(batch.demand_no)
+    create_notification(
+        db,
+        title="新增原料采购补货需求",
+        content=f"{demand.demand_no} 已提交独立原料补货需求：{'、'.join(demand_nos)}。",
+        module="purchase",
+        recipient_user_ids=list(dict.fromkeys([*all_recipients, current_user.id])),
+        created_by_id=current_user.id,
+        category="warning",
+    )
+    return demand_nos
 
 
 def _create_raw_material_replenishment_notice(

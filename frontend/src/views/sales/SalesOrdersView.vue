@@ -88,10 +88,9 @@
           <el-button size="small" text type="info" @click="openTimeline(scope.row.id)">时间轴</el-button>
           <el-button v-if="canSubmitOrder(scope.row)" size="small" text type="success" @click="submitOrder(scope.row)">提交</el-button>
           <el-button v-if="canManageOrders" size="small" text type="primary" @click="editOrder(scope.row)" :disabled="!canEditOrder(scope.row)">编辑</el-button>
-          <el-button v-if="canFinanceApprove(scope.row)" size="small" text type="warning" @click="goApprove(scope.row)">审批</el-button>
+          <el-button v-if="canFinanceApprove(scope.row)" size="small" text type="warning" @click="goApprove(scope.row)">收款确认</el-button>
           <el-button v-if="canOpenFinanceEditDetail(scope.row)" size="small" text type="warning" @click="viewOrder(scope.row.id)">财务修改详情</el-button>
           <el-button v-if="canManageOrders" size="small" text type="danger" @click="deleteOrder(scope.row)" :disabled="!canDeleteOrder(scope.row)">删除</el-button>
-          <el-button v-if="canApprovePrice(scope.row)" size="small" text type="success" @click="openPriceApproval(scope.row)">改价审批</el-button>
           <el-button v-if="canManageOrders && !scope.row.is_completed_order" size="small" text type="warning" @click="completeOrder(scope.row)" :disabled="!scope.row.can_mark_completed">完结</el-button>
           <el-button v-if="canManageOrders" size="small" text type="success" @click="openAttachments(scope.row)">合同/发票</el-button>
         </template>
@@ -476,28 +475,6 @@
       </div>
     </el-drawer>
 
-    <el-dialog v-model="priceApprovalVisible" title="销售改价审批" width="760px">
-      <el-descriptions v-if="priceApprovalDetail" :column="2" border class="mb-12">
-        <el-descriptions-item label="订单号">{{ priceApprovalDetail.order_no }}</el-descriptions-item>
-        <el-descriptions-item label="客户">{{ priceApprovalDetail.customer?.name || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="经办人">{{ priceApprovalDetail.operator_name || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="状态">{{ priceApprovalDetail.status_label || statusLabel(priceApprovalDetail.status) }}</el-descriptions-item>
-        <el-descriptions-item label="整单备注" :span="2">{{ priceApprovalDetail.order_remark || '-' }}</el-descriptions-item>
-      </el-descriptions>
-      <el-table :data="priceApprovalDetail?.price_change_logs || []" border class="mb-12">
-        <el-table-column prop="product_name" label="产品" min-width="160" />
-        <el-table-column prop="standard_price" label="标准价" width="110"><template #default="scope">{{ formatMoney(scope.row.standard_price) }}</template></el-table-column>
-        <el-table-column prop="actual_price" label="订单价" width="110"><template #default="scope">{{ formatMoney(scope.row.actual_price) }}</template></el-table-column>
-        <el-table-column prop="remark" label="销售改价备注" min-width="180" />
-      </el-table>
-      <el-input v-model="priceApprovalForm.note" type="textarea" :rows="3" placeholder="可填写审批说明" />
-      <template #footer>
-        <el-button @click="priceApprovalVisible = false">取消</el-button>
-        <el-button type="danger" @click="submitPriceApproval('rejected')">驳回</el-button>
-        <el-button type="primary" @click="submitPriceApproval('approved')">通过</el-button>
-      </template>
-    </el-dialog>
-
     <el-drawer v-model="attachmentVisible" title="销售合同与发票附件" size="40%">
       <el-alert title="合同、发票上传后会同步通知财务和经理，便于后续入账审核与对账。" type="info" :closable="false" show-icon class="mb-12" />
       <AttachmentUploader v-if="attachmentOrder" business-type="sales_order" :business-id="attachmentOrder.id" :preset-types="['合同', '发票', '收款凭证', '发货单']" />
@@ -637,9 +614,6 @@ const attachmentOrder = ref(null)
 const editingId = ref(null)
 const selection = ref([])
 const dialogSubmitting = ref(false)
-const priceApprovalVisible = ref(false)
-const priceApprovalDetail = ref(null)
-const priceApprovalForm = reactive({ note: '' })
 // 默认停在草稿页:销售进页面第一件事通常是继续处理没提交完的单
 const activeStatusTab = ref('draft')
 const orderRecommendations = ref([])
@@ -649,7 +623,6 @@ const canManageOrders = computed(() => auth.user?.role_code === 'sales')
 // 与审批页 SalesApprovalsView 的 canApproveOrders 保持同一组角色,
 // 否则董事长在列表里看不到审批入口、进审批页却能审,入口不一致。
 const canFinanceApproveOrders = computed(() => ['finance', 'chairman', 'system_admin'].includes(auth.user?.role_code))
-const canFinanceApprovePrice = computed(() => ['finance', 'system_admin'].includes(auth.user?.role_code))
 const canSubmitOrderForm = computed(() => canManageOrders.value)
 const canEditOrderForm = computed(() => canManageOrders.value)
 const salesUsers = computed(() => {
@@ -809,19 +782,16 @@ function canDeleteOrder(row) {
   return canManageOrders.value && ['draft', 'rejected'].includes(row?.status)
 }
 
-function canApprovePrice(row) {
-  return canFinanceApprovePrice.value && (row?.price_approval_status === 'pending' || row?.status === 'pending_price_approval')
-}
 // 财务在订单列表里的入口从"改单"改为"审批":财务不再直接修改销售填的单,
 // 有问题一律驳回、由销售改后重新提交(与"驳回→修改→重提"这条路径合并,
 // 避免同一件事存在两套改单闭环)。
 // 只在 pending_confirmation 时显示 —— /api/sales/approvals/pending 只返回该状态,
 // 其他状态跳过去会是空列表。
 function canFinanceApprove(row) {
-  return canFinanceApproveOrders.value && row?.status === 'pending_confirmation'
+  return canFinanceApproveOrders.value && ['pending_confirmation', 'pending_price_approval'].includes(row?.status)
 }
 
-/** 跳到客户订单审批页并自动展开该单的审批弹窗(审批页已支持 focusId)。 */
+/** 跳到客户订单收款确认页并定位该单。 */
 function goApprove(row) {
   router.push({ path: '/sales/approvals', query: { focusId: row.id } })
 }
@@ -854,8 +824,8 @@ async function applyFocus() {
       return matched
     },
     async (matched) => {
-      if (String(route.query.focusType || '') === 'sales_order_price_approval' && canApprovePrice(matched)) {
-        await openPriceApproval(matched)
+      if (String(route.query.focusType || '') === 'sales_order_price_approval' && canFinanceApprove(matched)) {
+        goApprove(matched)
       } else {
         await viewOrder(matched.id)
       }
@@ -1215,24 +1185,6 @@ async function viewOrder(id) {
 
 function openTimeline(id) {
   router.push({ path: '/sales/order-timeline', query: { id } })
-}
-
-async function openPriceApproval(row) {
-  priceApprovalDetail.value = await get(`/api/sales/orders/${row.id}`)
-  priceApprovalForm.note = ''
-  priceApprovalVisible.value = true
-}
-
-async function submitPriceApproval(decision) {
-  if (!priceApprovalDetail.value?.id) return
-  await post(`/api/sales/orders/${priceApprovalDetail.value.id}/price-approval`, {
-    decision,
-    note: priceApprovalForm.note
-  })
-  ElMessage.success(decision === 'approved' ? '销售改价已审批通过' : '销售改价已驳回')
-  priceApprovalVisible.value = false
-  priceApprovalDetail.value = null
-  await load()
 }
 
 async function confirmFinanceEdit(row) {

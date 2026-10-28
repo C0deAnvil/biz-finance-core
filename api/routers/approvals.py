@@ -53,7 +53,7 @@ router = APIRouter(prefix="/approvals", tags=["approvals"])
 
 
 APPROVAL_TYPE_LABELS = {
-    "sales_order": "销售订单审批",
+    "sales_order": "客户订单收款确认",
     "sales_price_change": "销售改价审批",
     "purchase_order": "采购订单审批",
     "purchase_payment_request": "采购付款审批",
@@ -233,7 +233,34 @@ def _time_range_filter(start_date: str | None, end_date: str | None, column) -> 
 
 
 def _pending_sales_orders(current_user: User, db: Session) -> list[dict]:
-    return []
+    if not _can_act_on_approval_type(current_user, "sales_order"):
+        return []
+    query = select(SalesOrder).options(joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user)).where(
+        SalesOrder.status.in_(["pending_confirmation", "pending_price_approval"])
+    )
+    if _role_code(current_user) in {"finance", "finance_super"}:
+        query = query.where((SalesOrder.assigned_finance_user_id == current_user.id) |
+                            SalesOrder.assigned_finance_user_id.is_(None))
+    rows = db.execute(query.order_by(SalesOrder.updated_at.desc())).unique().scalars().all()
+    data = []
+    for row in rows:
+        discount_count = db.execute(select(func.count()).select_from(SalesOrderPriceChangeLog).where(
+            SalesOrderPriceChangeLog.sales_order_id == row.id,
+            SalesOrderPriceChangeLog.status == "pending",
+            SalesOrderPriceChangeLog.actual_price < SalesOrderPriceChangeLog.standard_price,
+        )).scalar_one()
+        data.append(_base_item(
+            approval_type="sales_order", business_id=row.id, module="sales",
+            title=f"待确认收款客户订单 {row.order_no}" + ("（含改价）" if discount_count else ""),
+            status=row.status, created_at=row.updated_at or row.created_at,
+            can_approve=False, can_reject=False, action_route="/sales/approvals",
+            action_query={"focusId": str(row.id), "focusType": "sales_order_approval"},
+            summary={"order_no": row.order_no,
+                     "responsible_name": (row.operator_user.full_name if row.operator_user else None) or (row.sales_user.full_name if row.sales_user else None),
+                     "approval_reason": "收款确认（含低于标准价的改价）" if discount_count else "客户订单收款确认",
+                     "total_amount": float(row.total_amount or 0)},
+        ))
+    return data
 
 
 def _pending_inventory_exceptions(current_user: User, db: Session) -> list[dict]:
@@ -267,76 +294,6 @@ def _pending_inventory_exceptions(current_user: User, db: Session) -> list[dict]
         ))
     return data
 
-
-def _pending_sales_price_changes(current_user: User, db: Session) -> list[dict]:
-    """直接从订单改价状态构造待审批项，避免旧待办缺失时改价审批无入口。"""
-    if not _can_act_on_approval_type(current_user, "sales_price_change"):
-        return []
-    rows = db.execute(
-        select(SalesOrder)
-        .options(joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user))
-        .where(
-            # 仅已提交的订单才可进入审批。草稿即使残留了历史改价状态，也不能生成审批项。
-            SalesOrder.status.in_(["pending_confirmation", "pending_price_approval"]),
-            (SalesOrder.price_approval_status == "pending") | (SalesOrder.status == "pending_price_approval")
-        )
-        .order_by(SalesOrder.updated_at.desc(), SalesOrder.id.desc())
-    ).unique().scalars().all()
-    data = []
-    for row in rows:
-        price_logs = db.execute(
-            select(SalesOrderPriceChangeLog)
-            .options(joinedload(SalesOrderPriceChangeLog.product))
-            .where(
-                SalesOrderPriceChangeLog.sales_order_id == row.id,
-                SalesOrderPriceChangeLog.status == "pending",
-                SalesOrderPriceChangeLog.actual_price < SalesOrderPriceChangeLog.standard_price,
-            )
-        ).scalars().all()
-        if not price_logs:
-            # 历史数据可能把高于标准价也置为待改价；仍给财务一个正常订单审批入口，
-            # 点击通过时服务层会自动清除这项错误前置。
-            data.append(
-                _base_item(
-                    approval_type="sales_order",
-                    business_id=row.id,
-                    module="sales",
-                    title=f"待审批客户订单 {row.order_no}",
-                    status="pending_confirmation",
-                    created_at=row.updated_at or row.created_at,
-                    can_approve=True,
-                    can_reject=True,
-                    summary={
-                        "order_no": row.order_no,
-                        "responsible_name": (row.operator_user.full_name if row.operator_user else None) or (row.sales_user.full_name if row.sales_user else None),
-                        "approval_reason": "客户订单已提交，待确认收款与放行",
-                        "total_amount": float(row.total_amount or 0),
-                    },
-                )
-            )
-            continue
-        data.append(
-            _base_item(
-                approval_type="sales_price_change",
-                business_id=row.id,
-                module="sales",
-                title=f"待审批销售改价 {row.order_no}",
-                status="pending_price_approval",
-                created_at=row.updated_at or row.created_at,
-                can_approve=True,
-                can_reject=True,
-                summary={
-                    "order_no": row.order_no,
-                    "responsible_name": (row.operator_user.full_name if row.operator_user else None) or (row.sales_user.full_name if row.sales_user else None),
-                    "approval_reason": "订单销售价低于标准价，需审批改价",
-                    "price_change_remark": "；".join(
-                        f"{item.product.name if item.product else '-'}：标准价 {float(item.standard_price or 0)}，销售价 {float(item.actual_price or 0)}，备注：{item.remark or '-'}"
-                        for item in price_logs
-                    ),
-                },
-            )
-        )
-    return data
 
 
 def _history_sales_orders(current_user: User, db: Session, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
@@ -989,6 +946,8 @@ def _pending_todo_approvals(current_user: User, db: Session) -> list[dict]:
     data = []
     for row in rows:
         approval_type = TODO_APPROVAL_TYPE_MAP.get(row.business_type)
+        if approval_type in {"sales_order", "sales_price_change"}:
+            continue  # 客户订单由统一收款确认列表展示，旧改价待办不再独立出现。
         if approval_type is None or row.business_id is None:
             continue
         if not _can_act_on_approval_type(current_user, approval_type):
@@ -1484,7 +1443,6 @@ def list_pending_approvals(current_user: User = Depends(get_current_user), db: S
         [
             *_pending_sales_orders(current_user, db),
             *_pending_inventory_exceptions(current_user, db),
-            *_pending_sales_price_changes(current_user, db),
             *_pending_purchase_orders(current_user, db),
             *_pending_purchase_payment_requests(current_user, db),
             *_pending_sales_receipt_requests(current_user, db),

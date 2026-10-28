@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, Notification, NotificationRecipient, PackagingConfig, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseRequest, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse, order_type_style
+from models import Inventory, InventoryOperationRequest, InventoryTransaction, Material, MaterialReplenishmentDemand, Notification, NotificationRecipient, PackagingConfig, PayableRecord, Product, ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderApproval, PurchaseOrderItem, PurchaseReceipt, PurchaseReceiptItem, PurchaseRequest, PurchaseReturn, RefundRecord, Role, SalesOrder, SalesOrderItem, Supplier, SupplierCatalogItem, TodoItem, User, Warehouse, order_type_style
 from models import FulfillmentDemand
 from responses import api_response
 from schemas.production import FulfillmentDemandUpdateRequest
@@ -941,6 +941,9 @@ def list_purchase_fulfillment_demands(
     finished_warehouse = get_finished_warehouse(db)
     purchase_in_transit = purchase_in_transit_map(db)
 
+    def _user_display_name(user: User | None) -> str | None:
+        return ((user.full_name or "").strip() or (user.username or "").strip()) if user else None
+
     def _shortage_level(shortage: float, available: float) -> str:
         """红=完全不足 / 黄=部分不足 / 绿=充足"""
         if shortage <= 0:
@@ -1031,6 +1034,7 @@ def list_purchase_fulfillment_demands(
                 "related_no": None,
                 "related_status_label": None,
                 "assigned_user_id": todo.assigned_user_id,
+                "submitted_by_name": "系统自动",
                 "process_note": raw_description.split("|replenishment:", 1)[0],
                 "cancel_reason": None,
                 "created_at": todo.created_at.isoformat() if todo.created_at else None,
@@ -1080,7 +1084,7 @@ def list_purchase_fulfillment_demands(
                 "related_no": None,
                 "related_status_label": None,
                 "assigned_user_id": todo.assigned_user_id,
-                "submitted_by_name": task.created_by.full_name if task and task.created_by else None,
+                "submitted_by_name": _user_display_name(task.created_by) if task else None,
                 "process_note": todo.description,
                 "cancel_reason": None,
                 "created_at": todo.created_at.isoformat() if todo.created_at else None,
@@ -1101,6 +1105,34 @@ def list_purchase_fulfillment_demands(
     ).scalars().all()
     sales_material_demands = []
     seen_material_sources = set()
+    material_batch_ids = {
+        todo.business_id for todo in sales_material_rows
+        if todo.business_type == "production_material_replenishment" and todo.business_id
+    }
+    material_batches = {
+        row.id: row
+        for row in db.execute(
+            select(MaterialReplenishmentDemand).where(MaterialReplenishmentDemand.id.in_(material_batch_ids or [-1]))
+        ).scalars().all()
+    }
+    legacy_demand_ids = {
+        todo.business_id for todo in sales_material_rows
+        if todo.business_type == "sales_order_material_replenishment" and todo.business_id
+    }
+    legacy_demands = {
+        row.id: row
+        for row in db.execute(
+            select(FulfillmentDemand).where(FulfillmentDemand.id.in_(legacy_demand_ids or [-1]))
+        ).scalars().all()
+    }
+    source_user_ids = {
+        row.created_by_id for row in [*material_batches.values(), *legacy_demands.values()]
+        if row.created_by_id
+    }
+    source_users = {
+        row.id: row
+        for row in db.execute(select(User).where(User.id.in_(source_user_ids or [-1]))).scalars().all()
+    }
     for todo in sales_material_rows:
         source_key = (todo.business_type, todo.business_id)
         if source_key in seen_material_sources:
@@ -1119,6 +1151,16 @@ def list_purchase_fulfillment_demands(
             confirmed = confirmed_material_quantities(raw_description, payload)
             payload["items"] = [{**item, "shortage_quantity": float(confirmed[int(item["material_id"])])}
                                 for item in payload.get("items", []) if int(item.get("material_id") or 0) in confirmed]
+        if todo.business_type == "production_material_replenishment":
+            source_row = material_batches.get(todo.business_id)
+        elif todo.business_type == "sales_order_material_replenishment":
+            source_row = legacy_demands.get(todo.business_id)
+        else:
+            source_row = None
+        submitted_by_name = (
+            _user_display_name(source_users.get(source_row.created_by_id))
+            if source_row and source_row.created_by_id else "系统自动"
+        )
         for item in payload.get("items", []):
             sales_material_demands.append(
                 {
@@ -1164,6 +1206,7 @@ def list_purchase_fulfillment_demands(
                     "related_no": None,
                     "related_status_label": None,
                     "assigned_user_id": todo.assigned_user_id,
+                    "submitted_by_name": submitted_by_name,
                     "process_note": raw_description.split(marker, 1)[0],
                     "cancel_reason": None,
                     "created_at": todo.created_at.isoformat() if todo.created_at else None,
@@ -1226,7 +1269,7 @@ def list_purchase_fulfillment_demands(
                 "related_no": resolve_demand_progress(db, row)["related_no"],
                 "related_status_label": resolve_demand_progress(db, row)["related_status_label"],
                 "assigned_user_id": row.assigned_user_id,
-                "submitted_by_name": row.created_by.full_name if row.created_by else None,
+                "submitted_by_name": _user_display_name(row.created_by),
                 "process_note": row.process_note,
                 "cancel_reason": row.cancel_reason,
                 "created_at": row.created_at.isoformat() if row.created_at else None,

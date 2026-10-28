@@ -528,7 +528,7 @@
   {
     "path": "/sales/approvals",
     "name": "sales-approvals",
-    "title": "客户订单审批",
+    "title": "客户订单收款确认",
     "group": "销售管理",
     "menu_roles": [
       "finance",

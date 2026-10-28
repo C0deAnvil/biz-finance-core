@@ -6,8 +6,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from api.routers.production import create_demand_raw_material_demands
-from models import Base, BOM, BOMItem, FulfillmentDemand, Material, MaterialReplenishmentDemand, Product, Role, User, Warehouse
+from models import Base, BOM, BOMItem, FulfillmentDemand, Material, MaterialReplenishmentDemand, Product, Role, TodoItem, User, Warehouse
+from schemas.purchases import PurchaseOrderItemInput
 from schemas.production import DemandRawMaterialDemandCreateRequest, RawMaterialDemandInput
+from services.purchase_service._common import _split_legacy_material_batch_for_purchase
 
 
 def test_production_replenishment_submission_creates_demand():
@@ -22,13 +24,15 @@ def test_production_replenishment_submission_creates_demand():
         purchaser = User(username="purchase_submit_test", full_name="采购测试", hashed_password="x", role_id=purchase_role.id)
         product = Product(product_code="CP-SUBMIT-TEST", name="测试产品", fulfillment_mode="production")
         material = Material(material_code="YL-SUBMIT-TEST", name="测试原料")
+        material_b = Material(material_code="YL-SUBMIT-TEST-B", name="测试原料B")
         warehouse = Warehouse(code="LANGFANG_RAW", name="廊坊工厂仓", warehouse_type="raw")
-        db.add_all([producer, purchaser, product, material, warehouse])
+        db.add_all([producer, purchaser, product, material, material_b, warehouse])
         db.flush()
         bom = BOM(product_id=product.id)
         db.add(bom)
         db.flush()
         db.add(BOMItem(bom_id=bom.id, material_id=material.id, standard_quantity=Decimal("2")))
+        db.add(BOMItem(bom_id=bom.id, material_id=material_b.id, standard_quantity=Decimal("3")))
         demand = FulfillmentDemand(
             demand_no="BH-SUBMIT-TEST", product_id=product.id, fulfillment_mode="production",
             shortage_quantity=Decimal("10"), required_quantity=Decimal("10"), status="pending",
@@ -41,15 +45,18 @@ def test_production_replenishment_submission_creates_demand():
             demand.id,
             DemandRawMaterialDemandCreateRequest(items=[
                 RawMaterialDemandInput(material_id=material.id, shortage_quantity=Decimal("20")),
+                RawMaterialDemandInput(material_id=material_b.id, shortage_quantity=Decimal("30")),
             ]),
             producer,
             db,
         )
         assert result["code"] == 200
-        assert len(result["data"]["raw_demand_nos"]) == 1
-        batch = db.scalar(select(MaterialReplenishmentDemand))
-        assert batch is not None
-        assert batch.items_json[0]["shortage_quantity"] == 20
+        assert len(result["data"]["raw_demand_nos"]) == 2
+        assert len(set(result["data"]["raw_demand_nos"])) == 2
+        batches = db.scalars(select(MaterialReplenishmentDemand).order_by(MaterialReplenishmentDemand.id)).all()
+        assert len(batches) == 2
+        assert [len(batch.items_json) for batch in batches] == [1, 1]
+        assert {batch.items_json[0]["material_id"] for batch in batches} == {material.id, material_b.id}
         assert db.get(FulfillmentDemand, demand.id).status == "pending_material"
         with pytest.raises(HTTPException) as error:
             create_demand_raw_material_demands(
@@ -62,3 +69,48 @@ def test_production_replenishment_submission_creates_demand():
             )
         assert error.value.status_code == 409
         assert "剩余缺口" in str(error.value.detail)
+
+
+def test_legacy_multi_material_batch_can_be_split_for_single_material_purchase():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        batch = MaterialReplenishmentDemand(
+            demand_no="YL-LEGACY-MULTI",
+            fulfillment_demand_id=1,
+            created_by_id=1,
+            items_json=[
+                {"material_id": 101, "material_name": "原料A", "shortage_quantity": 5},
+                {"material_id": 102, "material_name": "原料B", "shortage_quantity": 8},
+            ],
+        )
+        db.add(batch)
+        db.flush()
+        payload = {
+            "raw_material_demand_no": batch.demand_no,
+            "items": batch.items_json,
+        }
+        todo = TodoItem(
+            title="待采购原料",
+            description=f"旧需求|sales_order_material_replenishment:{__import__('json').dumps(payload, ensure_ascii=False)}",
+            module="purchase",
+            assigned_user_id=1,
+            business_type="production_material_replenishment",
+            business_id=batch.id,
+            status="pending",
+            priority="high",
+        )
+        db.add(todo)
+        db.flush()
+
+        selected = _split_legacy_material_batch_for_purchase(
+            db,
+            batch,
+            [PurchaseOrderItemInput(material_id=101, quantity=Decimal("5"), unit_price=Decimal("1"))],
+        )
+
+        assert selected.id != batch.id
+        assert [item["material_id"] for item in selected.items_json] == [101]
+        assert [item["material_id"] for item in batch.items_json] == [102]
+        assert '"material_id": 102' in todo.description
+        assert '"material_id": 101' not in todo.description

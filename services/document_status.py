@@ -504,7 +504,7 @@ def _sales_approval_stage(order: SalesOrder) -> tuple[str, str | None, str | Non
     if order.status == "rejected":
         return "rejected", "rejected", order.rejection_reason
     if order.status == "pending_price_approval":
-        return "pending_price_approval", None, "等待财务/负责人审批销售改价"
+        return "pending_price_approval", None, "等待财务确认收款及改价"
     if order.status == "pending_confirmation":
         return "pending_confirmation", None, "订单已提交，等待收款确认或流程放行"
     return "approved", None, None

@@ -6,7 +6,7 @@
       <el-col :span="8"><el-card shadow="hover"><div class="summary-label">已收回款总额</div><div class="summary-value">{{ formatNumber(receivedReceivableTotal) }}</div></el-card></el-col>
     </el-row>
 
-    <PageSection title="待回款客户订单" description="仅展示财务审批后已转为应收的客户订单与回款台账；刚提交、等待客户订单审批的单据不会出现在这里。">
+    <PageSection title="待回款客户订单" description="仅展示财务确认后已转为应收的客户订单与回款台账；刚提交、等待客户订单收款确认的单据不会出现在这里。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
       </template>

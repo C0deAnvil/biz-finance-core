@@ -971,7 +971,7 @@ def pending_approvals(
     query = (
         select(SalesOrder)
         .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user))
-        .where(SalesOrder.status == "pending_confirmation")
+        .where(SalesOrder.status.in_(["pending_confirmation", "pending_price_approval"]))
         .order_by(SalesOrder.updated_at.desc(), SalesOrder.id.desc())
     )
     # 已指定财务的订单只展示给该处理人；未指定的历史订单仍由全体财务承接。
@@ -1016,6 +1016,38 @@ def pending_approvals(
             for row in rows
         ]
     )
+
+
+@router.get("/approvals/history")
+def approval_history(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    keyword: str = Query(default=""),
+    current_user: User = Depends(require_roles("finance", "finance_super", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    query = select(SalesOrderApproval, SalesOrder, User).join(
+        SalesOrder, SalesOrderApproval.sales_order_id == SalesOrder.id
+    ).join(User, SalesOrderApproval.approver_user_id == User.id)
+    role_code = current_user.role.code if current_user.role else ""
+    if role_code in {"finance", "finance_super"}:
+        query = query.where(or_(SalesOrder.assigned_finance_user_id == current_user.id,
+                                SalesOrder.assigned_finance_user_id.is_(None),
+                                SalesOrderApproval.approver_user_id == current_user.id))
+    if keyword.strip():
+        query = query.where(SalesOrder.order_no.ilike(f"%{keyword.strip()}%"))
+    total = db.execute(select(func.count()).select_from(query.subquery())).scalar_one()
+    records = db.execute(query.order_by(SalesOrderApproval.approved_at.desc(), SalesOrderApproval.id.desc())
+                         .offset((page - 1) * page_size).limit(page_size)).all()
+    return api_response(data={"total": total, "page": page, "page_size": page_size, "items": [
+        {"id": approval.id, "order_id": order.id, "order_no": order.order_no,
+         "decision": approval.decision, "note": approval.note,
+         "approval_mode": "转为应收" if (approval.note or "").startswith("转为应收") else "收款确认",
+         "order_amount": float(order.total_amount or 0),
+         "approver_name": approver.full_name or approver.username,
+         "approved_at": approval.approved_at.isoformat() if approval.approved_at else None}
+        for approval, order, approver in records
+    ]})
 
 
 @router.post("/orders/{order_id}/approve")

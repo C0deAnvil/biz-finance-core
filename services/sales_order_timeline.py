@@ -456,10 +456,10 @@ def build_sales_order_tasks(db: Session, order: SalesOrder, history: list) -> tu
 
     finance_children = [_task(f"price-{p.id}", "改价审批", max(p.created_at, submitted),
                               p.approved_at, lane="approval") for p in price_logs]
-    finance_children += [_task(f"approval-{a.id}", "客户订单审批" if a.decision == "approved" else "客户订单审批（驳回）",
+    finance_children += [_task(f"approval-{a.id}", "客户订单收款确认" if a.decision == "approved" else "客户订单收款确认（驳回）",
                                submitted, a.approved_at, lane="finance") for a in approvals]
     if not approvals and (order.approved_at or order.status == "pending_confirmation"):
-        finance_children.append(_task("approval-pending", "客户订单审批 / 收款确认",
+        finance_children.append(_task("approval-pending", "客户订单收款确认 / 收款确认",
                                       submitted, order.approved_at, lane="finance"))
     received = db.scalars(select(ReceivableRecord).where(
         ReceivableRecord.sales_order_id == order.id

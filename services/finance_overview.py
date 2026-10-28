@@ -227,7 +227,7 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
             finance_tasks.append({
                 "id": row.id, "no": row.order_no, "date": task_date.isoformat(),
                 "party": row.customer.name if row.customer else "-", "amount": _money(row.total_amount),
-                "name": "客户订单审批" if row.status == "pending_confirmation" else "销售改价审批",
+                "name": "客户订单收款确认（含改价）" if row.price_approval_status == "pending" else "客户订单收款确认",
                 "status": status_label(row.status), "route": "/sales/approvals", "focus_type": "sales_order",
             })
     pending_payments = db.execute(select(PurchasePaymentRequest).where(

@@ -4,7 +4,7 @@ const STATUS_LABELS = {
   pending: '待处理',
   unrequested: '未申请拨款',
   pending_confirmation: '待确认',
-  pending_price_approval: '待财务改价审批',
+  pending_price_approval: '待收款确认（含改价）',
   pending_approval: '待审批',
   pending_purchase_confirm: '待采购确认',
   pending_shipment: '待发货',

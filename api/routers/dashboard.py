@@ -110,7 +110,7 @@ def _todo_route(todo: TodoItem) -> tuple[str, dict]:
     if todo.business_type == "sales_receipt_request" and todo.business_id is not None:
         return "/finance/receivables", {"focusId": str(todo.business_id), "focusType": todo.business_type, "mode": "register"}
     if todo.business_type == "sales_order_price_approval" and todo.business_id is not None:
-        return "/sales/orders", {"focusId": str(todo.business_id), "focusType": "sales_order_price_approval", "mode": "approve"}
+        return "/sales/approvals", {"focusId": str(todo.business_id), "focusType": "sales_order_approval", "mode": "approve"}
     if todo.business_type == "sales_order_finance_edit_sales_confirm" and todo.business_id is not None:
         return "/sales/orders", {"focusId": str(todo.business_id), "focusType": todo.business_type, "mode": "confirm"}
     if todo.business_type == "sales_order_finance_edit_inventory_confirm" and todo.business_id is not None:

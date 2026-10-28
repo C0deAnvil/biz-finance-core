@@ -572,6 +572,74 @@ def _validate_material_batches_items(batches, items):
         raise HTTPException(status_code=409, detail="采购数量必须等于所选原料补货需求的合计数量；剩余缺口请另提补货需求")
 
 
+def _split_legacy_material_batch_for_purchase(db: Session, batch: MaterialReplenishmentDemand, items):
+    """兼容旧数据：从包含多种原料的 YL 批次中拆出本次采购的原料。
+
+    新需求已经按一种原料一条 YL 创建；此逻辑只处理升级前尚未采购的多原料批次。
+    原批次继续承载未采购明细，新批次承载本次采购明细并关联采购单。
+    """
+    batch_items = list(batch.items_json or [])
+    if len(batch_items) <= 1:
+        _validate_material_batches_items([batch], items)
+        return batch
+
+    supplied = {}
+    for item in items:
+        if item.product_id or not item.material_id:
+            raise HTTPException(status_code=409, detail="原料补货采购单只能包含来源需求中的原料")
+        supplied[int(item.material_id)] = supplied.get(int(item.material_id), Decimal("0")) + Decimal(str(item.quantity))
+    required = {
+        int(item["material_id"]): Decimal(str(item.get("shortage_quantity") or 0))
+        for item in batch_items
+        if item.get("material_id")
+    }
+    unknown = set(supplied) - set(required)
+    if unknown:
+        raise HTTPException(status_code=409, detail="采购明细包含不属于该补货需求的原料")
+    if not supplied:
+        raise HTTPException(status_code=409, detail="采购订单至少需要包含一项该需求的原料")
+    for material_id, quantity in supplied.items():
+        if quantity != required[material_id]:
+            raise HTTPException(
+                status_code=409,
+                detail="本次采购数量必须等于所选原料的补货需求数量；如需调整请重新提交补货需求",
+            )
+    if set(supplied) == set(required):
+        return batch
+
+    selected_items = [item for item in batch_items if int(item.get("material_id") or 0) in supplied]
+    remaining_items = [item for item in batch_items if int(item.get("material_id") or 0) not in supplied]
+    selected_batch = MaterialReplenishmentDemand(
+        demand_no=next_business_no(db, "YL"),
+        fulfillment_demand_id=batch.fulfillment_demand_id,
+        created_by_id=batch.created_by_id,
+        items_json=selected_items,
+    )
+    db.add(selected_batch)
+    batch.items_json = remaining_items
+
+    marker = "|sales_order_material_replenishment:"
+    pending_todos = db.scalars(
+        select(TodoItem).where(
+            TodoItem.business_type == "production_material_replenishment",
+            TodoItem.business_id == batch.id,
+            TodoItem.status != "completed",
+        )
+    ).all()
+    for todo in pending_todos:
+        description = todo.description or ""
+        prefix = description.split(marker, 1)[0]
+        try:
+            payload = json.loads(description.split(marker, 1)[1]) if marker in description else {}
+        except (TypeError, ValueError):
+            payload = {}
+        payload["raw_material_demand_no"] = batch.demand_no
+        payload["items"] = remaining_items
+        todo.description = f"{prefix}{marker}{json.dumps(payload, ensure_ascii=False)}"
+    db.flush()
+    return selected_batch
+
+
 def _validate_purchase_order_replenishment_items(
     db: Session,
     *,
@@ -692,8 +760,8 @@ def _load_purchase_replenishment_source(
         if batch.purchase_order_id and batch.purchase_order_id != existing_order_id:
             raise HTTPException(status_code=409, detail="该原料补货需求已关联采购单，不能重复建单")
         if validate_items:
-            _validate_material_batches_items([batch], items)
-        return {"source_type": source_type, "source_id": source_id, "batch": batch,
+            batch = _split_legacy_material_batch_for_purchase(db, batch, items)
+        return {"source_type": source_type, "source_id": batch.id, "batch": batch,
                 "payload": {"items": batch.items_json}}
 
     existing_order = db.execute(

@@ -432,10 +432,10 @@ def _record_approval_payment_and_receivable(
 ) -> tuple[Decimal, Decimal]:
     """财务通过即确认已收款；尚未到账部分建立应收计划，而非销售再次发起收款确认。"""
     payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
-    received_amount = Decimal(order.total_amount or 0) if payment_type == "全款发货" else (
+    received_amount = Decimal("0") if convert_to_receivable else (Decimal(order.total_amount or 0) if payment_type == "全款发货" else (
         min(Decimal(order.deposit_amount or 0), Decimal(order.total_amount or 0))
         if payment_type == "先收定金后收尾款" else Decimal("0")
-    )
+    ))
     if received_amount > 0:
         stage = "deposit" if payment_type == "先收定金后收尾款" else "pre_shipment_full"
         db.add(ReceivableRecord(
@@ -467,42 +467,34 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
     order = _load_order(db, order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="客户订单不存在")
-    # 兼容旧逻辑：以前“高于标准价”也会误建改价审批。发现所有待审改价均非降价时，
-    # 自动解除该错误前置并恢复到客户订单审批，避免历史订单永久卡住。
+    if order.status not in {"pending_confirmation", "pending_price_approval"}:
+        raise HTTPException(status_code=409, detail="当前订单状态不允许确认收款")
+    role_code = current_user.role.code if current_user.role else ""
+    if (role_code in {"finance", "finance_super"}
+            and order.assigned_finance_user_id is not None
+            and order.assigned_finance_user_id != current_user.id):
+        raise HTTPException(status_code=403, detail="该客户订单已指定由其他财务人员处理")
     pending_price_logs = db.execute(
         select(SalesOrderPriceChangeLog).where(
             SalesOrderPriceChangeLog.sales_order_id == order.id,
             SalesOrderPriceChangeLog.status == "pending",
         )
     ).scalars().all()
-    requires_price_approval = any(
-        Decimal(item.actual_price or 0) < Decimal(item.standard_price or 0)
-        for item in pending_price_logs
-    )
-    if order.price_approval_status == "pending" and not requires_price_approval:
+    discount_logs = [item for item in pending_price_logs
+                     if Decimal(item.actual_price or 0) < Decimal(item.standard_price or 0)]
+    approval_time = now_local()
+    if discount_logs:
+        order.price_approval_status = "approved" if payload.decision == "approved" else "rejected"
+        order.price_approved_by_id = current_user.id
+        order.price_approved_at = approval_time
+    elif order.price_approval_status == "pending":
         order.price_approval_status = "not_required"
-        if order.status == "pending_price_approval":
-            order.status = "pending_confirmation"
-        complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
-    if order.status != "pending_confirmation":
-        raise HTTPException(status_code=409, detail="当前订单状态不允许审批")
-    role_code = current_user.role.code if current_user.role else ""
-    # 指定了财务处理人时，其他财务既不能在审批列表看到，也不能绕过列表直接审批。
-    # 董事长和系统管理员保留监管/代审权限。
-    if (
-        role_code in {"finance", "finance_super"}
-        and order.assigned_finance_user_id is not None
-        and order.assigned_finance_user_id != current_user.id
-    ):
-        raise HTTPException(status_code=403, detail="该客户订单已指定由其他财务人员处理")
-    if order.price_approval_status == "pending" and requires_price_approval:
-        raise HTTPException(status_code=409, detail="当前订单存在待审批改价，请先在审批中心完成“销售改价审批”后再推进")
+    for item in pending_price_logs:
+        item.status = ("approved" if payload.decision == "approved" else "rejected") if item in discount_logs else "not_required"
+        item.approved_by_id = current_user.id
+        item.approved_at = approval_time
 
-    payment_type = payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales")
-    # 改造前这里要求定金/全款必须先到账才允许审批,把两件事强行绑在一起,
-    # 导致"未收款就无法审批、不审批就不能置货"的死锁。
-    # 财务审批通过即代表本次应收款已获确认：全款单登记全款、定金单登记定金，
-    # 未到账的尾款或应收发货金额则建立应收计划。收款不再作为审批前置条件。
+    # 收款确认由订单收款方式确定实收及应收；主动转应收时实收始终为零。
     actual_amount = Decimal("0")
 
     db.add(
@@ -511,7 +503,8 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
             approver_user_id=current_user.id,
             decision=payload.decision,
             voucher_amount=actual_amount,
-            note=payload.note,
+            note=(f"转为应收放行；{payload.note or ''}" if payload.convert_to_receivable else payload.note),
+            approved_at=approval_time,
         )
     )
 
@@ -530,7 +523,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
     if payload.decision == "approved":
         order.status = "pending_shipment"
         order.approved_by_id = current_user.id
-        order.approved_at = now_local()
+        order.approved_at = approval_time
         order.rejection_reason = None
         # 财务审批通过 → 占用成品库存(仅占用实有部分,缺口留待置货环节由库管提补货需求)
         occupy_inventory_for_order(db, order=order)
@@ -577,8 +570,9 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
                 )
         create_notification(
             db,
-            title="客户订单审批通过",
-            content=f"客户订单 {order.order_no} 已确认到账并进入待发货阶段。",
+            title="客户订单已转应收" if payload.convert_to_receivable else "客户订单收款确认通过",
+            content=(f"客户订单 {order.order_no} 已转为应收并进入置货流程。" if payload.convert_to_receivable
+                     else f"客户订单 {order.order_no} 已完成收款确认并进入置货流程。"),
             module="sales",
             recipient_user_ids=list(dict.fromkeys([order.sales_user_id, *inventory_user_ids, *finance_recipient_ids])),
             created_by_id=current_user.id,
@@ -602,6 +596,7 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
         )
 
     complete_todos(db, business_type="sales_order_approval", business_id=order.id)
+    complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
     write_operation_log(
         db,
         user_id=current_user.id,
@@ -621,73 +616,9 @@ def approve_order(order_id: int, payload: SalesApprovalRequest, current_user: Us
 
 
 def approve_sales_price_change(order_id: int, payload, current_user: User, db: Session):
-    order = _load_order(db, order_id)
-    if order is None:
-        raise HTTPException(status_code=404, detail="客户订单不存在")
-    if order.price_approval_status != "pending" and order.status != "pending_price_approval":
-        raise HTTPException(status_code=409, detail="当前客户订单没有待审批的改价")
-    logs = db.execute(
-        select(SalesOrderPriceChangeLog).where(
-            SalesOrderPriceChangeLog.sales_order_id == order.id,
-            SalesOrderPriceChangeLog.status == "pending",
-        )
-    ).scalars().all()
-    if not logs:
-        raise HTTPException(status_code=409, detail="当前客户订单没有待审批的改价明细")
+    """旧接口保留明确提示；改价只能随订单收款确认一起处理。"""
+    raise HTTPException(status_code=409, detail="改价已合并到客户订单收款确认，请在该页面确认收款或转为应收")
 
-    now = now_local()
-    if payload.decision == "approved":
-        order.price_approval_status = "approved"
-        order.price_approved_by_id = current_user.id
-        order.price_approved_at = now
-        if order.status == "pending_price_approval":
-            order.status = "pending_confirmation"
-        for row in logs:
-            row.status = "approved"
-            row.approved_by_id = current_user.id
-            row.approved_at = now
-        create_notification(
-            db,
-            title="销售改价审批通过",
-            content=f"客户订单 {order.order_no} 的销售改价已通过财务审批，可继续推进收款确认或发货流程。{payload.note or ''}",
-            module="sales",
-            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, order.operator_user_id, *_manager_chairman_user_ids(db)])),
-            created_by_id=current_user.id,
-            category="success",
-        )
-        if payment_type_label(order.payment_type, deposit_amount=order.deposit_amount, module="sales") == "先发货后收款":
-            _route_order_to_inventory_shipment(db, order=order, current_user=current_user)
-    else:
-        order.price_approval_status = "rejected"
-        order.status = "rejected"
-        order.rejection_reason = payload.note or "销售改价审批未通过"
-        # 同上:驳回即释放占用,避免库存被未生效订单锁死
-        release_order_reservation(db, order=order)
-        for row in logs:
-            row.status = "rejected"
-            row.approved_by_id = current_user.id
-            row.approved_at = now
-        create_notification(
-            db,
-            title="销售改价审批驳回",
-            content=f"客户订单 {order.order_no} 的销售改价被驳回，请销售调整订单。{payload.note or ''}",
-            module="sales",
-            recipient_user_ids=list(dict.fromkeys([order.sales_user_id, order.operator_user_id, *_manager_chairman_user_ids(db)])),
-            created_by_id=current_user.id,
-            category="warning",
-        )
-
-    complete_todos(db, business_type="sales_order_price_approval", business_id=order.id)
-    write_operation_log(
-        db,
-        user_id=current_user.id,
-        module="sales",
-        action="approve_sales_price_change",
-        content=f"审批客户订单 {order.order_no} 的销售改价",
-        after_data={"decision": payload.decision, "status": order.status, "price_approval_status": order.price_approval_status},
-    )
-    db.commit()
-    return api_response(data={"id": order.id, "status": order.status, "price_approval_status": order.price_approval_status})
 
 
 def finance_edit_order(order_id: int, payload, current_user: User, db: Session):
