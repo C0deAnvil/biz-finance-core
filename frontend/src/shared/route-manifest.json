@@ -1025,6 +1025,15 @@
     ]
   },
   {
+    "path": "/finance/overview",
+    "name": "finance-overview",
+    "title": "财务经营概览",
+    "group": "财务管理",
+    "menu_roles": ["finance", "finance_super", "manager", "chairman", "system_admin"],
+    "preload_roles": ["finance", "manager", "chairman", "system_admin", "finance_super"],
+    "warmers": []
+  },
+  {
     "path": "/finance/receivables",
     "name": "finance-receivables",
     "title": "应收管理",

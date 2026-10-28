@@ -52,6 +52,7 @@ from schemas.finance import (
 )
 from services.core import FINANCE_ROLE_CODES, complete_todos, create_cash_flow, create_notification, create_todo, write_operation_log, _role_user_ids
 from services.finance_service import create_refund_record as create_refund_record_service, update_sales_cost as update_sales_cost_service, recognize_quality_cost as recognize_quality_cost_service
+from services.finance_overview import build_finance_overview
 from services.purchase_service import (
     register_merged_purchase_payment as register_merged_purchase_payment_service,
     register_purchase_payment_requests_batch as register_purchase_payment_requests_batch_service,
@@ -1508,6 +1509,20 @@ def list_cash_flows(
             for row in rows
         ]
     )
+
+
+@router.get("/overview")
+def finance_operating_overview(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)),
+    db: Session = Depends(get_db),
+):
+    if date_from > date_to:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+    return api_response(data=build_finance_overview(
+        db, date_from=date_from, date_to=date_to, current_user=current_user,
+    ))
 
 
 @router.get("/reports/summary")

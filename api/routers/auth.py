@@ -53,6 +53,8 @@ def build_user_profile(user: User, db: Session) -> UserProfile:
     # 导致路由守卫把页面重定向到首页，看起来像是“我的应收款”页面空白。
     if user.role.code == "sales" and "/sales/my-receivables" in base_paths:
         allowed_paths.add("/sales/my-receivables")
+    if user.role.code in {"finance", "finance_super"} and "/finance/overview" in base_paths:
+        allowed_paths.add("/finance/overview")
     navigation = filter_navigation_by_paths(base_navigation, allowed_paths)
     return UserProfile(
         id=user.id,
