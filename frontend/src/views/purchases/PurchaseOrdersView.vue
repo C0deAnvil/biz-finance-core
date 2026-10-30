@@ -253,7 +253,7 @@
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button v-if="canManageOrders" type="primary" @click="submit">提交</el-button>
+        <el-button v-if="canManageOrders" type="primary" :loading="submitting" :disabled="submitting" @click="submit">提交</el-button>
       </template>
     </el-dialog>
 
@@ -446,6 +446,7 @@ const selectedDemands = ref([])
 const mergedDemandRows = ref([])
 const mergeMode = ref(false)
 const editingId = ref(null)
+const submitting = ref(false)
 const canManageOrders = computed(() => auth.user?.role_code === 'purchase')
 const canManageSettings = computed(() => ['purchase', 'manager', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
 const purchaseUsers = computed(() => {
@@ -978,30 +979,35 @@ async function cancelDemand(row) {
 }
 
 async function submit() {
-  if (!form.target_warehouse_id) {
-    ElMessage.warning('请选择目标仓库')
-    return
-  }
-  if (!form.expected_arrival_date) {
-    ElMessage.warning('请选择预计到货日期')
-    return
-  }
-  if (activeDemand.value && !demandSupplierOptions.value.length) {
-    ElMessage.warning('当前补货商品未维护可供货供应商名录，不能直接从补货需求转建采购单')
-    return
-  }
-  if (mergeMode.value && !mergeableDemandOptions.value.length) {
-    ElMessage.warning('所选补货需求未维护共同可供货供应商名录，不能合并建单')
-    return
-  }
-  if (form.supplier_id) {
-    await loadSupplierCatalog(form.supplier_id)
-    if (form.items.some((item) => !item.target_id || !itemOptions(item).some((option) => option.id === item.target_id))) {
-      ElMessage.warning('采购明细必须选择有效的产品、原料或包装')
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    if (!form.supplier_id) {
+      ElMessage.warning('请选择供应商')
       return
     }
-  }
-  const payloadBase = {
+    if (!form.target_warehouse_id) {
+      ElMessage.warning('请选择目标仓库')
+      return
+    }
+    if (!form.expected_arrival_date) {
+      ElMessage.warning('请选择预计到货日期')
+      return
+    }
+    if (activeDemand.value && !demandSupplierOptions.value.length) {
+      ElMessage.warning('当前补货商品未维护可供货供应商名录，不能直接从补货需求转建采购单')
+      return
+    }
+    if (mergeMode.value && !mergeableDemandOptions.value.length) {
+      ElMessage.warning('所选补货需求未维护共同可供货供应商名录，不能合并建单')
+      return
+    }
+    await loadSupplierCatalog(form.supplier_id)
+    if (form.items.some((item) => !item.target_id || !itemOptions(item).some((option) => option.id === item.target_id))) {
+      ElMessage.warning('采购明细必须选择有效的产品、原料或包装；请确认该供应商已维护此物料的可供货名录')
+      return
+    }
+    const payloadBase = {
     supplier_id: form.supplier_id,
     operator_user_id: form.operator_user_id || auth.user?.id,
     payment_type: form.payment_type,
@@ -1015,14 +1021,14 @@ async function submit() {
       unit_price: item.unit_price
     }))
   }
-  let payload
-  if (mergeMode.value) {
-    payload = {
+    let payload
+    if (mergeMode.value) {
+      payload = {
       ...payloadBase,
       replenishment_sources: mergedDemandRows.value.map((row) => demandSourcePayload(row))
     }
-  } else {
-    payload = {
+    } else {
+      payload = {
       ...payloadBase,
       replenishment_source_type: (activeDemand.value?.source_type === 'sales_order_material_replenishment' || activeDemand.value?.source_type === 'production_material_replenishment') || activeDemand.value?.source_type === 'low_stock_product_material_replenishment'
         ? activeDemand.value.source_type
@@ -1043,19 +1049,24 @@ async function submit() {
     }
   }
 
-  if (editingId.value) {
-    const result = await put(`/api/purchases/orders/${editingId.value}`, payload)
-    ElMessage.success(`采购单已更新：${result.order_no}`)
-  } else {
-    const result = await post('/api/purchases/orders', payload)
-    ElMessage.success(`采购单已创建：${result.order_no}`)
+    if (editingId.value) {
+      const result = await put(`/api/purchases/orders/${editingId.value}`, payload)
+      ElMessage.success(`采购单已更新：${result.order_no}`)
+    } else {
+      const result = await post('/api/purchases/orders', payload)
+      ElMessage.success(`采购单已创建：${result.order_no}`)
+    }
+    dialogVisible.value = false
+    resetForm()
+    if (route.query.focusId || route.query.focusType) {
+      await router.replace({ path: '/purchases/orders', query: {} })
+    }
+    await load()
+  } catch (error) {
+    ElMessage.error(`采购订单提交失败：${error?.message || '请稍后重试'}`)
+  } finally {
+    submitting.value = false
   }
-  dialogVisible.value = false
-  resetForm()
-  if (route.query.focusId || route.query.focusType) {
-    await router.replace({ path: '/purchases/orders', query: {} })
-  }
-  await load()
 }
 
 async function viewOrder(id) {
