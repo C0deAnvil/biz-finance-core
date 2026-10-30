@@ -106,9 +106,9 @@
         </el-table-column>
         <el-table-column label="原料状况" width="110">
           <template #default="scope">
-            <el-tag v-if="scope.row.shortage_level === 'green'" type="success" effect="dark">绿·原料充足</el-tag>
-            <el-tag v-else-if="scope.row.shortage_level === 'yellow'" type="warning" effect="dark">黄·部分不足</el-tag>
-            <el-tag v-else-if="scope.row.shortage_level === 'red'" type="danger" effect="dark">红·原料不足</el-tag>
+            <el-tag v-if="scope.row.shortage_level === 'green'" type="success" effect="dark">原料充足</el-tag>
+            <el-tag v-else-if="scope.row.shortage_level === 'yellow'" type="warning" effect="dark">部分不足</el-tag>
+            <el-tag v-else-if="scope.row.shortage_level === 'red'" type="danger" effect="dark">原料不足</el-tag>
             <el-tag v-else type="info" effect="plain">-</el-tag>
           </template>
         </el-table-column>
@@ -265,7 +265,7 @@
       </template>
       <template #footer>
         <el-button @click="materialProgressVisible = false">关闭</el-button>
-        <el-button v-if="materialProgressData?.can_edit_replenishment" type="primary" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">确认实际需求并补货</el-button>
+        <el-button v-if="materialProgressData?.can_edit_replenishment" type="primary" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">提交补货需求</el-button>
         <el-button v-if="materialProgressData?.can_produce" type="success" @click="closeMaterialProgressAndCreateTask">转建任务</el-button>
       </template>
     </el-dialog>

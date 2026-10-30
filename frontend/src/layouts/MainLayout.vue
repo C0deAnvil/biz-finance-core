@@ -1,7 +1,7 @@
 <template>
   <el-container class="layout-shell">
     <el-aside width="248px" class="sidebar">
-      <div class="brand">业财一体化系统</div>
+      <div class="brand">康普汇维ERP系统</div>
       <div class="user-block">
         <div class="user-name">{{ auth.user?.full_name || '未登录' }}</div>
         <div class="user-role">
