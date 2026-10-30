@@ -850,6 +850,9 @@ def _matrix_sample_data(sample: SupplierSample | None, inspection: QualityInspec
         "id": sample.id,
         "sample_no": sample.sample_no,
         "status": sample.status,
+        "label_code": sample.label_code,
+        "preliminary_result": sample.preliminary_result,
+        "preliminary_reason": sample.preliminary_reason,
         "quality_status": sample.quality_task.status if sample.quality_task else None,
         "grade": inspection.grade if inspection else None,
         "is_passed": inspection.is_passed if inspection else None,
@@ -973,6 +976,9 @@ def get_supplier_catalog_matrix(
         report_inspection = inspection_map.get(report_sample.quality_task_id) if report_sample and report_sample.quality_task_id else None
         if latest_sample is None:
             quality_state = "unsampled"
+        elif latest_sample.status == "preliminary_rejected":
+            quality_state = "unqualified"
+            quality_counts["unqualified"] += 1
         elif latest_sample.status != "completed":
             quality_state = "pending"
             quality_counts["pending"] += 1

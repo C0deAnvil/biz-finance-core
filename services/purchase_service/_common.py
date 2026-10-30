@@ -364,6 +364,15 @@ UNFINISHED_PAYMENT_REQUEST_STATUSES = (
     "pending_completion",
 )
 
+# 付款只能基于已经完成采购单审批、并由采购人员确认生效的订单发起。
+# “先付款后到货”只影响付款与到货的先后，不代表可以绕过采购单本身的审批。
+PAYMENT_REQUESTABLE_ORDER_STATUSES = {
+    "purchasing",
+    "partial_received",
+    "fully_received",
+    "completed",
+}
+
 
 def _latest_payment_request(db: Session, order_id: int) -> PurchasePaymentRequest | None:
     return db.execute(
@@ -377,8 +386,19 @@ def _validate_order_payment_requestable(order: PurchaseOrder, current_user: User
     role_code = current_user.role.code if current_user.role else ""
     if role_code not in {"finance", "system_admin"}:
         _ensure_order_owner(order, current_user)
-    if order.status == "cancelled":
-        raise HTTPException(status_code=409, detail=f"采购订单 {order.order_no} 已作废，不能发起付款申请")
+    if order.status not in PAYMENT_REQUESTABLE_ORDER_STATUSES:
+        reason_map = {
+            "draft": "尚未提交",
+            "pending_approval": "尚未完成总经理审批",
+            "rejected": "已被总经理驳回",
+            "pending_purchase_confirm": "审批已通过，但采购人员尚未确认开始采购",
+            "cancelled": "已作废",
+        }
+        reason = reason_map.get(order.status, f"当前状态为“{status_label(order.status)}”")
+        raise HTTPException(
+            status_code=409,
+            detail=f"采购订单 {order.order_no} {reason}，不能发起付款申请",
+        )
     # 必须查"是否存在任何未完成申请",不能只看最新一张。
     # 原先用 _latest_payment_request(按 id 倒序取 first):
     # 只要最新那张是已驳回/已完成,校验就放行,而更早一张可能仍在

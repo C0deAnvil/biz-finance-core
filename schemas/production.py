@@ -27,6 +27,7 @@ class MaterialUsageInput(BaseModel):
 class RawMaterialDemandInput(BaseModel):
     material_id: int = Field(..., description="原料ID")
     shortage_quantity: Decimal = Field(..., gt=0, description="原料补货数量(默认缺口,可修改)")
+    actual_required_quantity: Decimal | None = Field(default=None, gt=0, description="生产人员确认的原料实际总需求量")
 
 
 class ProductionTaskCreate(BaseModel):

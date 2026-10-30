@@ -126,10 +126,10 @@ def _batch_max_producible_map(db: Session, product_ids: list[int]) -> dict[int, 
 
     planned_by_material: dict[int, Decimal] = {}
     if material_ids:
-        for material_id, planned_quantity, actual_quantity in db.execute(
+        for material_id, requested_quantity, actual_quantity in db.execute(
             select(
                 ProductionMaterialUsage.material_id,
-                ProductionMaterialUsage.planned_quantity,
+                ProductionMaterialUsage.requested_quantity,
                 ProductionMaterialUsage.actual_quantity,
             )
             .join(ProductionTask, ProductionTask.id == ProductionMaterialUsage.production_task_id)
@@ -138,7 +138,7 @@ def _batch_max_producible_map(db: Session, product_ids: list[int]) -> dict[int, 
                 ProductionMaterialUsage.material_id.in_(material_ids),
             )
         ).all():
-            outstanding = max(Decimal(planned_quantity or 0) - Decimal(actual_quantity or 0), Decimal("0"))
+            outstanding = max(Decimal(requested_quantity or 0) - Decimal(actual_quantity or 0), Decimal("0"))
             planned_by_material[material_id] = planned_by_material.get(material_id, Decimal("0")) + outstanding
 
     result: dict[int, Decimal] = {}
@@ -748,6 +748,7 @@ def create_demand_raw_material_demands(
 def get_raw_material_shortage(
     product_id: int,
     planned_quantity: float = Query(default=1, gt=0),
+    fulfillment_demand_id: int | None = Query(default=None),
     current_user: User = Depends(require_roles("production", "inventory", "manager", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
@@ -759,6 +760,7 @@ def get_raw_material_shortage(
         db,
         product_id=product_id,
         planned_quantity=Decimal(str(planned_quantity)),
+        exclude_fulfillment_demand_id=fulfillment_demand_id,
     )
     return api_response(data=rows)
 
@@ -1087,7 +1089,13 @@ def list_fulfillment_demands(
 ):
     query = (
         select(FulfillmentDemand)
-        .options(joinedload(FulfillmentDemand.product), joinedload(FulfillmentDemand.sales_order))
+        .options(
+            joinedload(FulfillmentDemand.product),
+            joinedload(FulfillmentDemand.sales_order),
+            joinedload(FulfillmentDemand.created_by),
+            joinedload(FulfillmentDemand.assigned_user),
+            joinedload(FulfillmentDemand.processed_by),
+        )
         .where(
             FulfillmentDemand.fulfillment_mode == "production",
             FulfillmentDemand.status != "cancelled",
@@ -1241,6 +1249,58 @@ def list_fulfillment_demands(
             "pagination": {"page": page, "page_size": page_size, "total": total + len(low_stock_rows)},
         }
     )
+
+
+@router.get("/fulfillment-demands/{demand_id}")
+def get_fulfillment_demand_detail(
+    demand_id: int,
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    demand = db.execute(
+        select(FulfillmentDemand)
+        .options(
+            joinedload(FulfillmentDemand.product),
+            joinedload(FulfillmentDemand.sales_order),
+            joinedload(FulfillmentDemand.created_by),
+            joinedload(FulfillmentDemand.assigned_user),
+            joinedload(FulfillmentDemand.processed_by),
+        )
+        .where(FulfillmentDemand.id == demand_id, FulfillmentDemand.fulfillment_mode == "production")
+    ).unique().scalar_one_or_none()
+    if demand is None:
+        raise HTTPException(status_code=404, detail="生产补货需求不存在")
+
+    from services.material_replenishment_service import material_demand_progress
+    progress = material_demand_progress(db, demand)
+    required = Decimal(demand.required_quantity or demand.shortage_quantity or 0)
+    fulfilled = Decimal(demand.fulfilled_quantity or 0)
+    return api_response(data={
+        "id": demand.id,
+        "demand_no": demand.demand_no,
+        "source_type": "sales_shortage" if demand.sales_order_id else "manual",
+        "source_order_no": demand.source_order_no,
+        "sales_order_id": demand.sales_order_id,
+        "sales_order_no": demand.sales_order.order_no if demand.sales_order else None,
+        "product_id": demand.product_id,
+        "product_code": demand.product.product_code if demand.product else None,
+        "product_name": demand.product.name if demand.product else None,
+        "product_specification": demand.product.specification if demand.product else None,
+        "required_quantity": float(required),
+        "fulfilled_quantity": float(fulfilled),
+        "pending_quantity": float(max(required - fulfilled, Decimal("0"))),
+        "shortage_quantity": float(demand.shortage_quantity or 0),
+        "status": demand.status,
+        "status_label": status_label(demand.status),
+        "submitted_by_name": demand.created_by.full_name if demand.created_by else None,
+        "assigned_user_name": demand.assigned_user.full_name if demand.assigned_user else None,
+        "processed_by_name": demand.processed_by.full_name if demand.processed_by else None,
+        "process_note": demand.process_note,
+        "cancel_reason": demand.cancel_reason,
+        "created_at": demand.created_at.isoformat() if demand.created_at else None,
+        "updated_at": demand.updated_at.isoformat() if demand.updated_at else None,
+        "material_progress": progress,
+    })
 
 
 @router.get("/fulfillment-demands/{demand_id}/material-progress")

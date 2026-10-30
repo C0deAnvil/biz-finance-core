@@ -37,6 +37,10 @@ class SampleReceive(BaseModel):
     batch_no: str | None = Field(default=None, max_length=80)
     storage_location: str | None = Field(default=None, max_length=150)
     receipt_remark: str | None = Field(default=None, max_length=1000)
+    label_code: str = Field(..., min_length=2, max_length=80)
+    label_applied: bool
+    preliminary_result: str = Field(..., pattern="^(passed|rejected)$")
+    preliminary_reason: str | None = Field(default=None, max_length=1000)
 
 
 def _can_receive(db: Session, user: User, warehouse: Warehouse) -> bool:
@@ -69,11 +73,17 @@ def _sample_data(sample: SupplierSample, inspection: QualityInspection | None = 
         "batch_no": sample.batch_no,
         "storage_location": sample.storage_location,
         "receipt_remark": sample.receipt_remark,
+        "label_code": sample.label_code,
+        "label_applied": sample.label_applied,
+        "preliminary_result": sample.preliminary_result,
+        "preliminary_reason": sample.preliminary_reason,
         "status": sample.status,
         "remark": sample.remark,
         "requested_by_name": sample.requested_by.full_name if sample.requested_by else None,
         "received_by_name": sample.received_by.full_name if sample.received_by else None,
         "received_at": sample.received_at.isoformat() if sample.received_at else None,
+        "screened_by_name": sample.screened_by.full_name if sample.screened_by else None,
+        "screened_at": sample.screened_at.isoformat() if sample.screened_at else None,
         "quality_task_id": sample.quality_task_id,
         "quality_no": task.quality_no if task else None,
         "quality_status": task.status if task else None,
@@ -106,7 +116,8 @@ def _load_samples(db: Session, supplier_id: int | None = None, status: str | Non
         joinedload(SupplierSample.supplier), joinedload(SupplierSample.product), joinedload(SupplierSample.material),
         joinedload(SupplierSample.packaging_config),
         joinedload(SupplierSample.warehouse), joinedload(SupplierSample.requested_by),
-        joinedload(SupplierSample.received_by), joinedload(SupplierSample.quality_task),
+        joinedload(SupplierSample.received_by), joinedload(SupplierSample.screened_by),
+        joinedload(SupplierSample.quality_task),
     )
     if supplier_id is not None:
         query = query.where(SupplierSample.supplier_id == supplier_id)
@@ -122,7 +133,7 @@ def list_samples(
     current_user: User = Depends(require_roles("purchase", "finance", "finance_super", "master_data_admin", "inventory", "inventory_super", "quality", "quality_super", "manager", "chairman", "system_admin")),
     db: Session = Depends(get_db),
 ):
-    if status and status not in {"pending_receipt", "pending_quality", "completed"}:
+    if status and status not in {"pending_receipt", "pending_quality", "preliminary_rejected", "completed"}:
         raise HTTPException(status_code=422, detail="无效的样品状态")
     rows = _load_samples(db, supplier_id, status)
     role_code = current_user.role.code if current_user.role else None
@@ -213,6 +224,55 @@ def receive_sample(
     warehouse = db.get(Warehouse, sample.warehouse_id)
     if warehouse is None or not _can_receive(db, current_user, warehouse):
         raise HTTPException(status_code=403, detail="仅目标仓库库管可以确认收样")
+    label_code = payload.label_code.strip()
+    if len(label_code) < 2:
+        raise HTTPException(status_code=422, detail="请填写有效的样品标签码")
+    if not payload.label_applied:
+        raise HTTPException(status_code=422, detail="请完成样品编码和标签粘贴后再确认收样")
+    preliminary_reason = (payload.preliminary_reason or "").strip() or None
+    if payload.preliminary_result == "rejected" and not preliminary_reason:
+        raise HTTPException(status_code=422, detail="初筛不合格时必须填写不合格原因")
+
+    now = now_local()
+    sample.received_by_id = current_user.id
+    sample.received_at = now
+    sample.received_quantity = payload.received_quantity
+    sample.batch_no = (payload.batch_no or "").strip() or sample.batch_no
+    sample.storage_location = (payload.storage_location or "").strip() or None
+    sample.receipt_remark = (payload.receipt_remark or "").strip() or None
+    sample.label_code = label_code
+    sample.label_applied = True
+    sample.preliminary_result = payload.preliminary_result
+    sample.preliminary_reason = preliminary_reason
+    sample.screened_by_id = current_user.id
+    sample.screened_at = now
+    complete_todos(db, business_type="supplier_sample", business_id=sample.id)
+
+    if payload.preliminary_result == "rejected":
+        sample.status = "preliminary_rejected"
+        create_notification(
+            db,
+            title="供应商样品初筛不合格",
+            content=f"样品 {sample.sample_no} 已由 {current_user.full_name} 判定初筛不合格：{preliminary_reason}",
+            module="inventory",
+            recipient_user_ids=[sample.requested_by_id],
+            created_by_id=current_user.id,
+            category="warning",
+        )
+        write_operation_log(
+            db,
+            user_id=current_user.id,
+            module="inventory",
+            action="reject_supplier_sample_preliminary",
+            content=f"供应商样品初筛不合格 {sample.sample_no}",
+            after_data={"sample_id": sample.id, "label_code": label_code, "reason": preliminary_reason},
+        )
+        db.commit()
+        return api_response(
+            data={"id": sample.id, "status": sample.status, "quality_task_id": None},
+            msg="样品已接收并判定初筛不合格",
+        )
+
     recipients = resolve_quality_recipients_for_warehouse(db, warehouse_id=warehouse.id, fallback_user_ids=[])
     if not recipients:
         # 供应商收样是新增流程，旧仓库通常还没有维护 qc_user_id 或质检部门仓库范围。
@@ -238,14 +298,7 @@ def receive_sample(
     db.flush()
     sample.quality_task_id = task.id
     sample.status = "pending_quality"
-    sample.received_by_id = current_user.id
-    sample.received_at = now_local()
-    sample.received_quantity = payload.received_quantity
-    sample.batch_no = (payload.batch_no or "").strip() or sample.batch_no
     task.batch_no = sample.batch_no
-    sample.storage_location = (payload.storage_location or "").strip() or None
-    sample.receipt_remark = (payload.receipt_remark or "").strip() or None
-    complete_todos(db, business_type="supplier_sample", business_id=sample.id)
     for user_id in recipients:
         create_todo(db, title=f"待检供应商样品 {sample.sample_no}",
                     description=f"{sample.supplier.name} / {sample.product.name if sample.product else sample.material.name if sample.material else sample.packaging_config.packaging_name} / {warehouse.name}。",
@@ -254,6 +307,10 @@ def receive_sample(
     create_notification(db, title="供应商样品已收样", content=f"样品 {sample.sample_no} 已由 {current_user.full_name} 接收，待质检。",
                         module="quality", recipient_user_ids=recipients, created_by_id=current_user.id, category="info")
     write_operation_log(db, user_id=current_user.id, module="inventory", action="receive_supplier_sample",
-                        content=f"确认收样 {sample.sample_no}", after_data={"quality_task_id": task.id})
+                        content=f"确认收样并通过初筛 {sample.sample_no}",
+                        after_data={"quality_task_id": task.id, "label_code": label_code})
     db.commit()
-    return api_response(data={"id": sample.id, "quality_task_id": task.id, "quality_no": task.quality_no})
+    return api_response(
+        data={"id": sample.id, "status": sample.status, "quality_task_id": task.id, "quality_no": task.quality_no},
+        msg="样品已接收并通过初筛，质检任务已生成",
+    )

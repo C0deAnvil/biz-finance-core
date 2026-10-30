@@ -8,10 +8,36 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Inventory, Role, SalesOrderItem, SalesReturn, SalesReturnItem, User, Warehouse
+from models import Inventory, Role, SalesOrder, SalesOrderItem, SalesReturn, SalesReturnItem, User, Warehouse
 from services.organization import get_inventory_scope_warehouse_ids
 from services.warehouse_lookup import get_finished_warehouse
 from services.workflow import create_inventory_operation_request
+
+
+SALES_RETURN_NOTICE_ROLE_CODES = (
+    "purchase",
+    "production",
+    "quality",
+    "quality_super",
+    "finance",
+    "finance_super",
+)
+
+
+def sales_return_notice_user_ids(db: Session, sales_return: SalesReturn) -> list[int]:
+    """退换货跨部门知会人员：采购、生产、质检、财务和原订单销售。"""
+    department_user_ids = db.scalars(
+        select(User.id)
+        .join(Role, User.role_id == Role.id)
+        .where(Role.code.in_(SALES_RETURN_NOTICE_ROLE_CODES), User.is_active.is_(True))
+    ).all()
+    order = db.get(SalesOrder, sales_return.sales_order_id) if sales_return.sales_order_id else None
+    sales_user_ids = [
+        sales_return.requested_by_id,
+        order.sales_user_id if order else None,
+        order.operator_user_id if order else None,
+    ]
+    return list(dict.fromkeys([user_id for user_id in [*department_user_ids, *sales_user_ids] if user_id]))
 
 
 def inventory_user_ids_for_warehouse(db: Session, warehouse_id: int) -> list[int]:

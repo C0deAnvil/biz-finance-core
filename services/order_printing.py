@@ -18,8 +18,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from models import SalesOrder, order_type_style
-from services.display import payment_type_label
+from models import FulfillmentDemand, SalesOrder, order_type_style
+from services.display import payment_type_label, status_label
 
 
 FONT = "NotoSansSC"
@@ -179,6 +179,61 @@ def _footer(canvas, doc):
     canvas.setFont(FONT_BOLD, 8)
     canvas.drawRightString(PAGE_SIZE[0] - 7 * mm, 3 * mm, f"第 {doc.page} 页")
     canvas.restoreState()
+
+
+def render_production_demand_pdf(demand: FulfillmentDemand, material_progress: dict) -> bytes:
+    """Render a high-contrast A5 production replenishment demand sheet."""
+    buffer = BytesIO()
+    doc = _base_doc(buffer)
+    width = PAGE_SIZE[0] - 14 * mm
+    title_style = ParagraphStyle(
+        name="production-demand-title",
+        fontName=FONT_BOLD,
+        fontSize=20,
+        leading=25,
+        alignment=TA_CENTER,
+        textColor=colors.black,
+    )
+    product = demand.product
+    sales_order = demand.sales_order
+    submitter = demand.created_by.full_name if demand.created_by else "-"
+    assignee = demand.assigned_user.full_name if demand.assigned_user else "待分配"
+    required = Decimal(demand.required_quantity or demand.shortage_quantity or 0)
+    fulfilled = Decimal(demand.fulfilled_quantity or 0)
+    pending = max(required - fulfilled, Decimal("0"))
+    story = [Paragraph("生产补货需求单", title_style), Spacer(1, 3 * mm)]
+    story.extend([
+        _meta_table([
+            [_field("需求编号", demand.demand_no), _field("状态", status_label(demand.status)), _field("提交时间", _date(demand.created_at))],
+            [_field("产品", product.name if product else None), _field("产品编码", product.product_code if product else None), _field("来源订单", sales_order.order_no if sales_order else demand.source_order_no)],
+            [_field("总需求量", _qty(required)), _field("已补数量", _qty(fulfilled)), _field("待补数量", _qty(pending))],
+            [_field("提交人", submitter), _field("负责人", assignee), _field("原料条件", "已满足" if material_progress.get("can_produce") else "待补料")],
+        ], width),
+        Spacer(1, 2 * mm),
+        _paragraph(f"处理说明：{demand.process_note or '-'}", size=9),
+        Spacer(1, 3 * mm),
+    ])
+    headers = ["原料编码", "原料名称", "实际总需求", "库存可用", "已提交补货", "已到货", "尚缺", "关联采购单"]
+    rows = []
+    for item in material_progress.get("items", []):
+        rows.append([
+            item.get("material_code") or "-",
+            item.get("material_name") or "-",
+            _qty(item.get("required_quantity")),
+            _qty(item.get("stock_available_quantity")),
+            _qty(item.get("submitted_quantity")),
+            _qty(item.get("received_quantity")),
+            _qty(item.get("remaining_replenishment_quantity")),
+            item.get("related_po_no") or "-",
+        ])
+    if not rows:
+        rows.append(["-", "暂无 BOM 原料明细", "-", "-", "-", "-", "-", "-"])
+    story.append(_grid_table(headers, rows, [
+        width * 0.11, width * 0.18, width * 0.12, width * 0.11,
+        width * 0.12, width * 0.10, width * 0.10, width * 0.16,
+    ]))
+    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    return buffer.getvalue()
 
 
 def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: str, warehouse_name: str | None) -> bytes:

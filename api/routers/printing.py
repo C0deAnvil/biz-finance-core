@@ -13,9 +13,9 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import InventoryDispatchQueue, PlacementPrintAccessLog, PlacementPrintAgent, PlacementPrintJob, SalesOrder, SalesOrderItem, User
+from models import FulfillmentDemand, InventoryDispatchQueue, PlacementPrintAccessLog, PlacementPrintAgent, PlacementPrintJob, SalesOrder, SalesOrderItem, User
 from responses import api_response
-from services.order_printing import render_order_pdf
+from services.order_printing import render_order_pdf, render_production_demand_pdf
 from services.organization import user_in_scope
 from services.time_utils import now_local
 
@@ -112,6 +112,36 @@ def placement_order_pdf(
     if queue is None:
         raise HTTPException(status_code=404, detail="该订单没有置货需求")
     return _pdf_response(order, "placement", queue=queue)
+
+
+@router.get("/production-demands/{demand_id}.pdf")
+def production_demand_pdf(
+    demand_id: int,
+    current_user: User = Depends(require_roles("production", "inventory", "purchase", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    demand = db.execute(
+        select(FulfillmentDemand)
+        .options(
+            joinedload(FulfillmentDemand.product),
+            joinedload(FulfillmentDemand.sales_order),
+            joinedload(FulfillmentDemand.created_by),
+            joinedload(FulfillmentDemand.assigned_user),
+        )
+        .where(FulfillmentDemand.id == demand_id, FulfillmentDemand.fulfillment_mode == "production")
+    ).unique().scalar_one_or_none()
+    if demand is None:
+        raise HTTPException(status_code=404, detail="生产补货需求不存在")
+    from services.material_replenishment_service import material_demand_progress
+    content = render_production_demand_pdf(demand, material_demand_progress(db, demand))
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="production-demand-{demand.demand_no}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 def _system_admin(current_user: User = Depends(get_current_user)) -> User:

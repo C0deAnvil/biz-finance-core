@@ -105,6 +105,7 @@ def _serialize_stock(
     row: Inventory,
     *,
     purchase_in_transit: dict[tuple[str, int | None], Decimal] | None = None,
+    production_reserved_quantity: Decimal = Decimal("0"),
 ) -> dict:
     """序列化库存行。两个可用量口径见 services/inventory_availability 模块说明。
 
@@ -117,8 +118,14 @@ def _serialize_stock(
         packaging_config_id=row.packaging_config_id,
     )
     in_transit_qty = Decimal((purchase_in_transit or {}).get(key, 0))
-    available_quantity = placeable_of(row)
-    expected_available_quantity = replenishment_available_of(row, purchase_in_transit=in_transit_qty)
+    warehouse_reserved_quantity = Decimal(row.reserved_quantity or 0)
+    production_reserved_quantity = Decimal(production_reserved_quantity or 0)
+    total_reserved_quantity = warehouse_reserved_quantity + production_reserved_quantity
+    available_quantity = placeable_of(row) - production_reserved_quantity
+    expected_available_quantity = (
+        replenishment_available_of(row, purchase_in_transit=in_transit_qty)
+        - production_reserved_quantity
+    )
     item = row.product or row.material or row.packaging_config
     item_type = "product" if row.product_id else ("material" if row.material_id else "packaging")
     safety_stock_qty = Decimal(getattr(item, "safety_stock_qty", 0) or 0)
@@ -132,7 +139,9 @@ def _serialize_stock(
         "item_code": row.product.product_code if row.product else (row.material.material_code if row.material else (f"BZ-{row.packaging_config_id}" if row.packaging_config_id else None)),
         "item_name": row.product.name if row.product else (row.material.name if row.material else (row.packaging_config.packaging_name if row.packaging_config else "")),
         "quantity": float(row.quantity),
-        "reserved_quantity": float(row.reserved_quantity),
+        "reserved_quantity": float(total_reserved_quantity),
+        "warehouse_reserved_quantity": float(warehouse_reserved_quantity),
+        "production_reserved_quantity": float(production_reserved_quantity),
         "in_transit": float(row.in_transit or 0),
         "purchase_in_transit": float(in_transit_qty),
         "available_quantity": float(available_quantity),

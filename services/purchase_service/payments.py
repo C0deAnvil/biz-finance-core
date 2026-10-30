@@ -75,9 +75,7 @@ def request_purchase_fund(payload: PurchaseFundRequestCreate, current_user: User
     order = _load_order(db, payload.purchase_order_id)
     if order is None:
         raise HTTPException(status_code=404, detail="采购订单不存在")
-    _ensure_order_owner(order, current_user)
-    if order.status == "cancelled":
-        raise HTTPException(status_code=409, detail="已作废采购单不能申请拨款")
+    _validate_order_payment_requestable(order, current_user, db)
 
     latest_record = _latest_fund_record(db, order.id)
     if latest_record and latest_record.status in {"pending_manager_approval", "pending_finance_approval", "paid"}:
@@ -1049,7 +1047,16 @@ def build_purchase_settlement_snapshot(current_user: User, db: Session, *, scope
             "contract_attachment_count": len(contract_attachments),
             "contract_attachment_names": [item["original_name"] for item in contract_attachments],
             "flow_steps": purchase_flow_steps(row, arrival_status=arrival_status, settlement_status=settlement_status),
-            "can_submit_payment_request": row.status != "cancelled",
+            "can_submit_payment_request": row.status in {
+                "purchasing", "partial_received", "fully_received", "completed"
+            },
+            "payment_request_block_reason": {
+                "draft": "采购单尚未提交",
+                "pending_approval": "等待总经理审批",
+                "rejected": "采购单已被驳回",
+                "pending_purchase_confirm": "等待采购人员确认开始采购",
+                "cancelled": "采购单已作废",
+            }.get(row.status),
             "is_completed_order": is_completed_order,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }

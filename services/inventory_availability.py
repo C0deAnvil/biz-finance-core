@@ -27,11 +27,17 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from collections import defaultdict
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models import (
+    BOM,
+    BOMItem,
+    FulfillmentDemand,
     Inventory,
+    MaterialReplenishmentDemand,
     ProductionMaterialUsage,
     ProductionTask,
     PurchaseOrder,
@@ -108,25 +114,103 @@ def replenishment_available_of(
 
 # ===== 批量(列表页用,一次查询算出全部)=====
 
-def material_production_commitment(db: Session, *, material_id: int) -> Decimal:
-    """已被在产任务计划领用、但尚未实际领出的原料量。
+def material_production_commitments(
+    db: Session,
+    *,
+    material_ids: list[int] | set[int] | tuple[int, ...] | None = None,
+    exclude_fulfillment_demand_id: int | None = None,
+) -> dict[int, Decimal]:
+    """按原料汇总尚未领出的生产占用。
 
-    这部分原料虽然还躺在仓库里(实有未减),但已经被排产的任务预定了。
-    inventories.reserved_quantity 只记录客户订单对成品的占用,不覆盖这种场景,
-    所以必须单独扣除,否则同一批原料会被重复许诺给多个生产任务。
+    占用包含两部分：
+    1. 已建立生产任务的实际申请领料量(requested_quantity - actual_quantity)；
+    2. 尚未转任务的生产补货需求。后者以人工已提交的原料需求量为准，
+       未人工调整时才使用 BOM 自动计算量。
+
+    fulfillment_demand 转成任务时 shortage_quantity 会同步减少，而任务领料量
+    会同步增加，因此两部分不会对同一批数量重复占用。
     """
-    row = db.execute(
+    ids = {int(value) for value in (material_ids or []) if value}
+    result: dict[int, Decimal] = defaultdict(Decimal)
+
+    task_query = (
         select(
-            func.coalesce(func.sum(ProductionMaterialUsage.planned_quantity), 0),
-            func.coalesce(func.sum(ProductionMaterialUsage.actual_quantity), 0),
+            ProductionMaterialUsage.material_id,
+            ProductionMaterialUsage.requested_quantity,
+            ProductionMaterialUsage.actual_quantity,
         )
         .join(ProductionTask, ProductionTask.id == ProductionMaterialUsage.production_task_id)
         .where(
-            ProductionMaterialUsage.material_id == material_id,
             ProductionTask.status.not_in(INACTIVE_TASK_STATUSES),
         )
-    ).one()
-    return max(Decimal(row[0] or 0) - Decimal(row[1] or 0), Decimal("0"))
+    )
+    if ids:
+        task_query = task_query.where(ProductionMaterialUsage.material_id.in_(ids))
+    for material_id, requested, actual in db.execute(task_query):
+        result[material_id] += max(Decimal(requested or 0) - Decimal(actual or 0), Decimal("0"))
+
+    demand_query = select(FulfillmentDemand).where(
+        FulfillmentDemand.fulfillment_mode == "production",
+        FulfillmentDemand.status.in_(("pending", "pending_material")),
+        FulfillmentDemand.shortage_quantity > 0,
+    )
+    if exclude_fulfillment_demand_id is not None:
+        demand_query = demand_query.where(FulfillmentDemand.id != exclude_fulfillment_demand_id)
+    demands = db.scalars(demand_query).all()
+    if not demands:
+        return dict(result)
+
+    demand_ids = [row.id for row in demands]
+    product_shortages = {row.product_id: [] for row in demands}
+    for row in demands:
+        product_shortages[row.product_id].append((row.id, Decimal(row.shortage_quantity or 0)))
+
+    system_required: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
+    bom_query = (
+        select(BOM.product_id, BOMItem.material_id, BOMItem.standard_quantity)
+        .join(BOMItem, BOMItem.bom_id == BOM.id)
+        .where(BOM.product_id.in_(list(product_shortages) or [-1]))
+    )
+    if ids:
+        bom_query = bom_query.where(BOMItem.material_id.in_(ids))
+    for product_id, material_id, standard_quantity in db.execute(bom_query):
+        for demand_id, shortage_quantity in product_shortages.get(product_id, []):
+            system_required[demand_id, material_id] += shortage_quantity * Decimal(standard_quantity or 0)
+
+    manually_submitted: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
+    explicitly_required: dict[tuple[int, int], Decimal] = defaultdict(Decimal)
+    for fulfillment_demand_id, items_json in db.execute(
+        select(MaterialReplenishmentDemand.fulfillment_demand_id, MaterialReplenishmentDemand.items_json)
+        .where(MaterialReplenishmentDemand.fulfillment_demand_id.in_(demand_ids))
+    ):
+        for item in items_json or []:
+            material_id = int(item.get("material_id") or 0)
+            if not material_id or (ids and material_id not in ids):
+                continue
+            manually_submitted[fulfillment_demand_id, material_id] += Decimal(str(item.get("shortage_quantity") or 0))
+            explicitly_required[fulfillment_demand_id, material_id] = max(
+                explicitly_required[fulfillment_demand_id, material_id],
+                Decimal(str(item.get("actual_required_quantity") or 0)),
+            )
+
+    for key in set(system_required) | set(manually_submitted) | set(explicitly_required):
+        _demand_id, material_id = key
+        result[material_id] += max(system_required[key], manually_submitted[key], explicitly_required[key])
+    return dict(result)
+
+
+def material_production_commitment(
+    db: Session,
+    *,
+    material_id: int,
+    exclude_fulfillment_demand_id: int | None = None,
+) -> Decimal:
+    """返回单种原料的生产占用；保留单项接口供既有调用方使用。"""
+    return material_production_commitments(
+        db,
+        material_ids=[material_id],
+        exclude_fulfillment_demand_id=exclude_fulfillment_demand_id,
+    ).get(material_id, Decimal("0"))
 
 
 def purchase_in_transit_map(db: Session) -> dict[StockKey, Decimal]:

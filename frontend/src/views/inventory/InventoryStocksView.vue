@@ -43,9 +43,17 @@
         </el-table-column>
         <el-table-column prop="reserved_quantity" label="已占用" width="110">
           <template #header>
-            <el-tooltip content="已被审批通过的客户订单锁定的数量（实际占用，不是预计值）" placement="top"><span>已占用</span></el-tooltip>
+            <el-tooltip content="成品显示客户订单锁定量；原料还包含未转任务生产需求和生产任务尚未领出的实际申请量" placement="top"><span>已占用</span></el-tooltip>
           </template>
-          <template #default="scope">{{ formatNumber(scope.row.reserved_quantity) }}</template>
+          <template #default="scope">
+            <el-tooltip v-if="Number(scope.row.production_reserved_quantity || 0) > 0" placement="top">
+              <template #content>
+                仓库硬占用 {{ formatNumber(scope.row.warehouse_reserved_quantity) }}；生产计划占用 {{ formatNumber(scope.row.production_reserved_quantity) }}
+              </template>
+              <span>{{ formatNumber(scope.row.reserved_quantity) }}</span>
+            </el-tooltip>
+            <span v-else>{{ formatNumber(scope.row.reserved_quantity) }}</span>
+          </template>
         </el-table-column>
         <el-table-column prop="available_quantity" label="可置货量" width="110">
           <template #header>
@@ -104,7 +112,7 @@
       />
     </PageSection>
 
-    <PageSection v-if="auth.isRole('inventory')" title="供应商样品待接收" description="核对实物后确认收样；自动生成目标仓库质检任务。样品单独留存，不计入正常库存。">
+    <PageSection v-if="auth.isRole('inventory')" title="供应商样品待接收" description="库管负责实收、编码、贴标和初筛；初筛合格后流转质检，初筛不合格可填写原因直接结案。样品不计入正常库存。">
       <el-table :data="pendingSamples" stripe>
         <el-table-column prop="sample_no" label="样品单号" width="155" />
         <el-table-column prop="supplier_name" label="供应商" min-width="160" />
@@ -120,16 +128,29 @@
       </el-table>
     </PageSection>
 
-    <el-dialog v-model="sampleReceiveVisible" title="确认供应商样品收样" width="560px">
+    <el-dialog v-model="sampleReceiveVisible" title="供应商样品接收与初筛" width="620px">
       <p v-if="activeSample">{{ activeSample.supplier_name }} · {{ activeSample.item_name }} · {{ activeSample.warehouse_name }}</p>
       <el-form :model="sampleReceiveForm" label-width="105px">
         <el-form-item label="实收数量" required><el-input-number v-model="sampleReceiveForm.received_quantity" :min="0.0001" :precision="4" style="width: 100%" /></el-form-item>
         <el-form-item label="实收批次"><el-input v-model="sampleReceiveForm.batch_no" /></el-form-item>
         <el-form-item label="存放位置"><el-input v-model="sampleReceiveForm.storage_location" placeholder="如：样品柜 A1" /></el-form-item>
+        <el-form-item label="样品标签码" required><el-input v-model="sampleReceiveForm.label_code" placeholder="用于样品瓶/样品袋编码和贴标" /></el-form-item>
+        <el-form-item label="已编码贴标" required>
+          <el-switch v-model="sampleReceiveForm.label_applied" active-text="已完成" inactive-text="未完成" />
+        </el-form-item>
+        <el-form-item label="初筛结论" required>
+          <el-select v-model="sampleReceiveForm.preliminary_result" style="width: 100%">
+            <el-option label="初筛合格，送质检" value="passed" />
+            <el-option label="初筛不合格，直接结案" value="rejected" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="sampleReceiveForm.preliminary_result === 'rejected'" label="不合格原因" required>
+          <el-input v-model="sampleReceiveForm.preliminary_reason" type="textarea" :rows="3" placeholder="请说明包装破损、污染、标识不符、数量异常等初筛不合格原因" />
+        </el-form-item>
         <el-form-item label="收样备注"><el-input v-model="sampleReceiveForm.receipt_remark" type="textarea" :rows="2" /></el-form-item>
       </el-form>
-      <p>确认后会生成质检任务；样品不增加可用库存，也不生成常规入库流水。</p>
-      <template #footer><el-button @click="sampleReceiveVisible = false">取消</el-button><el-button type="primary" :loading="sampleReceiveSubmitting" @click="receiveSample">确认收样</el-button></template>
+      <p>{{ sampleReceiveForm.preliminary_result === 'passed' ? '确认后生成目标仓库质检任务。' : '确认后直接判定样品不合格，不再生成质检任务。' }}样品不增加可用库存，也不生成常规入库流水。</p>
+      <template #footer><el-button @click="sampleReceiveVisible = false">取消</el-button><el-button type="primary" :loading="sampleReceiveSubmitting" @click="receiveSample">确认接收与初筛</el-button></template>
     </el-dialog>
 
     <PageSection title="库存作业请求" description="所有生产领料、采购到货、质检放行、销售发货、退货回库等库存动作，统一由库管在此手工完成。">
@@ -481,7 +502,16 @@ const pendingSamples = ref([])
 const sampleReceiveVisible = ref(false)
 const sampleReceiveSubmitting = ref(false)
 const activeSample = ref(null)
-const sampleReceiveForm = reactive({ received_quantity: 1, batch_no: '', storage_location: '', receipt_remark: '' })
+const sampleReceiveForm = reactive({
+  received_quantity: 1,
+  batch_no: '',
+  storage_location: '',
+  label_code: '',
+  label_applied: false,
+  preliminary_result: 'passed',
+  preliminary_reason: '',
+  receipt_remark: ''
+})
 const drawerVisible = ref(false)
 const operationDialogVisible = ref(false)
 const manualDialogVisible = ref(false)
@@ -619,7 +649,16 @@ async function load({ skipRouteFocus = false } = {}) {
 
 function openReceiveSample(row) {
   activeSample.value = row
-  Object.assign(sampleReceiveForm, { received_quantity: Number(row.quantity), batch_no: row.batch_no || '', storage_location: '', receipt_remark: '' })
+  Object.assign(sampleReceiveForm, {
+    received_quantity: Number(row.quantity),
+    batch_no: row.batch_no || '',
+    storage_location: '',
+    label_code: row.sample_no || '',
+    label_applied: false,
+    preliminary_result: 'passed',
+    preliminary_reason: '',
+    receipt_remark: ''
+  })
   sampleReceiveVisible.value = true
 }
 
@@ -628,17 +667,25 @@ async function receiveSample() {
     ElMessage.warning('请填写正确的实收数量')
     return
   }
+  if (!sampleReceiveForm.label_code?.trim() || !sampleReceiveForm.label_applied) {
+    ElMessage.warning('请填写样品标签码，并确认已完成编码贴标')
+    return
+  }
+  if (sampleReceiveForm.preliminary_result === 'rejected' && !sampleReceiveForm.preliminary_reason?.trim()) {
+    ElMessage.warning('初筛不合格时必须填写不合格原因')
+    return
+  }
   if (sampleReceiveSubmitting.value) return
   sampleReceiveSubmitting.value = true
   try {
-    await post(`/api/supplier-samples/${activeSample.value.id}/receive`, sampleReceiveForm)
+    const result = await post(`/api/supplier-samples/${activeSample.value.id}/receive`, sampleReceiveForm)
+    ElMessage.success(result?.status === 'preliminary_rejected' ? '样品已接收并判定初筛不合格' : '样品已接收，质检任务已发送给质检人员')
   } catch (error) {
     ElMessage.error(error?.message || '确认收样失败，请稍后重试')
     return
   } finally {
     sampleReceiveSubmitting.value = false
   }
-  ElMessage.success('已收样，质检任务已发送给质检人员')
   sampleReceiveVisible.value = false
   activeSample.value = null
   try {

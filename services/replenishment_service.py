@@ -246,10 +246,10 @@ def product_expected_available_quantity(db: Session, *, product_id: int, invento
 
 
 def material_expected_available_quantity(db: Session, *, material_id: int, inventory: Inventory | None = None) -> Decimal:
-    """原料的补货可用量 = 实有 + 采购在途 - 占用 - 在产任务已计划未领用量。
+    """原料的补货可用量 = 实有 + 采购在途 - 占用 - 生产需求/任务未领用量。
 
-    最后一项是原料特有的:排产后原料虽仍在仓库(实有未减),但已被任务预定,
-    不扣除会导致同一批原料重复许诺给多个生产任务。
+    最后一项是原料特有的:生产补货需求提交后、以及排产后原料虽仍在仓库
+    (实有未减),但已被需求或任务预定,不扣除会导致同一批原料重复许诺。
     """
     commitment = material_production_commitment(db, material_id=material_id)
     if inventory is not None:

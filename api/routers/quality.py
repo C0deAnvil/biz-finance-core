@@ -50,7 +50,7 @@ from services.quality_workflow import (
     quality_sample_consumption,
     resolve_purchase_quality_context,
 )
-from services.sales_return_workflow import create_sales_return_inbound_request
+from services.sales_return_workflow import create_sales_return_inbound_request, sales_return_notice_user_ids
 from services.organization import get_inventory_scope_warehouse_ids
 from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.workflow import create_inventory_operation_request
@@ -413,7 +413,7 @@ def _sync_return_reinspection_status(
     if business_type == "sales_return":
         row = db.execute(select(SalesReturn).where(SalesReturn.id == int(business_id))).scalar_one_or_none()
         module = "sales"
-        recipient_ids = [row.requested_by_id] if row else []
+        recipient_ids = sales_return_notice_user_ids(db, row) if row else []
     elif business_type == "purchase_return":
         row = db.execute(select(PurchaseReturn).where(PurchaseReturn.id == int(business_id))).scalar_one_or_none()
         module = "purchase"
@@ -1359,7 +1359,10 @@ def allow_inbound(
                 f"已生成库存入库作业 {inbound_request.request_no}。"
             ),
             module="quality",
-            recipient_user_ids=list(dict.fromkeys([sales_return.requested_by_id, *inventory_user_ids])),
+            recipient_user_ids=list(dict.fromkeys([
+                *sales_return_notice_user_ids(db, sales_return),
+                *inventory_user_ids,
+            ])),
             created_by_id=current_user.id,
             category="success",
         )

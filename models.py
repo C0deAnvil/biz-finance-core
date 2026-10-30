@@ -552,11 +552,17 @@ class SupplierSample(TimestampMixin, Base):
     batch_no = Column(String(80), nullable=False)
     storage_location = Column(String(150), nullable=True)
     receipt_remark = Column(Text, nullable=True)
+    label_code = Column(String(80), nullable=True)
+    label_applied = Column(Boolean, nullable=False, default=False, server_default=text("0"))
+    preliminary_result = Column(String(30), nullable=True)
+    preliminary_reason = Column(Text, nullable=True)
     status = Column(String(30), nullable=False, default="pending_receipt")
     remark = Column(Text, nullable=True)
     requested_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     received_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     received_at = Column(DateTime, nullable=True)
+    screened_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    screened_at = Column(DateTime, nullable=True)
     quality_task_id = Column(Integer, ForeignKey("quality_tasks.id"), nullable=True, unique=True)
 
     supplier = relationship("Supplier")
@@ -566,6 +572,7 @@ class SupplierSample(TimestampMixin, Base):
     warehouse = relationship("Warehouse")
     requested_by = relationship("User", foreign_keys=[requested_by_id])
     received_by = relationship("User", foreign_keys=[received_by_id])
+    screened_by = relationship("User", foreign_keys=[screened_by_id])
     quality_task = relationship("QualityTask", foreign_keys=[quality_task_id])
 
 

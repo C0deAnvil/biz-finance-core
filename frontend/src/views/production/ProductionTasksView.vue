@@ -128,8 +128,11 @@
           </template>
         </el-table-column>
         <el-table-column prop="process_note" label="处理说明" min-width="160" show-overflow-tooltip />
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="360" fixed="right">
           <template #default="scope">
+            <el-button size="small" text type="primary" @click="openDemandDetail(scope.row)">详情</el-button>
+            <el-button v-if="!scope.row.low_stock_todo_id" size="small" text type="primary" @click="printDemand(scope.row)">打印</el-button>
+            <el-button v-if="!scope.row.low_stock_todo_id" size="small" text type="info" @click="downloadDemand(scope.row)">下载</el-button>
             <el-button size="small" text type="info" @click="openMaterialProgress(scope.row)">原料进度</el-button>
             <el-button v-if="demandStatusTab === 'pending'" size="small" text type="primary" @click="prefillDemand(scope.row)">转建任务</el-button>
             <el-button v-if="scope.row.status === 'pending'" size="small" text type="danger" @click="cancelDemand(scope.row)">取消</el-button>
@@ -146,6 +149,43 @@
       />
     </PageSection>
 
+    <el-dialog v-model="demandDetailVisible" title="生产补货需求详情" width="min(1100px, 95vw)">
+      <template v-if="demandDetail">
+        <el-descriptions :column="3" border>
+          <el-descriptions-item label="需求编号">{{ demandDetail.demand_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="状态"><el-tag :type="statusType(demandDetail.status)">{{ demandDetail.status_label || statusLabel(demandDetail.status) }}</el-tag></el-descriptions-item>
+          <el-descriptions-item label="提交时间">{{ formatDateTime(demandDetail.created_at) }}</el-descriptions-item>
+          <el-descriptions-item label="来源订单">{{ demandDetail.sales_order_no || demandDetail.source_order_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="提交人">{{ demandDetail.submitted_by_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="负责人">{{ demandDetail.assigned_user_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="产品编码">{{ demandDetail.product_code || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="产品">{{ demandDetail.product_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="产品规格">{{ demandDetail.product_specification || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="总需求量">{{ formatNumber(demandDetail.required_quantity) }}</el-descriptions-item>
+          <el-descriptions-item label="已补数量">{{ formatNumber(demandDetail.fulfilled_quantity) }}</el-descriptions-item>
+          <el-descriptions-item label="待补数量">{{ formatNumber(demandDetail.pending_quantity ?? demandDetail.shortage_quantity) }}</el-descriptions-item>
+          <el-descriptions-item label="处理说明" :span="3">{{ demandDetail.process_note || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="demandDetail.cancel_reason" label="取消原因" :span="3">{{ demandDetail.cancel_reason }}</el-descriptions-item>
+        </el-descriptions>
+        <h4 class="demand-detail-heading">原料需求与采购进度</h4>
+        <el-table :data="demandDetail.material_progress?.items || []" border size="small">
+          <el-table-column prop="material_code" label="原料编码" width="140" />
+          <el-table-column prop="material_name" label="原料名称" min-width="160" />
+          <el-table-column label="实际总需求" width="110"><template #default="scope">{{ formatNumber(scope.row.required_quantity) }}</template></el-table-column>
+          <el-table-column label="库存可用" width="100"><template #default="scope">{{ formatNumber(scope.row.stock_available_quantity) }}</template></el-table-column>
+          <el-table-column label="已提交补货" width="110"><template #default="scope">{{ formatNumber(scope.row.submitted_quantity) }}</template></el-table-column>
+          <el-table-column label="已到货" width="100"><template #default="scope">{{ formatNumber(scope.row.received_quantity) }}</template></el-table-column>
+          <el-table-column label="尚缺" width="100"><template #default="scope">{{ formatNumber(scope.row.remaining_replenishment_quantity) }}</template></el-table-column>
+          <el-table-column prop="related_po_no" label="关联采购单" min-width="145"><template #default="scope">{{ scope.row.related_po_no || '-' }}</template></el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="demandDetailVisible = false">关闭</el-button>
+        <el-button v-if="demandDetail && !demandDetail.low_stock_todo_id" @click="downloadDemand(demandDetail)">下载 PDF</el-button>
+        <el-button v-if="demandDetail && !demandDetail.low_stock_todo_id" type="primary" @click="printDemand(demandDetail)">打印</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="materialProgressVisible" title="原料状况与补货确认" width="min(1100px, 95vw)">
       <template v-if="materialProgressData">
         <el-alert
@@ -160,8 +200,12 @@
         </el-alert>
         <el-table :data="materialProgressItems" size="small" border>
           <el-table-column prop="material_name" label="原料" min-width="150" />
-          <el-table-column label="需求数量" width="90">
-            <template #default="scope">{{ formatNumber(scope.row.required_quantity) }}</template>
+          <el-table-column label="实际需求" width="100">
+            <template #default="scope">
+              <el-tooltip :content="`BOM 系统建议 ${formatNumber(scope.row.system_required_quantity)}；人工确认后以实际需求量为准`">
+                <span>{{ formatNumber(scope.row.required_quantity) }}</span>
+              </el-tooltip>
+            </template>
           </el-table-column>
           <el-table-column label="库存可用" width="90">
             <template #default="scope">
@@ -187,28 +231,26 @@
           <el-table-column label="关联采购单" min-width="140">
             <template #default="scope">{{ scope.row.related_po_no || '-' }}</template>
           </el-table-column>
-          <el-table-column v-if="!materialProgressData.can_produce" label="本次补货数量" width="170" fixed="right">
+          <el-table-column v-if="materialProgressData.can_edit_replenishment" label="实际总需求" width="170" fixed="right">
             <template #default="scope">
               <el-input-number
-                v-model="scope.row.suggest_quantity"
+                v-model="scope.row.target_quantity"
                 :min="0"
-                :max="scope.row.shortage"
                 :precision="2"
                 size="small"
                 style="width: 140px"
-                :disabled="scope.row.shortage <= 0 || !materialProgressData.can_edit_replenishment"
               />
             </template>
           </el-table-column>
         </el-table>
         <div v-if="!materialProgressData.can_produce" class="material-progress-tip">
           <template v-if="materialProgressData.can_edit_replenishment">
-            每次提交新建独立原料补货需求。可追加量 = 需求数量 − 库存可用 − 已提交未入库量；已有采购单不影响继续补足剩余缺口。
+            系统按 BOM 给出建议量，生产人员可按损耗或实际工艺修改；提交后以人工确认数量作为采购、占用和领料依据。
           </template>
           <template v-else>当前生产补货需求已处理，不能再追加原料补货。</template>
           <div v-if="!materialProgressItems.length">当前产品没有可计算的 BOM 原料明细，请先维护 BOM 后刷新。</div>
-          <div v-else-if="!materialProgressItems.some(item => Number(item.suggest_quantity) > 0) && materialProgressData.can_edit_replenishment">
-            当前没有可追加的原料缺口；如已有未入库补货需求，请等待采购处理及入库。
+          <div v-else-if="!materialProgressItems.some(item => Number(item.shortage) > 0) && materialProgressData.can_edit_replenishment">
+            当前系统建议量已覆盖；如实际工艺需要更多原料，可直接上调“实际总需求”，系统只追加差额。
           </div>
         </div>
         <el-table v-if="materialProgressData.replenishment_demands?.length" :data="materialProgressData.replenishment_demands" size="small" class="mb-12">
@@ -223,7 +265,7 @@
       </template>
       <template #footer>
         <el-button @click="materialProgressVisible = false">关闭</el-button>
-        <el-button v-if="materialProgressData && !materialProgressData.can_produce" type="primary" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">提交补货需求</el-button>
+        <el-button v-if="materialProgressData?.can_edit_replenishment" type="primary" :loading="materialProgressSubmitting" @click="submitMaterialProgressDemands">确认实际需求并补货</el-button>
         <el-button v-if="materialProgressData?.can_produce" type="success" @click="closeMaterialProgressAndCreateTask">转建任务</el-button>
       </template>
     </el-dialog>
@@ -320,7 +362,7 @@
         </el-alert>
         <el-table :data="rawDemandItems" border>
           <el-table-column prop="material_name" label="原料" min-width="160" />
-          <el-table-column label="需要数量" width="100">
+          <el-table-column label="系统建议" width="100">
             <template #default="scope">{{ formatNumber(scope.row.required_quantity) }}</template>
           </el-table-column>
           <el-table-column label="可用数量" width="100">
@@ -329,7 +371,7 @@
           <el-table-column label="缺口数量" width="100">
             <template #default="scope">{{ formatNumber(scope.row.shortage_quantity) }}</template>
           </el-table-column>
-          <el-table-column label="补货数量" width="140">
+          <el-table-column label="实际需求量" width="140">
             <template #default="scope">
               <el-input-number v-model="scope.row.demand_quantity" :min="1" :precision="0" size="small" style="width: 120px" />
             </template>
@@ -557,6 +599,7 @@ import DepartmentPurchaseRequests from '../../components/DepartmentPurchaseReque
 import { usePagePermission } from '../../composables/usePagePermission'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatNumber, statusLabel, statusType } from '../../utils/format'
+import { downloadOrderPdf, printOrderPdf } from '../../utils/printPdf'
 
 const auth = useAuthStore()
 const pagePermission = usePagePermission()
@@ -580,6 +623,8 @@ const demandPagination = reactive({ page: 1, pageSize: 10 })
 const demandTotal = ref(0)
 const demandStatusTab = ref('pending')
 const activeTaskTab = ref('ongoing')
+const demandDetailVisible = ref(false)
+const demandDetail = ref(null)
 
 const completedStatuses = ['completed', 'cancelled', 'scrapped', 'partially_scrapped', 'reworked']
 const canManageTasks = computed(() => auth.user?.role_code === 'production' && pagePermission.can('create'))
@@ -868,7 +913,7 @@ async function createTask() {
     if (planned < demandShortage) {
       const remaining = demandShortage - planned
       try {
-        const shortageRows = await get(`/api/production/raw-material-shortage?product_id=${createForm.product_id}&planned_quantity=${remaining}`)
+        const shortageRows = await get(`/api/production/raw-material-shortage?product_id=${createForm.product_id}&planned_quantity=${remaining}&fulfillment_demand_id=${createForm.fulfillment_demand_id}`)
         const shortageItems = (shortageRows || []).filter((it) => Number(it.shortage_quantity || 0) > 0)
         if (shortageItems.length) {
           openRawDemandConfirm('with_task', shortageItems)
@@ -921,22 +966,35 @@ const rawDemandItems = ref([])
 
 function openRawDemandConfirm(mode, shortageItems) {
   rawDemandMode.value = mode
-  rawDemandItems.value = (shortageItems || []).map((it) => ({
-    material_id: it.material_id,
-    material_name: it.material_name,
-    required_quantity: Number(it.required_quantity || 0),
-    available_quantity: Number(it.available_quantity || 0),
-    shortage_quantity: Number(it.shortage_quantity || 0),
-    demand_quantity: Number(it.shortage_quantity || 0),
-  }))
+  const usageMap = new Map(createForm.material_usages.map((item) => [Number(item.material_id), item]))
+  rawDemandItems.value = (shortageItems || []).map((it) => {
+    const usage = mode === 'with_task' ? usageMap.get(Number(it.material_id)) : null
+    const systemRequired = Number(it.required_quantity || 0)
+    const actualRequired = usage ? Number(usage.requested_quantity || systemRequired) : systemRequired
+    const available = Number(it.available_quantity || 0)
+    const actualShortage = Math.max(actualRequired - available, 0)
+    return {
+      material_id: it.material_id,
+      material_name: it.material_name,
+      required_quantity: systemRequired,
+      available_quantity: available,
+      shortage_quantity: mode === 'with_task' ? actualShortage : Number(it.shortage_quantity || 0),
+      actual_required_quantity: actualRequired,
+      demand_quantity: actualRequired,
+    }
+  }).filter((it) => Number(it.shortage_quantity || 0) > 0)
   rawDemandConfirmVisible.value = true
 }
 
 async function confirmRawDemand() {
   if (rawDemandSubmitting.value) return
   const items = rawDemandItems.value
-    .filter((it) => Number(it.demand_quantity || 0) > 0)
-    .map((it) => ({ material_id: it.material_id, shortage_quantity: Number(it.demand_quantity || 0) }))
+    .map((it) => ({
+      material_id: it.material_id,
+      actual_required_quantity: Number(it.demand_quantity || 0),
+      shortage_quantity: Math.max(Number(it.demand_quantity || 0) - Number(it.available_quantity || 0), 0),
+    }))
+    .filter((it) => it.shortage_quantity > 0)
   if (!items.length) {
     ElMessage.warning('请填写补货数量')
     return
@@ -969,6 +1027,44 @@ function prefillDemand(row) {
   openMaterialProgress(row)
 }
 
+async function openDemandDetail(row) {
+  if (row.low_stock_todo_id || String(row.id).startsWith('low-')) {
+    demandDetail.value = {
+      ...row,
+      required_quantity: demandRequired(row),
+      pending_quantity: demandPending(row),
+      product_code: '-',
+      product_specification: '-',
+      assigned_user_name: '-',
+      material_progress: { items: [] }
+    }
+    demandDetailVisible.value = true
+    return
+  }
+  try {
+    demandDetail.value = await get(`/api/production/fulfillment-demands/${row.id}`)
+    demandDetailVisible.value = true
+  } catch (error) {
+    ElMessage.error(error?.message || '读取生产补货需求详情失败')
+  }
+}
+
+async function printDemand(row) {
+  try {
+    await printOrderPdf('production-demand', row.id)
+  } catch (error) {
+    ElMessage.error(error?.message || '打印生产补货需求失败')
+  }
+}
+
+async function downloadDemand(row) {
+  try {
+    await downloadOrderPdf('production-demand', row.id, row.demand_no)
+  } catch (error) {
+    ElMessage.error(error?.message || '下载生产补货需求失败')
+  }
+}
+
 async function openMaterialProgress(row) {
   resetCreateForm()
   activeDemand.value = row
@@ -985,6 +1081,7 @@ async function openMaterialProgress(row) {
         ...item,
         shortage,
         suggest_quantity: progress.can_edit_replenishment ? shortage : 0,
+        target_quantity: required,
         satisfied: required <= stockAvailable,
       }
     })
@@ -1025,8 +1122,17 @@ async function submitMaterialProgressDemands() {
     return
   }
   const items = materialProgressItems.value
-    .filter((it) => Number(it.suggest_quantity || 0) > 0)
-    .map((it) => ({ material_id: it.material_id, shortage_quantity: Number(it.suggest_quantity || 0) }))
+    .map((it) => ({
+      material_id: it.material_id,
+      actual_required_quantity: Number(it.target_quantity || 0),
+      shortage_quantity: Math.max(
+        Number(it.target_quantity || 0)
+          - Number(it.stock_available_quantity || 0)
+          - Number(it.outstanding_quantity || 0),
+        0,
+      ),
+    }))
+    .filter((it) => it.shortage_quantity > 0)
   if (!items.length) {
     ElMessage.warning('当前没有可追加的原料缺口；已有补货需求请等待采购及入库')
     return
@@ -1104,6 +1210,26 @@ async function openCreateTaskDialog(row) {
     : shortageQuantity
   createForm.fulfillment_demand_id = row.source_type === 'low_stock_replenishment' ? null : row.id
   buildCreateMaterialUsages()
+  if (createForm.fulfillment_demand_id) {
+    try {
+      const progress = await get(`/api/production/fulfillment-demands/${createForm.fulfillment_demand_id}/material-progress`)
+      const demandQuantity = Math.max(Number(row.shortage_quantity || 0), Number(createForm.planned_quantity || 0), 1)
+      const ratio = Math.min(Number(createForm.planned_quantity || 0) / demandQuantity, 1)
+      const requirementMap = new Map((progress.items || []).map((item) => [
+        Number(item.material_id),
+        Number(item.required_quantity || item.system_required_quantity || 0) * ratio,
+      ]))
+      createForm.material_usages.forEach((usage) => {
+        const confirmedQuantity = requirementMap.get(Number(usage.material_id))
+        if (confirmedQuantity && confirmedQuantity > Number(usage.requested_quantity || 0)) {
+          usage.requested_quantity = confirmedQuantity
+          usage.reason = usage.reason || '按已确认的原料实际需求量领料'
+        }
+      })
+    } catch (error) {
+      ElMessage.warning(error?.message || '未能读取已确认的原料需求量，请核对领料数量')
+    }
+  }
   createVisible.value = true
 }
 
@@ -1419,4 +1545,5 @@ onMounted(async () => {
 .demand-progress { display: flex; flex-direction: column; gap: 4px; }
 .demand-progress-text { font-size: 12px; color: var(--el-text-color-regular); line-height: 1.4; }
 .demand-progress-pending { color: var(--el-color-warning); margin-left: 4px; }
+.demand-detail-heading { margin: 18px 0 10px; color: var(--el-text-color-primary); }
 </style>

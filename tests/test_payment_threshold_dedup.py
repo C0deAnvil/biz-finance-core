@@ -13,7 +13,7 @@
    FK20260907002(待完成),两张各 1 元,存在重复付款风险。
 """
 
-from helpers import create_purchase_order, create_supplier, create_trade_product, set_supplier_catalog, supplier_account_for_order
+from helpers import approve_purchase_order, confirm_purchase_order, create_purchase_order, create_supplier, create_trade_product, set_supplier_catalog, supplier_account_for_order
 
 
 def _set_threshold(client, login, amount: float) -> None:
@@ -83,6 +83,25 @@ def test_above_threshold_requires_chairman(client, login):
         json={"decision": "approved", "actual_amount": total, "manager_remark": "pytest 审批通过"},
     )
     assert resp.status_code == 200, f"达阈值的付款申请应可被董事长审批: {resp.text}"
+
+
+def test_payment_request_requires_effective_purchase_order(client, login):
+    """采购单审批和采购确认完成前，不能通过付款申请绕过订单审批。"""
+    _set_threshold(client, login, 100)
+    order_id, total = _order(client, login, quantity=10, unit_price=20)  # 200 >= 100
+
+    pending = _submit_request(client, login, order_id=order_id, amount=total)
+    assert pending.status_code == 409, pending.text
+    assert "尚未完成总经理审批" in (pending.json().get("msg") or pending.json().get("detail") or "")
+
+    approve_purchase_order(client, login, order_id=order_id)
+    awaiting_confirm = _submit_request(client, login, order_id=order_id, amount=total)
+    assert awaiting_confirm.status_code == 409, awaiting_confirm.text
+    assert "尚未确认开始采购" in (awaiting_confirm.json().get("msg") or awaiting_confirm.json().get("detail") or "")
+
+    confirm_purchase_order(client, login, order_id=order_id)
+    effective = _submit_request(client, login, order_id=order_id, amount=total)
+    assert effective.status_code == 200, effective.text
 
 
 def test_duplicate_payment_request_blocked(client, login):

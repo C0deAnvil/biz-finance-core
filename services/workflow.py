@@ -820,7 +820,18 @@ def complete_inventory_operation_request(
 
     _sync_inventory_request_source(db, request=request, current_user=current_user)
 
-    if request.requested_by_id:
+    notice_recipient_ids = [request.requested_by_id] if request.requested_by_id else []
+    notice_title = "库存作业已完成"
+    notice_content = None
+    if request.request_category == "sales_return_inbound" and request.source_type == "sales_return":
+        # 局部导入避免 sales_return_workflow -> workflow 的模块加载环。
+        from services.sales_return_workflow import sales_return_notice_user_ids
+        sales_return = db.get(SalesReturn, request.source_id)
+        if sales_return is not None:
+            notice_recipient_ids = sales_return_notice_user_ids(db, sales_return)
+            notice_title = "销售退换货已完成回库"
+            notice_content = f"退换货单 {sales_return.return_no} 已完成库存入库作业 {request.request_no}。"
+    if notice_recipient_ids:
         difference_text = (
             f" 差异备注：{request.quantity_difference_remark}"
             if request.quantity_difference_remark
@@ -828,10 +839,10 @@ def complete_inventory_operation_request(
         )
         create_notification(
             db,
-            title="库存作业已完成",
-            content=f"库存作业 {request.request_no} 已完成，当前状态：{status_label(request.status)}。{difference_text}",
+            title=notice_title,
+            content=(notice_content or f"库存作业 {request.request_no} 已完成，当前状态：{status_label(request.status)}。") + difference_text,
             module=request.source_module,
-            recipient_user_ids=[request.requested_by_id],
+            recipient_user_ids=notice_recipient_ids,
             created_by_id=current_user.id,
             category="warning" if request.quantity_difference_remark else "success",
         )

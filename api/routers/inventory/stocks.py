@@ -31,6 +31,7 @@ from models import (
     order_type_style,
     SalesOrderItem,
     SalesOrder,
+    SalesReturn,
     StockTransfer,
     StockTakeItem,
     StockTakeTask,
@@ -55,9 +56,9 @@ from services.workflow import (
 )
 from services.stock_transfer_workflow import repair_pending_transfer_jobs
 from services.time_utils import now_local
-from services.warehouse_lookup import get_finished_warehouse
+from services.warehouse_lookup import get_finished_warehouse, get_raw_warehouse
 from services.document_status import sync_sales_order_process_status
-from services.inventory_availability import purchase_in_transit_map, stock_key
+from services.inventory_availability import material_production_commitments, purchase_in_transit_map, stock_key
 
 from api.routers.inventory._common import _apply_stock_take_submission, _assigned_operation_request_ids, _can_access_operation_request, _operation_source_detail, _scoped_warehouse_ids, _serialize_stock, _serialize_stock_take_item, _serialize_stock_take_task, _serialize_stock_take_template_item, _serialize_transaction
 
@@ -197,6 +198,8 @@ def list_stocks(
         query = query.offset((page - 1) * page_size).limit(page_size)
     rows = db.execute(query).scalars().all()
     purchase_in_transit = purchase_in_transit_map(db)
+    raw_warehouse_id = get_raw_warehouse(db).id
+    production_commitments = material_production_commitments(db)
     synthetic_rows = []
     if page is None:
         scoped_ids = warehouse_ids
@@ -225,6 +228,8 @@ def list_stocks(
                         "item_name": product.name,
                         "quantity": 0,
                         "reserved_quantity": 0,
+                        "warehouse_reserved_quantity": 0,
+                        "production_reserved_quantity": 0,
                         "available_quantity": 0,
                         # 该仓库尚无库存行:实有/占用/退货在途均为 0,补货可用量只剩采购在途
                         "expected_available_quantity": float(purchase_in_transit.get(stock_key(product_id=product.id), 0)),
@@ -246,10 +251,15 @@ def list_stocks(
                     "item_code": material.material_code,
                     "item_name": material.name,
                     "quantity": 0,
-                    "reserved_quantity": 0,
-                    "available_quantity": 0,
+                    "warehouse_reserved_quantity": 0,
+                    "production_reserved_quantity": float(production_commitments.get(material.id, 0)) if warehouse.id == raw_warehouse_id else 0,
+                    "reserved_quantity": float(production_commitments.get(material.id, 0)) if warehouse.id == raw_warehouse_id else 0,
+                    "available_quantity": -float(production_commitments.get(material.id, 0)) if warehouse.id == raw_warehouse_id else 0,
                     # 同上:无库存行时补货可用量只剩采购在途
-                    "expected_available_quantity": float(purchase_in_transit.get(stock_key(material_id=material.id), 0)),
+                    "expected_available_quantity": float(
+                        purchase_in_transit.get(stock_key(material_id=material.id), 0)
+                        - (production_commitments.get(material.id, 0) if warehouse.id == raw_warehouse_id else 0)
+                    ),
                     "avg_unit_cost": 0,
                     "inventory_amount": 0,
                     "cost_status": "unpriced",
@@ -259,7 +269,15 @@ def list_stocks(
                     }
                 )
     items = [
-            _serialize_stock(row, purchase_in_transit=purchase_in_transit)
+            _serialize_stock(
+                row,
+                purchase_in_transit=purchase_in_transit,
+                production_reserved_quantity=(
+                    production_commitments.get(row.material_id, Decimal("0"))
+                    if row.material_id and row.warehouse_id == raw_warehouse_id
+                    else Decimal("0")
+                ),
+            )
             for row in rows
         ] + synthetic_rows
     if page is not None:
@@ -655,13 +673,21 @@ def reject_operation_request(
                         category="warning",
                     )
     complete_todos(db, business_type="inventory_operation_request", business_id=row.id)
-    if row.requested_by_id:
+    rejection_recipient_ids = [row.requested_by_id] if row.requested_by_id else []
+    rejection_title = "库存作业请求已驳回"
+    if row.request_category == "sales_return_inbound" and row.source_type == "sales_return":
+        from services.sales_return_workflow import sales_return_notice_user_ids
+        sales_return = db.get(SalesReturn, row.source_id)
+        if sales_return is not None:
+            rejection_recipient_ids = sales_return_notice_user_ids(db, sales_return)
+            rejection_title = "销售退换货回库作业已驳回"
+    if rejection_recipient_ids:
         create_notification(
             db,
-            title="库存作业请求已驳回",
+            title=rejection_title,
             content=f"库存作业 {row.request_no} 已驳回，原因：{payload.reject_reason}",
             module=row.source_module or "inventory",
-            recipient_user_ids=[row.requested_by_id],
+            recipient_user_ids=rejection_recipient_ids,
             created_by_id=current_user.id,
             category="warning",
         )

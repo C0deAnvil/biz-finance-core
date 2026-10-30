@@ -33,6 +33,7 @@ from schemas.finance import (
 )
 from services.core import _role_user_ids, complete_todos, create_cash_flow, create_notification, write_operation_log
 from services.inventory_cost import sync_sales_order_cost
+from services.sales_return_workflow import sales_return_notice_user_ids
 from services.time_utils import now_local
 
 
@@ -255,7 +256,7 @@ def create_refund_record(payload: RefundRecordCreate, current_user: User, db: Se
             happened_at=payload.refunded_at,
             remark=payload.remark,
         )
-        recipient_user_ids = [sales_return.requested_by_id] if sales_return else []
+        recipient_user_ids = sales_return_notice_user_ids(db, sales_return) if sales_return else []
         if recipient_user_ids:
             create_notification(
                 db,

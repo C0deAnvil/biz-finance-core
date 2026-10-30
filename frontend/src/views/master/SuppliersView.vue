@@ -324,7 +324,7 @@
         <el-form-item label="批次号"><el-input v-model="sampleForm.batch_no" placeholder="留空则使用样品单号；库管收样时可修改" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="sampleForm.remark" type="textarea" :rows="3" placeholder="送样用途、检验要求等" /></el-form-item>
       </el-form>
-      <p class="sample-meta">登记后由目标仓库库管确认收样，再自动生成质检任务。样品不计入可用库存。</p>
+      <p class="sample-meta">登记后由目标仓库库管接收、编码贴标并初筛；初筛合格才生成质检任务，不合格可填写原因直接结案。样品不计入可用库存。</p>
       <template #footer><el-button @click="sampleCreateVisible = false">取消</el-button><el-button type="primary" @click="submitSample">提交待收样</el-button></template>
     </el-dialog>
 
@@ -336,6 +336,9 @@
         <el-table-column label="数量" width="110"><template #default="scope">{{ formatNumber(scope.row.quantity) }} {{ scope.row.unit }}</template></el-table-column>
         <el-table-column label="实收" width="110"><template #default="scope">{{ scope.row.received_quantity == null ? '-' : formatNumber(scope.row.received_quantity) }} {{ scope.row.received_quantity == null ? '' : scope.row.unit }}</template></el-table-column>
         <el-table-column prop="storage_location" label="存放位置" min-width="120" />
+        <el-table-column prop="label_code" label="标签码" min-width="135"><template #default="scope">{{ scope.row.label_code || '-' }}</template></el-table-column>
+        <el-table-column label="初筛" width="110"><template #default="scope"><el-tag :type="scope.row.preliminary_result === 'rejected' ? 'danger' : scope.row.preliminary_result === 'passed' ? 'success' : 'info'">{{ scope.row.preliminary_result === 'rejected' ? '不合格' : scope.row.preliminary_result === 'passed' ? '合格' : '待初筛' }}</el-tag></template></el-table-column>
+        <el-table-column prop="preliminary_reason" label="初筛说明" min-width="180" show-overflow-tooltip><template #default="scope">{{ scope.row.preliminary_reason || '-' }}</template></el-table-column>
         <el-table-column label="质检结果" width="135"><template #default="scope"><el-tag :type="sampleTagType(scope.row)">{{ sampleStatusText(scope.row) }}</el-tag></template></el-table-column>
         <el-table-column prop="report_summary" label="报告摘要" min-width="180" show-overflow-tooltip />
         <el-table-column label="操作" width="120"><template #default="scope"><el-button v-if="scope.row.inspection_id" text type="primary" @click="openSampleReport(scope.row)">查看报告</el-button></template></el-table-column>
@@ -723,21 +726,23 @@ function samplesFor(row) {
 
 function latestSample(row) {
   const rows = samplesFor(row)
-  return rows.find((sample) => sample.status === 'completed') || rows[0] || null
+  return rows.find((sample) => ['completed', 'preliminary_rejected'].includes(sample.status)) || rows[0] || null
 }
 
 function pendingSample(row) {
-  return samplesFor(row).find((sample) => sample.status !== 'completed') || null
+  return samplesFor(row).find((sample) => !['completed', 'preliminary_rejected'].includes(sample.status)) || null
 }
 
 function sampleStatusText(row) {
   if (!row) return '未收样'
   if (row.status === 'pending_receipt') return '待库管收样'
   if (row.status === 'pending_quality') return '待质检'
+  if (row.status === 'preliminary_rejected') return '初筛不合格'
   return row.is_passed ? `合格 · ${row.grade || '-'}` : `不合格 · ${row.grade || '-'}`
 }
 
 function sampleTagType(row) {
+  if (row.status === 'preliminary_rejected') return 'danger'
   if (row.status === 'completed') return row.is_passed ? 'success' : 'danger'
   return 'warning'
 }

@@ -38,7 +38,7 @@ from services.display import calculate_bag_count, get_default_packaging_config, 
 from services.quality_workflow import create_return_reinspection_quality_task, resolve_quality_recipients_for_warehouse
 from services.replenishment_service import create_sales_shortage_demand, ensure_fulfillment_demand_routing, material_expected_available_quantity
 from services.request_trace import emit
-from services.sales_return_workflow import create_sales_return_inbound_request
+from services.sales_return_workflow import create_sales_return_inbound_request, sales_return_notice_user_ids
 from services.warehouse_lookup import get_finished_warehouse
 from services.time_utils import now_local
 
@@ -152,9 +152,12 @@ def create_return(payload: SalesReturnCreate, current_user: User, db: Session):
     create_notification(
         db,
         title="销售退换货已提交",
-        content=f"{return_type_text}单 {sales_return.return_no} 已提交，等待审批。",
+        content=f"客户订单 {order.order_no} 发生{return_type_text}，单号 {sales_return.return_no}，原因：{reason}。当前等待审批。",
         module="sales",
-        recipient_user_ids=list(dict.fromkeys([current_user.id, *approver_user_ids])),
+        recipient_user_ids=list(dict.fromkeys([
+            *sales_return_notice_user_ids(db, sales_return),
+            *approver_user_ids,
+        ])),
         created_by_id=current_user.id,
         category="warning",
     )
@@ -287,7 +290,11 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
                 + ("已进入质检，质检放行后生成回库作业。" if sales_return.requires_reinspection else "已生成目标仓库回库作业。")
             ),
             module="sales",
-            recipient_user_ids=list(dict.fromkeys([sales_return.requested_by_id, *finance_user_ids, *inventory_user_ids])),
+            recipient_user_ids=list(dict.fromkeys([
+                *sales_return_notice_user_ids(db, sales_return),
+                *finance_user_ids,
+                *inventory_user_ids,
+            ])),
             created_by_id=current_user.id,
             category="success",
         )
@@ -300,7 +307,7 @@ def approve_return(return_id: int, payload: SalesReturnApprovalRequest, current_
             title="销售退换货已驳回",
             content=f"{'退货' if sales_return.return_type == 'return' else '换货'}单 {sales_return.return_no} 审批未通过，请查看驳回说明。",
             module="sales",
-            recipient_user_ids=[sales_return.requested_by_id],
+            recipient_user_ids=sales_return_notice_user_ids(db, sales_return),
             created_by_id=current_user.id,
             category="warning",
         )

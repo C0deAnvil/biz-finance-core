@@ -13,12 +13,26 @@ async function loadPdf(path) {
   return response.blob()
 }
 
+function printPath(kind, orderId) {
+  if (kind === 'sales') return `/api/printing/sales-orders/${orderId}.pdf`
+  if (kind === 'placement') return `/api/printing/placement-orders/${orderId}.pdf`
+  if (kind === 'production-demand') return `/api/printing/production-demands/${orderId}.pdf`
+  throw new Error('不支持的打印单据类型')
+}
+
+function printLabel(kind) {
+  if (kind === 'sales') return '销售单'
+  if (kind === 'placement') return '置货单'
+  if (kind === 'production-demand') return '生产补货需求单'
+  return '业务单据'
+}
+
 export async function downloadOrderPdf(kind, orderId, orderNo) {
-  const path = `/api/printing/${kind === 'sales' ? 'sales-orders' : 'placement-orders'}/${orderId}.pdf`
+  const path = printPath(kind, orderId)
   const url = URL.createObjectURL(await loadPdf(path))
   const link = document.createElement('a')
   link.href = url
-  link.download = `${kind === 'sales' ? '销售单' : '置货单'}-${orderNo || orderId}.pdf`
+  link.download = `${printLabel(kind)}-${orderNo || orderId}.pdf`
   document.body.appendChild(link)
   link.click()
   link.remove()
@@ -26,7 +40,7 @@ export async function downloadOrderPdf(kind, orderId, orderNo) {
 }
 
 export async function printOrderPdf(kind, orderId) {
-  const path = `/api/printing/${kind === 'sales' ? 'sales-orders' : 'placement-orders'}/${orderId}.pdf`
+  const path = printPath(kind, orderId)
   const url = URL.createObjectURL(await loadPdf(path))
   const frame = document.createElement('iframe')
   frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'

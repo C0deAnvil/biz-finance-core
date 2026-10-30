@@ -14,7 +14,7 @@
         <el-button v-if="canSubmitRequest" type="success" plain @click="openMergedRequestDialog">合并付款申请</el-button>
       </template>
       <el-table :data="pagedOrders" stripe @selection-change="handleOrderSelectionChange">
-        <el-table-column v-if="canSubmitRequest" type="selection" width="52" />
+        <el-table-column v-if="canSubmitRequest" type="selection" width="52" :selectable="paymentRequestSelectable" />
         <el-table-column prop="order_no" label="采购单号" width="160" />
         <el-table-column prop="supplier_name" label="供应商" min-width="180" />
         <el-table-column prop="status_label" label="采购状态" width="120">
@@ -32,7 +32,10 @@
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="goOrder(scope.row.id)">查看订单</el-button>
-            <el-button v-if="canSubmitRequest" size="small" text type="success" @click="openRequestDialog(scope.row)">申请付款</el-button>
+            <el-button v-if="canSubmitRequest && scope.row.can_submit_payment_request" size="small" text type="success" @click="openRequestDialog(scope.row)">申请付款</el-button>
+            <el-tag v-else-if="canSubmitRequest && scope.row.payment_request_block_reason" type="info" size="small">
+              {{ scope.row.payment_request_block_reason }}
+            </el-tag>
             <el-button
               v-if="canCompleteRequest && completableRequestForOrder(scope.row.id)"
               size="small"
@@ -111,7 +114,7 @@
         <SettlementAccounts v-model:counterparty-account-id="requestForm.counterparty_account_id" :party-id="selectedOrder?.supplier_id" direction="payment" :show-company="false" counterparty-required />
         <el-form-item label="采购订单">
           <el-select v-model="requestForm.purchase_order_id" filterable style="width: 100%">
-            <el-option v-for="item in orders" :key="item.id" :label="`${item.order_no} / ${item.supplier_name || '-'}`" :value="item.id" />
+            <el-option v-for="item in paymentRequestableOrders" :key="item.id" :label="`${item.order_no} / ${item.supplier_name || '-'}`" :value="item.id" />
           </el-select>
         </el-form-item>
         <div v-if="selectedOrder" class="order-summary-card">
@@ -334,6 +337,7 @@ const mergedRequestForm = reactive({
 
 const canSubmitRequest = computed(() => ['purchase', 'finance', 'system_admin'].includes(auth.user?.role_code))
 const canCompleteRequest = computed(() => ['purchase', 'system_admin'].includes(auth.user?.role_code))
+const paymentRequestableOrders = computed(() => orders.value.filter((item) => item.can_submit_payment_request))
 const selectedOrder = computed(() => orders.value.find((item) => item.id === requestForm.purchase_order_id) || null)
 const mergedSupplierName = computed(() => mergedRequestForm.items[0]?.supplier_name || '')
 const mergedRequestedAmount = computed(() =>
@@ -425,6 +429,10 @@ async function submitInvoice() {
 }
 
 function openRequestDialog(row = null) {
+  if (row && !row.can_submit_payment_request) {
+    ElMessage.warning(row.payment_request_block_reason || '当前采购订单尚未生效，不能申请付款')
+    return
+  }
   resetRequestForm()
   if (row) {
     requestForm.purchase_order_id = row.id
@@ -432,6 +440,10 @@ function openRequestDialog(row = null) {
     requestForm.requested_amount = requestForm.order_amount
   }
   requestVisible.value = true
+}
+
+function paymentRequestSelectable(row) {
+  return Boolean(row?.can_submit_payment_request)
 }
 
 function handleOrderSelectionChange(selection) {

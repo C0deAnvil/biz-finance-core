@@ -7,9 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from models import (BOM, Inventory, InventoryOperationRequest, Material, MaterialReplenishmentDemand,
-                    ProductionMaterialUsage, ProductionTask, PurchaseOrder, PurchaseOrderItem,
-                    PurchaseReceipt, TodoItem)
-from services.inventory_availability import INACTIVE_TASK_STATUSES
+                    PurchaseOrder, PurchaseOrderItem, PurchaseReceipt, TodoItem)
+from services.inventory_availability import material_production_commitments
 from services.material_replenishment_confirmation import confirmed_material_quantities
 from services.warehouse_lookup import get_raw_warehouse
 
@@ -18,7 +17,7 @@ LEGACY_SOURCE_TYPE = "sales_order_material_replenishment"
 ZERO = Decimal("0")
 
 
-def material_stock_availability(db, material_ids, *, lock=False):
+def material_stock_availability(db, material_ids, *, lock=False, exclude_fulfillment_demand_id=None):
     warehouse = get_raw_warehouse(db)
     rows = select(Inventory).where(Inventory.warehouse_id == warehouse.id,
                                    Inventory.material_id.in_(material_ids or [-1]), Inventory.product_id.is_(None))
@@ -28,12 +27,13 @@ def material_stock_availability(db, material_ids, *, lock=False):
     for row in db.scalars(rows):
         stocks[row.material_id]["quantity"] += Decimal(row.quantity or 0)
         stocks[row.material_id]["reserved_quantity"] += Decimal(row.reserved_quantity or 0)
-    for mid, planned, actual in db.execute(
-        select(ProductionMaterialUsage.material_id, ProductionMaterialUsage.planned_quantity, ProductionMaterialUsage.actual_quantity)
-        .join(ProductionTask, ProductionTask.id == ProductionMaterialUsage.production_task_id)
-        .where(ProductionMaterialUsage.material_id.in_(material_ids or [-1]), ProductionTask.status.not_in(INACTIVE_TASK_STATUSES))
-    ):
-        stocks[mid]["production_reserved_quantity"] += max(Decimal(planned or 0) - Decimal(actual or 0), ZERO)
+    commitments = material_production_commitments(
+        db,
+        material_ids=material_ids,
+        exclude_fulfillment_demand_id=exclude_fulfillment_demand_id,
+    )
+    for mid, quantity in commitments.items():
+        stocks[mid]["production_reserved_quantity"] += quantity
     for stock in stocks.values():
         stock["available_quantity"] = max(stock["quantity"] - stock["reserved_quantity"] - stock["production_reserved_quantity"], ZERO)
     return stocks
@@ -94,7 +94,7 @@ def material_demand_progress(db, demand, *, lock_stock=False):
             allocations[batch.id, mid] = (arrival, stocked)
             received[key] -= arrival
             inbound[key] -= stocked
-    submitted, outstanding, arrived = defaultdict(Decimal), defaultdict(Decimal), defaultdict(Decimal)
+    submitted, explicit_required, outstanding, arrived = defaultdict(Decimal), defaultdict(Decimal), defaultdict(Decimal), defaultdict(Decimal)
     material_orders = defaultdict(list)
     for mid, qty in legacy.items():
         legacy_po = next((p for p in legacy_orders if p.id in orders), None)
@@ -107,6 +107,10 @@ def material_demand_progress(db, demand, *, lock_stock=False):
     for batch in batches:
         for item in batch.items_json:
             mid, qty = int(item["material_id"]), Decimal(str(item["shortage_quantity"]))
+            explicit_required[mid] = max(
+                explicit_required[mid],
+                Decimal(str(item.get("actual_required_quantity") or 0)),
+            )
             arrival, stocked = allocations.get((batch.id, mid), (ZERO, ZERO))
             submitted[mid] += qty
             outstanding[mid] += max(qty - stocked, ZERO)
@@ -114,11 +118,21 @@ def material_demand_progress(db, demand, *, lock_stock=False):
             if batch.purchase_order_id in orders:
                 material_orders[mid].append(orders[batch.purchase_order_id])
     ids = sorted(set(requirements) | set(submitted))
-    stocks = material_stock_availability(db, ids, lock=lock_stock)
+    # 当前需求查看自己的可生产量时，只扣除其他需求/任务的占用；否则会把
+    # 本需求既作为“需要量”又作为“他人占用”重复扣减。
+    stocks = material_stock_availability(
+        db,
+        ids,
+        lock=lock_stock,
+        exclude_fulfillment_demand_id=demand.id,
+    )
     names = {m.id: m.name for m in db.scalars(select(Material).where(Material.id.in_(ids or [-1])))}
     items = []
     for mid in ids:
-        required = requirements.get(mid, ZERO)
+        system_required = requirements.get(mid, ZERO)
+        # 人工提交量是最终业务需求；BOM 计算量仅作为默认建议。允许生产人员
+        # 因损耗、安全余量等原因将 1000 调整为 1800，并贯穿采购与生产领料。
+        required = max(system_required, explicit_required[mid], submitted[mid])
         stock = stocks[mid]
         pending = max(required - stock["available_quantity"] - outstanding[mid], ZERO)
         related = {p.id: p for p in material_orders[mid]}
@@ -130,7 +144,8 @@ def material_demand_progress(db, demand, *, lock_stock=False):
         elif submitted[mid]:
             label = "待采购处理"
         items.append({"material_id": mid, "material_name": names.get(mid, f"原料#{mid}"),
-                      "required_quantity": float(required), "stock_available_quantity": float(stock["available_quantity"]),
+                      "required_quantity": float(required), "system_required_quantity": float(system_required),
+                      "stock_available_quantity": float(stock["available_quantity"]),
                       "stock_quantity": float(stock["quantity"]), "stock_reserved_quantity": float(stock["reserved_quantity"]),
                       "production_reserved_quantity": float(stock["production_reserved_quantity"]),
                       "submitted_quantity": float(submitted[mid]), "outstanding_quantity": float(outstanding[mid]),
