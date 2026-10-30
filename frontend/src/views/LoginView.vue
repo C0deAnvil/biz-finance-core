@@ -5,7 +5,7 @@
         <div class="login-header">
           <div class="login-mark">Y</div>
           <div>
-            <div class="login-title">业财一体化系统</div>
+            <div class="login-title">康普汇维ERP系统</div>
             <div class="login-subtitle">业务、库存、生产与财务协同平台</div>
           </div>
         </div>

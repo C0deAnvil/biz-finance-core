@@ -1,6 +1,6 @@
 import routeManifest from '../shared/route-manifest.json'
 
-export const APP_TITLE = '业财一体化系统'
+export const APP_TITLE = '康普汇维ERP系统'
 
 const loaderMap = {
   '/help': () => import('../views/help/SystemGuideView.vue'),
