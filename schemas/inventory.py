@@ -64,6 +64,9 @@ class StockTransferCreateRequest(BaseModel):
     packaging_config_id: int | None = None
     quantity: float = Field(..., gt=0)
     requires_quality: bool = False
+    carrier_name: str | None = Field(default=None, max_length=100)
+    carrier_phone: str | None = Field(default=None, max_length=50)
+    vehicle_plate_no: str | None = Field(default=None, max_length=50)
     remark: str | None = Field(default=None, max_length=500)
 
 

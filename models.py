@@ -1237,6 +1237,9 @@ class StockTransfer(TimestampMixin, Base):
     packaging_config_id = Column(Integer, ForeignKey("packaging_configs.id"), nullable=True)
     quantity = Column(Numeric(18, 4), nullable=False)
     requires_quality = Column(Boolean, nullable=False, default=False)
+    carrier_name = Column(String(100), nullable=True)
+    carrier_phone = Column(String(50), nullable=True)
+    vehicle_plate_no = Column(String(50), nullable=True)
     status = Column(String(30), nullable=False, default="pending_outbound")
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     outbound_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -1588,11 +1591,14 @@ class QualityTask(TimestampMixin, Base):
     # 申请质检时指定的质检员(需求:由指定质检员或超级质检员处理)。
     # 与 QualityInspection.inspector_user_id 的区别:这里是"派给谁检",后者是"谁检了"。
     assigned_inspector_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    assigned_at = Column(DateTime, nullable=True)
     # 该质检任务归属的仓库,用于普通质检员的可见范围过滤(超级质检员不受限)
     target_warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
 
     # 供接口展示"派给谁检"与"归属哪个仓库"的名称,避免前端只拿到 id
     assigned_inspector = relationship("User", foreign_keys=[assigned_inspector_id])
+    assigned_by = relationship("User", foreign_keys=[assigned_by_id])
     target_warehouse = relationship("Warehouse", foreign_keys=[target_warehouse_id])
     stock_transfer = relationship("StockTransfer", foreign_keys=[stock_transfer_id])
 

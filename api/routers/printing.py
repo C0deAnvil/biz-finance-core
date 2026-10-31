@@ -13,9 +13,10 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_roles
-from models import FulfillmentDemand, InventoryDispatchQueue, PlacementPrintAccessLog, PlacementPrintAgent, PlacementPrintJob, SalesOrder, SalesOrderItem, User
+from models import FulfillmentDemand, InventoryDispatchQueue, PlacementPrintAccessLog, PlacementPrintAgent, PlacementPrintJob, SalesOrder, SalesOrderItem, StockTransfer, User
 from responses import api_response
 from services.order_printing import render_order_pdf, render_production_demand_pdf
+from services.stock_transfer_printing import render_stock_transfer_pdf
 from services.organization import user_in_scope
 from services.time_utils import now_local
 
@@ -141,6 +142,30 @@ def production_demand_pdf(
             "Content-Disposition": f'inline; filename="production-demand-{demand.demand_no}.pdf"',
             "Cache-Control": "no-store",
         },
+    )
+
+
+@router.get("/stock-transfers/{transfer_id}/{document_type}.pdf")
+def stock_transfer_pdf(
+    transfer_id: int,
+    document_type: str,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "quality", "quality_super", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    if document_type not in {"outbound", "inbound"}:
+        raise HTTPException(status_code=404, detail="不支持的移库单据类型")
+    transfer = db.execute(
+        select(StockTransfer).options(
+            joinedload(StockTransfer.source_warehouse), joinedload(StockTransfer.target_warehouse),
+            joinedload(StockTransfer.product), joinedload(StockTransfer.material), joinedload(StockTransfer.packaging_config),
+        ).where(StockTransfer.id == transfer_id)
+    ).unique().scalar_one_or_none()
+    if transfer is None:
+        raise HTTPException(status_code=404, detail="移库单不存在")
+    name = "outbound" if document_type == "outbound" else "inbound"
+    return Response(
+        content=render_stock_transfer_pdf(transfer, document_type), media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="stock-transfer-{name}-{transfer.transfer_no}.pdf"', "Cache-Control": "no-store"},
     )
 
 

@@ -14,19 +14,26 @@
         <el-table-column label="移库路径" min-width="220">
           <template #default="scope">{{ scope.row.source_warehouse_name }} → {{ scope.row.target_warehouse_name }}</template>
         </el-table-column>
-        <el-table-column prop="item_name" label="货品" min-width="150" />
+        <el-table-column prop="item_type_label" label="类型" width="80" />
+        <el-table-column prop="item_code" label="编码" width="140" />
+        <el-table-column prop="item_name" label="物品名称" min-width="170" />
         <el-table-column label="数量" width="100">
           <template #default="scope">{{ formatNumber(scope.row.quantity) }}</template>
         </el-table-column>
         <el-table-column prop="created_by_name" label="发起人" width="110" />
+        <el-table-column prop="carrier_name" label="运送人" width="110" />
+        <el-table-column prop="carrier_phone" label="联系方式" width="140" />
+        <el-table-column prop="vehicle_plate_no" label="车牌号" width="120" />
         <el-table-column label="状态" width="120">
           <template #default="scope">
             <el-tag :type="statusTag(scope.row.status)" size="small">{{ scope.row.status_label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="300" fixed="right">
+        <el-table-column label="操作" width="360" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openDetail(scope.row)">详情</el-button>
+            <el-button size="small" text type="primary" @click="downloadTransfer(scope.row, 'outbound')">出库单</el-button>
+            <el-button size="small" text type="success" @click="downloadTransfer(scope.row, 'inbound')">入库单</el-button>
             <el-button v-if="canOperate && ['pending_outbound', 'pending_inbound'].includes(scope.row.status)" size="small" type="primary" @click="router.push('/inventory/stocks')">库存作业</el-button>
             <el-button v-if="canQuality && scope.row.status === 'pending_quality'" size="small" type="success" @click="router.push('/quality/tasks')">质检任务</el-button>
             <el-tooltip v-if="['quality_failed', 'outbound_rejected', 'inbound_rejected'].includes(scope.row.status)" :content="scope.row.reject_reason || '请处理异常及在途实物'">
@@ -83,6 +90,9 @@
           <el-input-number v-model="createForm.quantity" :min="0.01" :precision="2" :step="1" style="width:100%" />
         </el-form-item>
         <el-form-item label="需要质检"><el-switch v-model="createForm.requires_quality" /><span class="quality-hint">默认无需质检；勾选后由目标仓质检员处理</span></el-form-item>
+        <el-form-item label="运送人" required><el-input v-model="createForm.carrier_name" maxlength="100" placeholder="填写实际运送人姓名" /></el-form-item>
+        <el-form-item label="联系方式" required><el-input v-model="createForm.carrier_phone" maxlength="50" placeholder="手机或其他联系电话" /></el-form-item>
+        <el-form-item label="车牌号" required><el-input v-model="createForm.vehicle_plate_no" maxlength="50" placeholder="例如：冀R12345" /></el-form-item>
         <el-form-item label="备注">
           <el-input v-model="createForm.remark" type="textarea" :rows="2" placeholder="移库原因、注意事项等" />
         </el-form-item>
@@ -102,6 +112,9 @@
         <div><strong>质检要求：</strong>{{ activeTransfer.requires_quality ? '需要质检' : '无需质检' }}</div>
         <div><strong>状态：</strong>{{ activeTransfer.status_label }}</div>
         <div><strong>发起人：</strong>{{ activeTransfer.created_by_name || '-' }}</div>
+        <div><strong>运送人：</strong>{{ activeTransfer.carrier_name || '-' }}</div>
+        <div><strong>联系方式：</strong>{{ activeTransfer.carrier_phone || '-' }}</div>
+        <div><strong>车牌号：</strong>{{ activeTransfer.vehicle_plate_no || '-' }}</div>
         <div><strong>出库时间：</strong>{{ shortTime(activeTransfer.outbound_at) }}</div>
         <div><strong>质检结果：</strong>{{ activeTransfer.quality_result || '-' }}</div>
         <div><strong>完成时间：</strong>{{ shortTime(activeTransfer.completed_at) }}</div>
@@ -208,6 +221,9 @@ const createForm = reactive({
   packaging_config_id: null,
   quantity: 1,
   requires_quality: false,
+  carrier_name: '',
+  carrier_phone: '',
+  vehicle_plate_no: '',
   remark: ''
 })
 
@@ -297,6 +313,9 @@ async function openCreate() {
     packaging_config_id: null,
     quantity: 1,
     requires_quality: false,
+    carrier_name: '',
+    carrier_phone: '',
+    vehicle_plate_no: '',
     remark: ''
   })
   itemType.value = 'product'
@@ -329,6 +348,10 @@ async function submitCreate() {
     ElMessage.warning('请选择包装')
     return
   }
+  if (!createForm.carrier_name.trim() || !createForm.carrier_phone.trim() || !createForm.vehicle_plate_no.trim()) {
+    ElMessage.warning('请填写运送人、联系方式和车牌号')
+    return
+  }
   creating.value = true
   try {
     await post('/api/inventory/transfers', {
@@ -339,6 +362,9 @@ async function submitCreate() {
       packaging_config_id: itemType.value === 'packaging' ? createForm.packaging_config_id : null,
       quantity: Number(createForm.quantity),
       requires_quality: createForm.requires_quality,
+      carrier_name: createForm.carrier_name.trim(),
+      carrier_phone: createForm.carrier_phone.trim(),
+      vehicle_plate_no: createForm.vehicle_plate_no.trim(),
       remark: createForm.remark || null
     })
     ElMessage.success('移库出库作业已生成，请在「库存状态」处理')
@@ -354,6 +380,10 @@ async function submitCreate() {
 function openDetail(row) {
   activeTransfer.value = row
   detailVisible.value = true
+}
+
+function downloadTransfer(row, type) {
+  window.open(`/api/printing/stock-transfers/${row.id}/${type}.pdf`, '_blank', 'noopener')
 }
 
 onMounted(load)

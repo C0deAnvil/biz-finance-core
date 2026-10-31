@@ -39,6 +39,7 @@ from schemas.production import (
     BOMCreate,
     DemandRawMaterialDemandCreateRequest,
     FulfillmentDemandCancelRequest,
+    FulfillmentDemandAssignRequest,
     FulfillmentDemandUpdateRequest,
     MaterialRequestCreate,
     MaterialUsageInput,
@@ -978,6 +979,7 @@ def list_plans(current_user: User = Depends(get_current_user), db: Session = Dep
                 "sales_order_no": row.sales_order.order_no if row.sales_order else None,
                 "assigned_user_id": row.assigned_user_id,
                 "assigned_user_name": row.assigned_user.full_name if row.assigned_user else None,
+                "assigned_user_name": row.assigned_user.full_name if row.assigned_user else None,
                 "planned_quantity": float(row.planned_quantity or 0),
                 "scheduled_start_at": row.scheduled_start_at.isoformat() if row.scheduled_start_at else None,
                 "scheduled_end_at": row.scheduled_end_at.isoformat() if row.scheduled_end_at else None,
@@ -1354,6 +1356,50 @@ def update_fulfillment_demand(
     )
     db.commit()
     return api_response(data={"id": row.id, "demand_no": row.demand_no, "shortage_quantity": float(row.shortage_quantity)})
+
+
+@router.post("/fulfillment-demands/{demand_id}/assign")
+def assign_fulfillment_demand(
+    demand_id: int,
+    payload: FulfillmentDemandAssignRequest,
+    current_user: User = Depends(require_roles("production", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    role_code = current_user.role.code if current_user.role else ""
+    if role_code == "production" and "总负责人" not in (current_user.job_title or ""):
+        raise HTTPException(status_code=403, detail="仅生产总负责人或管理层可以分配补货需求")
+    demand = db.scalar(select(FulfillmentDemand).where(
+        FulfillmentDemand.id == demand_id,
+        FulfillmentDemand.fulfillment_mode == "production",
+    ).with_for_update())
+    if demand is None:
+        raise HTTPException(status_code=404, detail="生产补货需求不存在")
+    if demand.status != "pending":
+        raise HTTPException(status_code=409, detail="只有待处理的生产补货需求可以分配")
+    assignee = db.scalar(select(User).join(Role, User.role_id == Role.id).where(
+        User.id == payload.assigned_user_id, User.is_active.is_(True), Role.code == "production",
+    ))
+    if assignee is None:
+        raise HTTPException(status_code=404, detail="指定人员不是在岗生产人员")
+    old_id = demand.assigned_user_id
+    demand.assigned_user_id = assignee.id
+    complete_todos(db, business_type="fulfillment_demand", business_id=demand.id)
+    create_todo(
+        db, title=f"待处理生产补货需求 {demand.demand_no}",
+        description=f"由 {current_user.full_name} 分配，请负责后续生产处理。", module="production",
+        assigned_user_id=assignee.id, business_type="fulfillment_demand", business_id=demand.id, priority="high",
+    )
+    create_notification(
+        db, title="生产补货需求已分配", content=f"{demand.demand_no} 已分配给您。", module="production",
+        recipient_user_ids=[assignee.id], created_by_id=current_user.id, category="info",
+    )
+    write_operation_log(
+        db, user_id=current_user.id, module="production", action="assign_fulfillment_demand",
+        content=f"分配生产补货需求 {demand.demand_no} 给 {assignee.full_name}",
+        after_data={"demand_id": demand.id, "old_assigned_user_id": old_id, "assigned_user_id": assignee.id},
+    )
+    db.commit()
+    return api_response(msg="生产补货需求分配成功")
 
 
 @router.post("/fulfillment-demands/{demand_id}/cancel")

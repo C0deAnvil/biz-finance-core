@@ -94,7 +94,7 @@ def test_production_replenishment_submission_creates_demand():
                 planned_quantity=Decimal("10"),
                 material_usages=[
                     MaterialUsageInput(material_id=material.id, requested_quantity=Decimal("20")),
-                    # 即使调用方仍传 BOM 默认 30，后端也必须继承人工确认的 35。
+                    # 采购确认量可以高于 BOM，但转生产任务的默认领料仍按本批 BOM 量 30。
                     MaterialUsageInput(material_id=material_b.id, requested_quantity=Decimal("30")),
                 ],
             ),
@@ -107,7 +107,8 @@ def test_production_replenishment_submission_creates_demand():
                 ProductionMaterialUsage.material_id == material_b.id,
             )
         )
-        assert usage_b.requested_quantity == Decimal("35")
+        assert usage_b.planned_quantity == Decimal("30")
+        assert usage_b.requested_quantity == Decimal("30")
         assert material_production_commitments(db, material_ids=[material_b.id])[material_b.id] == Decimal("35")
 
 

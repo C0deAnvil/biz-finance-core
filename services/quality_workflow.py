@@ -22,6 +22,7 @@ from models import (
     Warehouse,
 )
 from services.core import next_business_no, resolve_assigned_inspector_id
+from services.time_utils import now_local
 from services.organization import get_inventory_scope_warehouse_ids
 
 PURCHASE_QUALITY_NOTES_PREFIX = "PURCHASE_QUALITY::"
@@ -125,6 +126,9 @@ def create_production_quality_task(
         assigned_inspector_id=resolve_assigned_inspector_id(db, assigned_inspector_id),
         target_warehouse_id=production_task.warehouse_id,
     )
+    if quality_task.assigned_inspector_id:
+        quality_task.assigned_by_id = submitted_by_id
+        quality_task.assigned_at = now_local()
     db.add(quality_task)
     db.flush()
     return quality_task
@@ -224,6 +228,9 @@ def create_purchase_quality_tasks(
             assigned_inspector_id=batch_inspector_id,
             target_warehouse_id=receipt.warehouse_id,
         )
+        if quality_task.assigned_inspector_id:
+            quality_task.assigned_by_id = submitted_by_id
+            quality_task.assigned_at = now_local()
         db.add(quality_task)
         db.flush()
         created_tasks.append(quality_task)
@@ -283,6 +290,9 @@ def create_return_reinspection_quality_task(
         assigned_inspector_id=resolve_assigned_inspector_id(db, assigned_inspector_id),
         target_warehouse_id=target_warehouse_id,
     )
+    if quality_task.assigned_inspector_id:
+        quality_task.assigned_by_id = submitted_by_id
+        quality_task.assigned_at = now_local()
     db.add(quality_task)
     db.flush()
     return quality_task

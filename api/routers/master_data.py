@@ -85,7 +85,7 @@ def list_settings(current_user: User = Depends(get_current_user), db: Session = 
     if row is None:
         row = AppSetting(
             setting_key="purchase_approval_amount_threshold",
-            setting_value="50000",
+            setting_value="100000",
             description="采购订单审批金额阈值，订单总金额达到或超过该值时需要经理审批",
         )
         db.add(row)

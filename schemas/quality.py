@@ -46,5 +46,9 @@ class QualityTaskManualCreate(BaseModel):
     target_warehouse_id: int | None = Field(default=None, description="质检任务归属仓库(决定普通质检员可见范围)")
 
 
+class QualityTaskAssign(BaseModel):
+    assigned_inspector_id: int = Field(..., gt=0)
+
+
 class QualityAllowInbound(BaseModel):
     remark: str | None = Field(default=None, max_length=500)

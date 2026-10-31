@@ -124,6 +124,10 @@ class FulfillmentDemandUpdateRequest(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class FulfillmentDemandAssignRequest(BaseModel):
+    assigned_user_id: int = Field(..., gt=0)
+
+
 class FulfillmentDemandManualCreateRequest(BaseModel):
     product_id: int
     shortage_quantity: float = Field(..., gt=0)

@@ -20,6 +20,13 @@
         <el-button v-if="canOperateQuality" @click="openPurchaseRequest">提交采购需求</el-button>
         <el-button v-if="canOperateQuality" type="primary" @click="openCreate">新增质检任务</el-button>
       </template>
+      <el-tabs v-model="activeCategory" class="quality-tabs">
+        <el-tab-pane label="分配给我的" name="mine" />
+        <el-tab-pane label="采购到货" name="purchase" />
+        <el-tab-pane label="生产成品" name="production" />
+        <el-tab-pane label="供应商样品" name="supplier_sample" />
+        <el-tab-pane label="其他任务" name="other" />
+      </el-tabs>
       <el-table :data="pagedActiveRows" stripe :row-class-name="rowClassName">
         <el-table-column prop="quality_no" label="质检任务号" width="160" />
         <el-table-column prop="source_label" label="来源" width="110" />
@@ -45,6 +52,9 @@
             <span v-else class="text-muted">未指定</span>
           </template>
         </el-table-column>
+        <el-table-column label="分配人" width="130">
+          <template #default="scope">{{ scope.row.assigned_by_name || '-' }}</template>
+        </el-table-column>
         <el-table-column label="异常处理" min-width="180">
           <template #default="scope">
             <span v-if="scope.row.disposition_type === 'rework'">返工：{{ scope.row.related_production_task_no || '-' }}</span>
@@ -55,6 +65,7 @@
         <el-table-column label="操作" width="420" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openDetail(scope.row)">详情</el-button>
+            <el-button v-if="canAssignQuality" size="small" text type="primary" @click="openAssign(scope.row)">分配</el-button>
             <el-button v-if="canOperateQuality" size="small" @click="openInspection(scope.row)" :disabled="!scope.row.can_record_inspection">录入质检</el-button>
             <el-button v-if="canOperateQuality" size="small" type="warning" @click="openRework(scope.row)" :disabled="!scope.row.can_rework">发起返工</el-button>
             <el-button v-if="canOperateQuality" size="small" type="danger" @click="openScrap(scope.row)" :disabled="!scope.row.can_scrap">登记报废</el-button>
@@ -70,6 +81,21 @@
       />
     </PageSection>
 
+    <el-dialog v-model="assignVisible" title="分配质检任务" width="460px">
+      <el-form label-width="90px">
+        <el-form-item label="质检任务"><el-input :model-value="activeTask?.quality_no || '-'" disabled /></el-form-item>
+        <el-form-item label="质检员" required>
+          <el-select v-model="assignInspectorId" filterable style="width:100%" placeholder="选择在岗质检员">
+            <el-option v-for="u in qualityInspectors" :key="u.id" :label="u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="assignVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitAssign">确认分配</el-button>
+      </template>
+    </el-dialog>
+
     <PageSection title="历史任务" description="已完成、已报废、已发起返工的任务自动进入历史。">
       <el-table :data="pagedHistoryRows" stripe>
         <el-table-column prop="quality_no" label="质检任务号" width="160" />
@@ -77,6 +103,8 @@
         <el-table-column prop="purchase_order_no" label="采购订单" width="150" />
         <el-table-column prop="batch_no" label="批次号" min-width="170" />
         <el-table-column prop="product_name" label="产品" min-width="160" />
+        <el-table-column prop="assigned_inspector_name" label="质检员" width="130"><template #default="scope">{{ scope.row.assigned_inspector_name || '-' }}</template></el-table-column>
+        <el-table-column prop="assigned_by_name" label="分配人" width="130"><template #default="scope">{{ scope.row.assigned_by_name || '-' }}</template></el-table-column>
         <el-table-column label="状态" width="140">
           <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ scope.row.status_label || statusLabel(scope.row.status) }}</el-tag></template>
         </el-table-column>
@@ -243,6 +271,7 @@ import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/switch/style/css'
 import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tag/style/css'
+import 'element-plus/es/components/tabs/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 
@@ -260,6 +289,7 @@ import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
+import ElTabs, { ElTabPane } from 'element-plus/es/components/tabs/index.mjs'
 
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
@@ -300,12 +330,16 @@ const detailVisible = ref(false)
 const attachmentVisible = ref(false)
 const reworkVisible = ref(false)
 const scrapVisible = ref(false)
+const assignVisible = ref(false)
+const assignInspectorId = ref(null)
 const attachmentTargetId = ref(null)
 
 const canOperateQuality = computed(() => auth.isRole('quality') && pagePermission.can('inspect'))
 const canUploadAttachments = computed(() => auth.isRole('quality') && pagePermission.can('upload'))
+const canAssignQuality = computed(() => ['quality_super', 'manager', 'chairman', 'system_admin'].includes(auth.user?.role_code))
 
 const filters = reactive({ status: '', keyword: '' })
+const activeCategory = ref('mine')
 const createForm = reactive({ purchase_order_id: null, required_tests: 1, remark: '', assigned_inspector_id: null })
 const inspectionForm = reactive({ sequence_no: 1, result_text: '', grade: 'A', is_passed: true, inspected_quantity: 1, sample_consumption_qty: 0, report_summary: '' })
 const reworkForm = reactive({ quantity: 1, reason: '' })
@@ -320,7 +354,12 @@ const filteredRows = computed(() => {
   })
 })
 
-const activeRows = computed(() => filteredRows.value.filter((item) => !['completed', 'rework_created', 'scrapped'].includes(item.status)))
+const activeRows = computed(() => filteredRows.value.filter((item) => {
+  if (['completed', 'rework_created', 'scrapped'].includes(item.status)) return false
+  if (activeCategory.value === 'mine') return isAssignedToMe(item)
+  if (activeCategory.value === 'other') return !['purchase', 'production', 'supplier_sample'].includes(item.source_category)
+  return item.source_category === activeCategory.value
+}))
 const historyRows = computed(() => filteredRows.value.filter((item) => ['completed', 'rework_created', 'scrapped'].includes(item.status)))
 const {
   pagination: activePagination,
@@ -381,6 +420,27 @@ async function load() {
 // 派给当前账号的任务高亮,质检员一眼能看出哪些该自己做
 function isAssignedToMe(row) {
   return Boolean(row?.assigned_inspector_id) && Number(row.assigned_inspector_id) === Number(auth.user?.id)
+}
+
+function openAssign(row) {
+  activeTask.value = row
+  assignInspectorId.value = row.assigned_inspector_id || null
+  assignVisible.value = true
+}
+
+async function submitAssign() {
+  if (!assignInspectorId.value) {
+    ElMessage.warning('请选择质检员')
+    return
+  }
+  try {
+    await post(`/api/quality/tasks/${activeTask.value.id}/assign`, { assigned_inspector_id: assignInspectorId.value })
+    ElMessage.success('质检任务分配成功')
+    assignVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '分配失败')
+  }
 }
 
 function openCreate() {

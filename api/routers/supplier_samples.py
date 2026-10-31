@@ -293,6 +293,8 @@ def receive_sample(
         source_category="supplier_sample", required_tests=1, status="pending",
         submitted_by_id=current_user.id, target_warehouse_id=warehouse.id,
         assigned_inspector_id=assigned_inspector_id,
+        assigned_by_id=current_user.id if assigned_inspector_id else None,
+        assigned_at=now_local() if assigned_inspector_id else None,
     )
     db.add(task)
     db.flush()

@@ -89,6 +89,8 @@ def create_transfer_quality_task(db: Session, transfer: StockTransfer, requested
         status="pending",
         submitted_by_id=requested_by_id,
         assigned_inspector_id=warehouse.qc_user_id if warehouse and warehouse.qc_user_id in recipients else None,
+        assigned_by_id=requested_by_id if warehouse and warehouse.qc_user_id in recipients else None,
+        assigned_at=now_local() if warehouse and warehouse.qc_user_id in recipients else None,
         target_warehouse_id=transfer.target_warehouse_id,
     )
     db.add(task)

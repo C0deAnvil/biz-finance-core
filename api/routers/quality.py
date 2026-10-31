@@ -38,6 +38,7 @@ from schemas.quality import (
     QualityReworkCreate,
     QualityScrapCreate,
     QualityTaskManualCreate,
+    QualityTaskAssign,
 )
 from services.core import _role_user_ids, apply_inventory_change, complete_todos, create_notification, create_todo, next_business_no, resolve_assigned_inspector_id, write_operation_log
 from services.display import clean_display_text, status_label
@@ -179,6 +180,7 @@ def _serialize_quality_task(
         "supplier_sample_no": sample.sample_no if sample else None,
         "sample_quantity": float(sample.received_quantity or sample.quantity) if sample else None,
         "source_type": source_type,
+        "source_category": task.source_category,
         "source_label": source_label,
         "product_id": sample.product_id if sample else transfer.product_id if transfer else (production_task.product_id if production_task else None),
         "product_name": item_name,
@@ -205,6 +207,13 @@ def _serialize_quality_task(
             if getattr(task, "assigned_inspector", None)
             else None
         ),
+        "assigned_by_id": task.assigned_by_id,
+        "assigned_by_name": (
+            (task.assigned_by.full_name or task.assigned_by.username)
+            if getattr(task, "assigned_by", None)
+            else None
+        ),
+        "assigned_at": task.assigned_at.isoformat() if task.assigned_at else None,
         "target_warehouse_id": task.target_warehouse_id,
         "target_warehouse_name": (
             task.target_warehouse.name if getattr(task, "target_warehouse", None) else None
@@ -720,6 +729,8 @@ def create_manual_quality_task(
         submitted_by_id=current_user.id,
         # 手工建质检任务同样支持指定质检员与归属仓库
         assigned_inspector_id=resolve_assigned_inspector_id(db, payload.assigned_inspector_id),
+        assigned_by_id=current_user.id if payload.assigned_inspector_id else None,
+        assigned_at=now_local() if payload.assigned_inspector_id else None,
         target_warehouse_id=payload.target_warehouse_id,
     )
     db.add(quality_task)
@@ -740,6 +751,61 @@ def create_manual_quality_task(
     )
     db.commit()
     return api_response(data={"id": quality_task.id, "quality_no": quality_task.quality_no})
+
+
+@router.post("/tasks/{task_id}/assign")
+def assign_quality_task(
+    task_id: int,
+    payload: QualityTaskAssign,
+    current_user: User = Depends(require_roles("quality_super", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    """指派或改派质检员，并保留分配人和时间。"""
+    task = db.scalar(select(QualityTask).where(QualityTask.id == task_id).with_for_update())
+    if task is None:
+        raise HTTPException(status_code=404, detail="质检任务不存在")
+    if task.status in {"completed", "rework_created", "scrapped", "rejected"}:
+        raise HTTPException(status_code=409, detail="历史质检任务不能重新分配")
+    inspector = db.scalar(
+        select(User).join(Role, User.role_id == Role.id).where(
+            User.id == payload.assigned_inspector_id,
+            User.is_active.is_(True),
+            Role.code.in_(QUALITY_ASSIGNABLE_ROLE_CODES),
+        )
+    )
+    if inspector is None:
+        raise HTTPException(status_code=404, detail="指定人员不是在岗质检员")
+    old_id = task.assigned_inspector_id
+    task.assigned_inspector_id = inspector.id
+    task.assigned_by_id = current_user.id
+    task.assigned_at = now_local()
+    complete_todos(db, business_type="quality_task", business_id=task.id)
+    create_todo(
+        db,
+        title=f"待处理质检任务 {task.quality_no}",
+        description=f"由 {current_user.full_name or current_user.username} 分配，请及时处理。",
+        module="quality",
+        assigned_user_id=inspector.id,
+        business_type="quality_task",
+        business_id=task.id,
+        priority="high",
+    )
+    create_notification(
+        db,
+        title="质检任务已分配",
+        content=f"质检任务 {task.quality_no} 已分配给您。",
+        module="quality",
+        recipient_user_ids=[inspector.id],
+        created_by_id=current_user.id,
+        category="info",
+    )
+    write_operation_log(
+        db, user_id=current_user.id, module="quality", action="assign_task",
+        content=f"分配质检任务 {task.quality_no} 给 {inspector.full_name or inspector.username}",
+        after_data={"task_id": task.id, "old_assigned_inspector_id": old_id, "assigned_inspector_id": inspector.id},
+    )
+    db.commit()
+    return api_response(msg="质检任务分配成功")
 
 
 @router.get("/tasks/{task_id}")

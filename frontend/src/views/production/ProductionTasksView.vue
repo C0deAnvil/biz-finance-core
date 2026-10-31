@@ -81,6 +81,9 @@
         <el-table-column prop="submitted_by_name" label="提交人" width="110">
           <template #default="scope">{{ scope.row.submitted_by_name || '-' }}</template>
         </el-table-column>
+        <el-table-column prop="assigned_user_name" label="生产负责人" width="130">
+          <template #default="scope">{{ scope.row.assigned_user_name || '未分配' }}</template>
+        </el-table-column>
         <el-table-column prop="sales_order_no" label="客户订单号" width="160">
           <template #default="scope">{{ scope.row.sales_order_no || '-' }}</template>
         </el-table-column>
@@ -131,6 +134,7 @@
         <el-table-column label="操作" width="360" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openDemandDetail(scope.row)">详情</el-button>
+            <el-button v-if="canAssignDemands && scope.row.status === 'pending' && !scope.row.low_stock_todo_id" size="small" text type="primary" @click="openDemandAssign(scope.row)">分配</el-button>
             <el-button v-if="!scope.row.low_stock_todo_id" size="small" text type="primary" @click="printDemand(scope.row)">打印</el-button>
             <el-button v-if="!scope.row.low_stock_todo_id" size="small" text type="info" @click="downloadDemand(scope.row)">下载</el-button>
             <el-button size="small" text type="info" @click="openMaterialProgress(scope.row)">原料进度</el-button>
@@ -183,6 +187,21 @@
         <el-button @click="demandDetailVisible = false">关闭</el-button>
         <el-button v-if="demandDetail && !demandDetail.low_stock_todo_id" @click="downloadDemand(demandDetail)">下载 PDF</el-button>
         <el-button v-if="demandDetail && !demandDetail.low_stock_todo_id" type="primary" @click="printDemand(demandDetail)">打印</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="demandAssignVisible" title="分配生产补货需求" width="480px">
+      <el-form label-width="100px">
+        <el-form-item label="需求编号"><el-input :model-value="activeDemand?.demand_no || '-'" disabled /></el-form-item>
+        <el-form-item label="车间负责人" required>
+          <el-select v-model="demandAssigneeId" filterable style="width:100%" placeholder="选择生产人员">
+            <el-option v-for="u in productionUsers" :key="u.id" :label="u.full_name" :value="u.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="demandAssignVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitDemandAssign">确认分配</el-button>
       </template>
     </el-dialog>
 
@@ -625,9 +644,13 @@ const demandStatusTab = ref('pending')
 const activeTaskTab = ref('ongoing')
 const demandDetailVisible = ref(false)
 const demandDetail = ref(null)
+const demandAssignVisible = ref(false)
+const demandAssigneeId = ref(null)
+const productionUsers = ref([])
 
 const completedStatuses = ['completed', 'cancelled', 'scrapped', 'partially_scrapped', 'reworked']
 const canManageTasks = computed(() => auth.user?.role_code === 'production' && pagePermission.can('create'))
+const canAssignDemands = computed(() => auth.user?.role_code === 'production' && String(auth.user?.job_title || '').includes('总负责人'))
 const showTaskTabs = computed(() => !auth.isRole('quality'))
 const createForm = reactive({ source_type: 'manual', sales_order_id: null, product_id: null, planned_quantity: 1, fluctuation_ratio: 0, notes: '', material_usages: [], fulfillment_demand_id: null, warehouse_id: null, create_raw_material_demands: false, raw_material_demands: [] })
 const finishedWarehouses = ref([])
@@ -877,6 +900,28 @@ async function load() {
     fulfillmentDemands.value = []
   }
   await applyFocusFromRoute()
+}
+
+async function openDemandAssign(row) {
+  activeDemand.value = row
+  demandAssigneeId.value = row.assigned_user_id || null
+  if (!productionUsers.value.length) productionUsers.value = await get('/api/production/plan-users')
+  demandAssignVisible.value = true
+}
+
+async function submitDemandAssign() {
+  if (!demandAssigneeId.value) {
+    ElMessage.warning('请选择车间负责人')
+    return
+  }
+  try {
+    await post(`/api/production/fulfillment-demands/${activeDemand.value.id}/assign`, { assigned_user_id: demandAssigneeId.value })
+    ElMessage.success('生产补货需求已分配')
+    demandAssignVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(error?.message || '分配失败')
+  }
 }
 
 async function handleTaskPaginationChange({ page, pageSize }) {
@@ -1209,27 +1254,9 @@ async function openCreateTaskDialog(row) {
     ? Math.min(shortageQuantity, maxProducibleQuantity)
     : shortageQuantity
   createForm.fulfillment_demand_id = row.source_type === 'low_stock_replenishment' ? null : row.id
+  // 转生产任务时，领料默认量始终按“本批计划数量 × BOM 单耗”计算。
+  // 采购阶段确认的实际采购需求只用于补货和库存跟踪，不能反向放大领料量。
   buildCreateMaterialUsages()
-  if (createForm.fulfillment_demand_id) {
-    try {
-      const progress = await get(`/api/production/fulfillment-demands/${createForm.fulfillment_demand_id}/material-progress`)
-      const demandQuantity = Math.max(Number(row.shortage_quantity || 0), Number(createForm.planned_quantity || 0), 1)
-      const ratio = Math.min(Number(createForm.planned_quantity || 0) / demandQuantity, 1)
-      const requirementMap = new Map((progress.items || []).map((item) => [
-        Number(item.material_id),
-        Number(item.required_quantity || item.system_required_quantity || 0) * ratio,
-      ]))
-      createForm.material_usages.forEach((usage) => {
-        const confirmedQuantity = requirementMap.get(Number(usage.material_id))
-        if (confirmedQuantity && confirmedQuantity > Number(usage.requested_quantity || 0)) {
-          usage.requested_quantity = confirmedQuantity
-          usage.reason = usage.reason || '按已确认的原料实际需求量领料'
-        }
-      })
-    } catch (error) {
-      ElMessage.warning(error?.message || '未能读取已确认的原料需求量，请核对领料数量')
-    }
-  }
   createVisible.value = true
 }
 

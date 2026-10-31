@@ -180,6 +180,10 @@ def init_seed_data(db: Session, default_password: str):
         ("purchase_division_2_team_a", "采购二部一组", "采购二部下属小组", "purchase_division_2", "team", 1, None),
         ("inventory_finished_team_a", "沧州成品库一组", "沧州成品仓库管理小组", "inventory_cangzhou_finished", "team", 1, "finished"),
         ("inventory_raw_team_a", "廊坊原料库一组", "廊坊原料仓库管理小组", "inventory_langfang_raw", "team", 1, "raw"),
+        ("production_management", "廊坊生产管理组", "生产总负责人及生产调度", "production", "team", 1, "raw"),
+        ("production_slow_release", "缓释尿素车间", "缓释尿素生产单元", "production", "team", 2, "raw"),
+        ("production_crystal", "结晶尿素车间", "结晶尿素生产单元", "production", "team", 3, "raw"),
+        ("production_general_urea", "普通尿素车间", "普通尿素及通用生产单元", "production", "team", 4, "raw"),
     ]
     for code, name, description, parent_code, unit_type, sort_order, warehouse_scope in team_seed:
         _upsert_department(
@@ -213,8 +217,13 @@ def init_seed_data(db: Session, default_password: str):
         ("sales01", "销售员1", "sales_division_1_team_a", "sales", "销售专员", "self"),
         ("inventory01", "库管员1", "inventory_finished_team_a", "inventory", "库管专员", "department"),
         ("inventoryraw01", "原料库管员1", "inventory_raw_team_a", "inventory", "原料库管专员", "department"),
+        ("langfang_inventory_head", "廊坊总库存管理员", "inventory_langfang_raw", "inventory", "总库存管理员负责人", "department"),
         ("purchase01", "采购员1", "purchase_division_1_team_a", "purchase", "采购专员", "self"),
         ("production01", "生产员1", "production", "production", "生产专员", "department"),
+        ("langfang_production_head", "廊坊生产总负责人", "production_management", "production", "生产总负责人", "department"),
+        ("slow_release_head", "缓释尿素车间负责人", "production_slow_release", "production", "缓释尿素车间负责人", "department"),
+        ("crystal_urea_head", "结晶尿素车间负责人", "production_crystal", "production", "结晶尿素车间负责人", "department"),
+        ("general_urea_head", "普通尿素车间负责人", "production_general_urea", "production", "普通尿素车间负责人", "department"),
         ("quality01", "质检员1", "quality", "quality", "质检专员", "department"),
         ("finance01", "财务员1", "finance", "finance", "财务专员", "department"),
         ("manager01", "总经理账号", "executive", "manager", "总经理", "all"),

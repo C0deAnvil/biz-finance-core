@@ -670,18 +670,6 @@ def create_task(
     if payload_usage_map and set(payload_usage_map) != bom_material_ids:
         raise HTTPException(status_code=409, detail="领料明细必须与 BOM 原料保持一致")
 
-    confirmed_usage_map: dict[int, Decimal] = {}
-    if demand is not None:
-        from services.material_replenishment_service import material_demand_progress
-
-        progress = material_demand_progress(db, demand)
-        remaining_product_quantity = max(Decimal(demand.shortage_quantity or 0), Decimal(payload.planned_quantity))
-        allocation_ratio = min(Decimal(payload.planned_quantity) / remaining_product_quantity, Decimal("1"))
-        confirmed_usage_map = {
-            int(item["material_id"]): Decimal(str(item["required_quantity"])) * allocation_ratio
-            for item in progress["items"]
-        }
-
     warehouse_id = get_factory_warehouse(db).id
     if payload.warehouse_id:
         target_warehouse = db.execute(select(Warehouse).where(Warehouse.id == payload.warehouse_id)).scalar_one_or_none()
@@ -713,9 +701,8 @@ def create_task(
         planned_quantity = Decimal(payload.planned_quantity) * Decimal(item.standard_quantity)
         request_item = payload_usage_map.get(item.material_id)
         requested_quantity = Decimal(request_item.requested_quantity) if request_item else planned_quantity
-        # 原料补货阶段人工确认的数量是最终需求，不能在转任务时又退回 BOM 默认量。
-        # 分批转任务时按本批成品数量占剩余需求的比例分摊。
-        requested_quantity = max(requested_quantity, confirmed_usage_map.get(item.material_id, Decimal("0")))
+        # 领料与采购是两个独立口径：默认领料量由本批计划数量 × BOM 单耗决定。
+        # 采购阶段为损耗、安全余量等确认的实际需求量只影响采购/库存，不反向覆盖领料。
         if requested_quantity <= 0:
             raise HTTPException(status_code=409, detail="领料数量必须大于 0")
         db.add(
@@ -726,10 +713,7 @@ def create_task(
                 requested_quantity=requested_quantity,
                 approved_quantity=0,
                 actual_quantity=0,
-                reason=(request_item.reason if request_item else None) or (
-                    "按已确认的原料实际需求量领料"
-                    if requested_quantity > planned_quantity else None
-                ),
+                reason=request_item.reason if request_item else None,
             )
         )
     if demand is not None:

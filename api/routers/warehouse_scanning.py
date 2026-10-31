@@ -537,7 +537,8 @@ async def upload_shipment_proof(
         attachment = Attachment(
             business_type="sales_order",
             business_id=queue.sales_order_id,
-            attachment_type="发货凭证",
+            # 与销售订单详情、全链看板统一附件类型；前端仍兼容历史“发货凭证”。
+            attachment_type="发货照片",
             original_name=filename[:255],
             stored_name=stored_name,
             relative_path=str(target_path.relative_to(settings.upload_dir)),

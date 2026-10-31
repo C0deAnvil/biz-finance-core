@@ -82,6 +82,8 @@ const props = defineProps({
   businessId: { type: [Number, String], default: null },
   // 只展示 / 上传这一类附件，例如「发货照片」「到货照片」
   attachmentType: { type: String, default: '照片' },
+  // 兼容历史附件类型。例如扫码发货早期保存为“发货凭证”，现统一为“发货照片”。
+  attachmentTypes: { type: Array, default: () => [] },
   title: { type: String, default: '照片' },
   readonly: { type: Boolean, default: false },
   required: { type: Boolean, default: false }
@@ -132,7 +134,10 @@ async function loadPhotos() {
       const isImage = /image\//i.test(row.mime_type || '') || /\.(jpe?g|png)$/i.test(row.original_name || '')
       if (!isImage) return false
       // attachmentType 为空表示不按类型过滤，展示该单据下全部照片
-      return !props.attachmentType || row.attachment_type === props.attachmentType
+      const acceptedTypes = props.attachmentTypes.length
+        ? props.attachmentTypes
+        : (props.attachmentType === '发货照片' ? ['发货照片', '发货凭证'] : [props.attachmentType])
+      return !props.attachmentType || acceptedTypes.includes(row.attachment_type)
     })
   } catch (error) {
     photos.value = []
@@ -171,7 +176,7 @@ defineExpose({ reload: loadPhotos, count: () => photos.value.length })
 onMounted(loadPhotos)
 
 watch(
-  () => [props.businessType, props.businessId, props.attachmentType],
+  () => [props.businessType, props.businessId, props.attachmentType, props.attachmentTypes.join('|')],
   () => {
     resetInput()
     loadPhotos()
