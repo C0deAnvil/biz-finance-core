@@ -29,7 +29,9 @@ CORE_TABLES = {
     "warehouses", "financial_accounts", "products", "materials", "packaging_configs",
     "boms", "bom_items", "payment_method_options", "placement_print_agents", "warehouse_scan_devices",
 }
-INVENTORY_TABLES = {"inventories", "inventory_batches", "inventory_cost_adjustments"}
+# 正式启用时只继承当前库存余额与批次；历史成本调整属于测试业务轨迹，清空。
+# 当前移动平均成本保存在 inventories.average_unit_cost，不依赖调整历史表回算。
+INVENTORY_TABLES = {"inventories", "inventory_batches"}
 
 
 def main() -> int:
@@ -40,7 +42,9 @@ def main() -> int:
     parser.add_argument("--keep-inventory", action="store_true", help="保留当前库存、批次和移动平均成本")
     args = parser.parse_args()
     preserved = CORE_TABLES | (INVENTORY_TABLES if args.keep_inventory else set())
-    tables = [table for table in reversed(Base.metadata.sorted_tables) if table.name not in preserved]
+    # 执行阶段会在同一数据库会话中暂时关闭 MySQL 外键检查，因此无需依赖
+    # SQLAlchemy 的拓扑排序。直接反转模型声明顺序，也可避免相互外键表产生警告。
+    tables = [table for table in reversed(list(Base.metadata.tables.values())) if table.name not in preserved]
 
     with SessionLocal() as db:
         print("\n将保留的核心表：")
@@ -67,6 +71,10 @@ def main() -> int:
             db.commit()
         except Exception:
             db.rollback()
+            # FOREIGN_KEY_CHECKS 是 MySQL 会话变量，不随事务回滚；无论哪里失败，
+            # 都必须在连接归还连接池前恢复，避免后续请求绕过外键约束。
+            db.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+            db.commit()
             raise
     print("业务表清理完成。请登录后核对主数据、账号和库存起始数据。")
     return 0
