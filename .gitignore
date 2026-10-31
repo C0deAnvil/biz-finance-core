@@ -65,6 +65,11 @@ old_data/*.bak
 old_data/*.sql
 old_data/**/*.csv
 old_data/**/*.json
+old_data/export_20261031/
+output/legacy_migration_20261031/
+docs/legacy_migration_20261031/
+docs/旧系统数据导入对账报告_*.md
+docs/旧员工到新账号映射_*.csv
 # 例外：导出/诊断脚本本身不含数据，要进版本控制
 !old_data/export_from_sqlserver.sql
 !old_data/export_from_sqlserver.bat

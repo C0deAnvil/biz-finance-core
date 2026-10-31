@@ -21,7 +21,8 @@ param(
     [string]$Server   = "DESKTOP-4AI9ATV\MSSQLSERVER01",
     [string]$Database = "niaosu2020",
     [string]$OutputDir = "",
-    [switch]$UseSa
+    [switch]$UseSa,
+    [string]$SaPassword = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,9 +35,18 @@ $outDir = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Pat
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 
 if ($UseSa) {
-    $saSecure = Read-Host "sa password" -AsSecureString
-    $saPlain  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-                    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($saSecure))
+    # CI/local migration can pass the password through an environment variable
+    # so it never has to be committed to this script. Interactive use still
+    # prompts when neither parameter nor environment variable is supplied.
+    $saPlain = $SaPassword
+    if ([string]::IsNullOrWhiteSpace($saPlain)) {
+        $saPlain = $env:YECAI_LEGACY_SA_PASSWORD
+    }
+    if ([string]::IsNullOrWhiteSpace($saPlain)) {
+        $saSecure = Read-Host "sa password" -AsSecureString
+        $saPlain  = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($saSecure))
+    }
     $connStr  = "Server=$Server;Database=$Database;User Id=sa;Password=$saPlain;TrustServerCertificate=True;Encrypt=False;"
     $authDesc = "SQL login (sa)"
 } else {
@@ -109,7 +119,7 @@ Write-Host ""
 $queries = @(
     @{ name = "00_btype_roots";        sql = "SELECT btypeid,parid,leveal,busercode,bname,bfullname,soncount FROM dbo.btype WHERE ISNULL(deleted,0)=0 AND (leveal<=2 OR ISNULL(parid,'')='') ORDER BY leveal,ROWINDEX FOR JSON PATH" }
     @{ name = "01_btype";              sql = "SELECT btypeid,parid,leveal,soncount,busercode,bname,bfullname,bnamepy,Area,AreaTypeID,TelAndAddress,PostCode,Person,linker,linkerTel,moPhone,Fax,EMail,TaxNumber,BankAndAcount,BankAccounts,bcomment,isStop,DefInput,GatherBtypeId,R_WARNUP,P_WARNUP,ChangeDay,ChangeRate FROM dbo.btype WHERE ISNULL(deleted,0)=0 ORDER BY leveal,ROWINDEX FOR JSON PATH" }
-    @{ name = "02_ptype";              sql = "SELECT ptypeid,ParId,leveal,soncount,pusercode,pname,pfullname,pnamepy,Standard,Type,Area,punitname,SideUnit,pcomment,isStop,warnup,warndown,LastBuyPrice,Ptypetype,Custom1,Custom2,Custom3,Custom4,sourcewayzz,sourcewaywg,sourcewayww FROM dbo.ptype WHERE ISNULL(deleted,0)=0 ORDER BY leveal,RowIndex FOR JSON PATH" }
+    @{ name = "02_ptype";              sql = "SELECT ptypeid,ParId,leveal,soncount,pusercode,pname,pfullname,pnamepy,Standard,Type,Area,punitname,SideUnit,pcomment,isStop,warnup,warndown,LastBuyPrice,Ptypetype,Custom1,Custom2,Custom3,Custom4,sourcewayzz,sourcewaywg,sourcewayww FROM dbo.ptype p WHERE ISNULL(deleted,0)=0 OR EXISTS (SELECT 1 FROM dbo.GoodsStocks g WHERE g.PtypeId=p.ptypeid AND ISNULL(g.Qty,0)<>0) ORDER BY leveal,RowIndex FOR JSON PATH" }
     @{ name = "03_ptype_price";        sql = "SELECT PTypeId,UnitID,PRTypeId,Price,UpDateDt FROM dbo.xw_P_PtypePrice WHERE ISNULL(Price,0)>0 ORDER BY PTypeId,UpDateDt DESC FOR JSON PATH" }
     @{ name = "04_employee";           sql = "SELECT etypeid,Parid,leveal,soncount,eusercode,ename,efullname,enamepy,Department,duty,Tel,Address,EMail,Birthday,ecomment,Incumbency,isStop FROM dbo.employee WHERE ISNULL(deleted,0)=0 ORDER BY leveal,ROWINDEX FOR JSON PATH" }
     @{ name = "05_department";         sql = "SELECT dtypeid,parid,leveal,soncount,dusercode,dname,dfullname,dnamepy,dcomment,isStop FROM dbo.Department WHERE ISNULL(deleted,0)=0 ORDER BY leveal,ROWINDEX FOR JSON PATH" }

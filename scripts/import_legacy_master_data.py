@@ -165,10 +165,11 @@ CREDIT_CODE_PATTERN = re.compile(r"^[0-9A-HJ-NPQRTUWXY]{18}$")
 class Report:
     """收集导入过程中的统计与告警，最后统一打印。"""
 
-    def __init__(self, skip_conflicts: bool = False):
+    def __init__(self, skip_conflicts: bool = False, fill_existing_empty: bool = False):
         self.stats: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.warnings: list[str] = []
         self.skip_conflicts = skip_conflicts
+        self.fill_existing_empty = fill_existing_empty
         self.pending: list = []  # 试运行中新建的对象，不加入数据库会话
         self.seen: dict[str, set] = defaultdict(set)
 
@@ -496,13 +497,69 @@ def import_employees(
     return mapping
 
 
-def import_warehouses(db: Session, rows: list[dict], report: Report, apply: bool) -> dict[str, Warehouse]:
+def load_existing_user_map(
+    db: Session, source: Path, report: Report, mapping_path: Path | None = None
+) -> dict[str, User]:
+    """Resolve legacy employee ids to accounts that already exist in the ERP.
+
+    The optional CSV has columns ``etypeid,target_username,confirmed``.  It is
+    deliberately explicit: importing another ledger must not create duplicate
+    accounts or guess between employees with the same name.
+    """
+    path = mapping_path or (source / "existing_user_map.csv")
+    if not path.exists():
+        return {}
+    result: dict[str, User] = {}
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            old_id = s(row.get("etypeid"))
+            username = s(row.get("target_username"))
+            if not old_id or not username:
+                continue
+            user = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
+            if user is None:
+                report.warn(f"人员映射 {old_id} 指向不存在的账号 {username}")
+                continue
+            result[old_id] = user
+    if result:
+        print(f"    读取现有账号映射：{path.name}（{len(result)} 人）")
+    return result
+
+
+def import_warehouses(
+    db: Session,
+    rows: list[dict],
+    report: Report,
+    apply: bool,
+    source: Path | None = None,
+    mapping_path: Path | None = None,
+) -> dict[str, Warehouse]:
     print("\n[3/9] 仓库")
     mapping: dict[str, Warehouse] = {}
+    explicit: dict[str, Warehouse] = {}
+    map_path = mapping_path or (source / "existing_warehouse_map.csv" if source is not None else None)
+    if map_path is not None and map_path.exists():
+        with map_path.open(encoding="utf-8-sig", newline="") as fh:
+            for item in csv.DictReader(fh):
+                old_id = s(item.get("ktypeid"))
+                target_code = s(item.get("target_warehouse_code"))
+                if not old_id or not target_code:
+                    continue
+                warehouse = db.execute(select(Warehouse).where(Warehouse.code == target_code)).scalar_one_or_none()
+                if warehouse is None:
+                    report.warn(f"仓库映射 {old_id} 指向不存在的仓库编码 {target_code}")
+                    continue
+                explicit[old_id] = warehouse
+        if explicit:
+            print(f"    读取现有仓库映射：{map_path.name}（{len(explicit)} 个）")
     for row in rows:
         old_id = s(row.get("ktypeid"))
         name = truncate(first_nonempty(row.get("kname"), row.get("kfullname")), 100)
         if not old_id or not name or not is_leaf(row):
+            continue
+        if old_id in explicit:
+            mapping[old_id] = explicit[old_id]
+            report.count("仓库", "显式映射")
             continue
         code = truncate(first_nonempty(row.get("kusercode"), f"OLD_{old_id}"), 50)
         conflicts = report.conflicts(db, Warehouse, "仓库", code=code, name=name)
@@ -542,9 +599,11 @@ def import_warehouses(db: Session, rows: list[dict], report: Report, apply: bool
     return mapping
 
 
-def split_products(source: Path, rows: list[dict], report: Report) -> dict[str, str]:
+def split_products(
+    source: Path, rows: list[dict], report: Report, mapping_path: Path | None = None
+) -> dict[str, str]:
     """决定每个商品归 product 还是 material。优先读人工复核过的 csv。"""
-    csv_path = source / "product_material_split.csv"
+    csv_path = mapping_path or (source / "product_material_split.csv")
     if csv_path.exists():
         mapping = {}
         confirmed = 0
@@ -618,6 +677,7 @@ def import_products(
     rows: list[dict],
     prices: list[dict],
     kind_map: dict[str, str],
+    target_code_map: dict[str, str],
     report: Report,
     apply: bool,
 ) -> tuple[dict[str, Product], dict[str, Material]]:
@@ -636,13 +696,16 @@ def import_products(
         old_id = s(row.get("ptypeid"))
         # pname 是旧系统简称；名称应优先保留包含浓度、型号等信息的全称。
         name = truncate(first_nonempty(row.get("pfullname"), row.get("pname")), 200)
-        if not old_id or not name or not is_leaf(row):
+        if not old_id or not name or (not is_leaf(row) and old_id not in target_code_map):
             continue
         kind = kind_map.get(old_id, "product")
         if kind == "skip":
             report.count("产品", "按拆分表跳过")
             continue
-        code = truncate(first_nonempty(row.get("pusercode"), f"OLD_{old_id}"), 50)
+        code = truncate(
+            first_nonempty(target_code_map.get(old_id), row.get("pusercode"), f"OLD_{old_id}"),
+            50,
+        )
         price = latest_price.get(old_id) or dec(row.get("LastBuyPrice"))
         if price <= 0:
             report.warn(f"{name}（{code}）没有价格，写 0，请后续补录")
@@ -899,6 +962,24 @@ def make_name_claimer(db: Session, model, report: Report, label: str):
     return claim
 
 
+def fill_empty_fields(obj, values: dict, report: Report, section: str) -> int:
+    """Fill only blank target fields; never replace a maintained value."""
+    changed = 0
+    for key, value in values.items():
+        if value in (None, ""):
+            continue
+        current = getattr(obj, key, None)
+        if current in (None, ""):
+            setattr(obj, key, value)
+            changed += 1
+            report.count(section, f"补齐{key}")
+    if changed:
+        report.count(section, "补齐已有档案")
+    else:
+        report.count(section, "已有档案无需补齐")
+    return changed
+
+
 def import_customers(
     db: Session,
     rows: list[dict],
@@ -937,7 +1018,26 @@ def import_customers(
             unified_social_credit_code=raw_credit if CREDIT_CODE_PATTERN.match(raw_credit) else None,
         )
         if conflicts:
-            continue  # 包括负责人、标签、备注在内均不更新
+            if report.fill_existing_empty and len(conflicts) == 1:
+                existing = conflicts[0]
+                owner = user_map.get(owner_of.get(old_id, ""))
+                fill_empty_fields(
+                    existing,
+                    {
+                        "contact_name": truncate(first_nonempty(row.get("Person"), row.get("linker")), 100),
+                        "phone": truncate(first_nonempty(row.get("moPhone"), row.get("linkerTel"), row.get("TelAndAddress")), 30),
+                        "address": truncate(row.get("Area"), 255),
+                        "region_province": detect_province(row.get("Area"), row.get("TelAndAddress")),
+                        "unified_social_credit_code": raw_credit if CREDIT_CODE_PATTERN.match(raw_credit) else None,
+                    },
+                    report,
+                    "客户",
+                )
+                if owner is not None and existing.owner_user_id is None:
+                    existing.owner_user_id = owner.id
+                    report.count("客户", "补齐负责人")
+                mapping[old_id] = existing
+            continue
 
         notes: list[str] = []
         if s(row.get("bcomment")):
@@ -1050,6 +1150,20 @@ def import_suppliers(db: Session, rows: list[dict], kind_map: dict[str, str], re
             unified_social_credit_code=raw_credit if CREDIT_CODE_PATTERN.match(raw_credit) else None,
         )
         if conflicts:
+            if report.fill_existing_empty and len(conflicts) == 1:
+                fill_empty_fields(
+                    conflicts[0],
+                    {
+                        "contact_name": truncate(first_nonempty(row.get("Person"), row.get("linker")), 100),
+                        "phone": truncate(first_nonempty(row.get("moPhone"), row.get("linkerTel"), row.get("TelAndAddress")), 30),
+                        "address": truncate(row.get("Area"), 255),
+                        "unified_social_credit_code": raw_credit if CREDIT_CODE_PATTERN.match(raw_credit) else None,
+                        "bank_name": truncate(row.get("BankAndAcount"), 150) or None,
+                        "bank_account": truncate(row.get("BankAccounts"), 60) or None,
+                    },
+                    report,
+                    "供应商",
+                )
             continue
 
         notes = [s(row.get("bcomment"))] if s(row.get("bcomment")) else []
@@ -1335,7 +1449,15 @@ def main():
     parser.add_argument("--source", default="old_data/export", help="导出的 json 所在目录")
     parser.add_argument("--apply", action="store_true", help="真正写库；不加此参数只试运行")
     parser.add_argument("--skip-conflicts", action="store_true", help="只新增，编码/唯一名称/有效税号重复则跳过，保留已有档案、BOM、库存")
+    parser.add_argument(
+        "--fill-existing-empty",
+        action="store_true",
+        help="配合 --skip-conflicts：已有客户/供应商仅补齐空的联系人、电话、地址、银行等字段",
+    )
     parser.add_argument("--skip", default="", help="跳过的阶段，逗号分隔：dept,user,warehouse,product,customer,supplier,bom,stock")
+    parser.add_argument("--existing-user-map", default="", help="旧员工ID到现有 username 的 CSV")
+    parser.add_argument("--existing-warehouse-map", default="", help="旧仓库ID到现有仓库编码的 CSV")
+    parser.add_argument("--product-map", default="", help="产品/原料拆分 CSV；不传则读取数据源目录")
     args = parser.parse_args()
 
     source = (BASE_DIR / args.source).resolve() if not Path(args.source).is_absolute() else Path(args.source)
@@ -1345,6 +1467,15 @@ def main():
         return 1
 
     skip = {item.strip() for item in args.skip.split(",") if item.strip()}
+    def resolve_optional(value: str) -> Path | None:
+        if not value:
+            return None
+        path = Path(value)
+        return path.resolve() if path.is_absolute() else (BASE_DIR / path).resolve()
+
+    existing_user_map_path = resolve_optional(args.existing_user_map)
+    existing_warehouse_map_path = resolve_optional(args.existing_warehouse_map)
+    product_map_path = resolve_optional(args.product_map)
     mode = "正式导入" if args.apply else "试运行（不写库）"
     print("=" * 68)
     print(f"旧系统主数据导入 · {mode}")
@@ -1379,7 +1510,10 @@ def main():
         f"负责人映射 {len(owner_rows)}"
     )
 
-    report = Report(skip_conflicts=args.skip_conflicts)
+    report = Report(
+        skip_conflicts=args.skip_conflicts,
+        fill_existing_empty=args.fill_existing_empty,
+    )
     if args.skip_conflicts:
         print("冲突策略：只新增、保留已有数据；身份不一致的档案不复用关联")
         if not args.apply:
@@ -1390,15 +1524,41 @@ def main():
 
         owner_ids = {s(r.get("etypeid")) for r in owner_rows if s(r.get("etypeid"))}
         role_map = resolve_employee_roles(source, employee_rows, owner_ids, report)
+        explicit_user_map = load_existing_user_map(db, source, report, existing_user_map_path)
         user_map = {} if "user" in skip else import_employees(db, employee_rows, dept_map, role_map, report, args.apply)
+        user_map.update(explicit_user_map)
 
-        warehouse_map = {} if "warehouse" in skip else import_warehouses(db, stock_rows, report, args.apply)
+        warehouse_map = {} if "warehouse" in skip else import_warehouses(
+            db,
+            stock_rows,
+            report,
+            args.apply,
+            source=source,
+            mapping_path=existing_warehouse_map_path,
+        )
 
-        kind_map = split_products(source, ptype_rows, report)
+        kind_map = split_products(source, ptype_rows, report, product_map_path)
+        target_code_map: dict[str, str] = {}
+        effective_product_map = product_map_path or (source / "product_material_split.csv")
+        if effective_product_map.exists():
+            with effective_product_map.open(encoding="utf-8-sig", newline="") as fh:
+                for item in csv.DictReader(fh):
+                    old_id = s(item.get("ptypeid"))
+                    target_code = s(item.get("target_code"))
+                    if old_id and target_code:
+                        target_code_map[old_id] = target_code
         if "product" in skip:
             product_map, material_map = {}, {}
         else:
-            product_map, material_map = import_products(db, ptype_rows, price_rows, kind_map, report, args.apply)
+            product_map, material_map = import_products(
+                db,
+                ptype_rows,
+                price_rows,
+                kind_map,
+                target_code_map,
+                report,
+                args.apply,
+            )
 
         print("\n    往来单位归类 ...")
         btype_kind, btype_duplicates = classify_btype(btype_rows, doc_type_rows, report)
