@@ -452,8 +452,8 @@
     "name": "sales-crm",
     "title": "客户CRM",
     "group": "销售管理",
-    "menu_roles": ["sales", "manager", "chairman", "system_admin", "master_data_admin"],
-    "preload_roles": ["sales", "manager", "chairman", "system_admin"],
+    "menu_roles": ["sales", "finance", "finance_super", "manager", "chairman", "system_admin", "master_data_admin"],
+    "preload_roles": ["sales", "finance", "finance_super", "manager", "chairman", "system_admin"],
     "warmers": [{"url": "/api/master-data/customer-crm", "ttl_ms": 45000}]
   },
   {

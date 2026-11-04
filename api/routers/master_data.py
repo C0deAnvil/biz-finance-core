@@ -716,7 +716,7 @@ def list_customer_crm(
     status: str | None = Query(default=None, pattern="^(lead|active|lost)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
-    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     query = select(Customer).options(joinedload(Customer.owner_user), joinedload(Customer.created_by)).where(Customer.archived_at.is_(None))
@@ -763,7 +763,7 @@ def list_customer_crm(
 @router.get("/customers/{customer_id}/crm-history")
 def customer_crm_history(
     customer_id: int,
-    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     customer = db.get(Customer, customer_id)

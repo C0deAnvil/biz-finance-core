@@ -25,10 +25,10 @@
         <el-table-column prop="lost_reason" label="流失原因" min-width="180" show-overflow-tooltip />
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
-            <el-button text type="primary" @click="openFollow(row)">记录跟进</el-button>
+            <el-button v-if="canManage" text type="primary" @click="openFollow(row)">记录跟进</el-button>
             <el-button text @click="openHistory(row)">历史</el-button>
-            <el-button v-if="row.crm_status !== 'lost'" text type="danger" @click="markLost(row)">标记流失</el-button>
-            <el-button v-else text type="success" @click="restore(row)">恢复跟进</el-button>
+            <el-button v-if="canManage && row.crm_status !== 'lost'" text type="danger" @click="markLost(row)">标记流失</el-button>
+            <el-button v-else-if="canManage" text type="success" @click="restore(row)">恢复跟进</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -61,13 +61,16 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import PageSection from '../../components/PageSection.vue'
+import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 
+const auth = useAuthStore()
 const rows=ref([]), total=ref(0), keyword=ref(''), status=ref(''), active=ref(null), followVisible=ref(false), historyVisible=ref(false)
 const pagination=reactive({page:1,pageSize:20}), summary=reactive({lead:0,active:0,lost:0}), follow=reactive({follow_type:'call',content:'',next_follow_at:null}), history=reactive({follow_ups:[],transfers:[]})
 const statuses=[{value:'lead',label:'潜在客户'},{value:'active',label:'正常跟进'},{value:'lost',label:'已流失'}]
 const followTypes=[{value:'call',label:'电话'},{value:'visit',label:'拜访'},{value:'wechat',label:'微信'},{value:'email',label:'邮件'},{value:'meeting',label:'会议'},{value:'other',label:'其他'}]
 const summaryCards=computed(()=>statuses.map(item=>({key:item.value,label:item.label})))
+const canManage=computed(()=>!['finance','finance_super'].includes(auth.user?.role_code))
 const statusTag=(value)=>({lead:'warning',active:'success',lost:'danger'}[value]||'info')
 const followTypeLabel=(value)=>followTypes.find(item=>item.value===value)?.label||value
 async function load(){const q=new URLSearchParams({page:String(pagination.page),page_size:String(pagination.pageSize)});if(keyword.value)q.set('keyword',keyword.value);if(status.value)q.set('status',status.value);const data=await get(`/api/master-data/customer-crm?${q}`);rows.value=data.items||[];total.value=Number(data.pagination?.total||0);Object.assign(summary,data.summary||{})}
