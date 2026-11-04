@@ -526,6 +526,7 @@ def _serialize_placement_queue(row: InventoryDispatchQueue, db: Session, current
 
 def _serialize_sales_order_as_shipment_queue(order: SalesOrder, db: Session, current_user: User) -> dict:
     process_status = sync_sales_order_process_status(db, order)
+    queue = db.scalar(select(InventoryDispatchQueue).where(InventoryDispatchQueue.sales_order_id == order.id))
     items = []
     for item in order.items:
         ordered_quantity = Decimal(item.quantity or 0)
@@ -556,6 +557,11 @@ def _serialize_sales_order_as_shipment_queue(order: SalesOrder, db: Session, cur
         "order_type_label": order_type_style(order.order_type)["label"],
         "order_type_color": order_type_style(order.order_type)["color"],
         "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
+        "shipment_printed": bool(queue and queue.shipment_printed_at),
+        "shipment_printed_at": queue.shipment_printed_at.isoformat() if queue and queue.shipment_printed_at else None,
+        "shipment_print_status": (queue.shipment_print_status if queue else None) or "unprinted",
+        "shipment_print_method": queue.shipment_print_method if queue else None,
+        "shipment_print_count": int(queue.shipment_print_count or 0) if queue else 0,
         "status": "pending",
         "order_status": order.status,
         "finance_edit_pending": bool(order.finance_edit_pending),

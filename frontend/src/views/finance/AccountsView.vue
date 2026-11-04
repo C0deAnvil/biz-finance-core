@@ -21,9 +21,9 @@
         <el-form-item label="账户类型"><el-select v-model="form.owner_type" @change="form.customer_id = null; form.supplier_id = null"><el-option v-for="(label, key) in types" :key="key" :label="label" :value="key" /></el-select></el-form-item>
         <el-form-item v-if="form.owner_type === 'customer'" label="客户" required><el-select v-model="form.customer_id" filterable remote :remote-method="searchCustomers" placeholder="输入客户名称搜索" style="width: 100%"><el-option v-for="item in customers" :key="item.id" :value="item.id" :label="item.name" /></el-select></el-form-item>
         <el-form-item v-if="form.owner_type === 'supplier'" label="供应商" required><el-select v-model="form.supplier_id" filterable style="width: 100%"><el-option v-for="item in suppliers" :key="item.id" :value="item.id" :label="item.name" /></el-select></el-form-item>
-        <el-form-item label="开户名称" required><el-input v-model="form.account_name" maxlength="150" /></el-form-item>
-        <el-form-item label="开户银行" required><el-input v-model="form.bank_name" maxlength="150" placeholder="银行名称及支行" /></el-form-item>
-        <el-form-item label="账号" required><el-input v-model="form.account_number" maxlength="80" /></el-form-item>
+        <el-form-item label="账户名称" required><el-input v-model="form.account_name" maxlength="150" placeholder="例如：公司微信、建行基本户、现金账户" /></el-form-item>
+        <el-form-item label="开户银行"><el-input v-model="form.bank_name" maxlength="150" placeholder="选填" /></el-form-item>
+        <el-form-item label="账号"><el-input v-model="form.account_number" maxlength="80" placeholder="选填" /></el-form-item>
         <el-form-item label="币种"><el-input v-model="form.currency" maxlength="3" placeholder="CNY" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="form.remark" maxlength="500" /></el-form-item>
       </el-form>

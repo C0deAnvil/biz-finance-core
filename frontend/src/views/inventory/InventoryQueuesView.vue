@@ -144,10 +144,12 @@
             <el-table-column label="财务修改" width="110">
               <template #default="scope"><el-tag v-if="scope.row.finance_edit_pending" type="warning">待确认</el-tag><span v-else>-</span></template>
             </el-table-column>
-            <el-table-column label="快捷操作" width="160" fixed="right" align="center">
+            <el-table-column label="快捷操作" width="290" fixed="right" align="center">
               <template #default="scope">
                 <el-button v-if="canConfirmFinanceEdit(scope.row)" class="queue-main-action" size="small" type="warning" @click="openOrderDetail(scope.row)">改单详情</el-button>
                 <el-button v-else class="queue-main-action" size="small" type="primary" @click="openShipmentDialog(scope.row)">发货出库</el-button>
+                <el-button size="small" type="primary" plain @click="handlePrintShipment(scope.row)">打印发货单</el-button>
+                <el-button size="small" plain @click="handleDownloadShipment(scope.row)">下载</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -688,6 +690,40 @@ async function confirmAutomaticPrint(row) {
 }
 async function handleDownloadPlacement(row) {
   try { await downloadOrderPdf('placement', row.order_id, row.order_no) } catch (error) { ElMessage.error(error.message || '下载置货单失败') }
+}
+async function handlePrintShipment(row) {
+  try {
+    await printOrderPdf('shipment', row.order_id)
+  } catch (error) {
+    ElMessage.error(error.message || '打印发货单失败')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '请确认发货单已经实际出纸。未出纸时请不要确认，系统会保留自动补打任务。',
+      '确认发货单打印结果',
+      { confirmButtonText: '已成功打印', cancelButtonText: '未打印', type: 'warning' }
+    )
+  } catch {
+    ElMessage.info('未标记打印状态，可稍后重新打印')
+    return
+  }
+  try {
+    const result = await post(`/api/printing/shipment-orders/${row.order_id}/mark-printed`, { source: 'manual' })
+    Object.assign(row, {
+      shipment_printed: true,
+      shipment_print_status: 'printed',
+      shipment_printed_at: result.printed_at,
+      shipment_print_method: result.print_method,
+      shipment_print_count: result.print_count
+    })
+    ElMessage.success('已记录发货单实际出纸')
+  } catch (error) {
+    ElMessage.error(error.message || '发货单打印状态记录失败')
+  }
+}
+async function handleDownloadShipment(row) {
+  try { await downloadOrderPdf('shipment', row.order_id, row.order_no) } catch (error) { ElMessage.error(error.message || '下载发货单失败') }
 }
 const shipmentDialogVisible = ref(false)
 const activeShipment = ref(null)

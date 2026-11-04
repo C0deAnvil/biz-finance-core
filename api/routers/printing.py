@@ -7,7 +7,7 @@ import secrets
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -68,14 +68,13 @@ def _pdf_response(
 ):
     filename = f"{kind}-{order.order_no}.pdf"
     render_kwargs = {}
-    if kind == "placement":
+    if kind in {"placement", "shipment"}:
         if queue is None:
-            raise HTTPException(status_code=404, detail="该订单没有置货需求")
-        render_kwargs = {
-            "placement_token": queue.placement_scan_token,
-            "shipment_token": queue.shipment_scan_token,
-            "warehouse_name": queue.warehouse.name if queue.warehouse else None,
-        }
+            raise HTTPException(status_code=404, detail="该订单没有库存作业需求")
+        render_kwargs = {"warehouse_name": queue.warehouse.name if queue.warehouse else None}
+        render_kwargs["placement_token" if kind == "placement" else "shipment_token"] = (
+            queue.placement_scan_token if kind == "placement" else queue.shipment_scan_token
+        )
     return Response(
         content=render_order_pdf(order, kind=kind, **render_kwargs),
         media_type="application/pdf",
@@ -113,6 +112,25 @@ def placement_order_pdf(
     if queue is None:
         raise HTTPException(status_code=404, detail="该订单没有置货需求")
     return _pdf_response(order, "placement", queue=queue)
+
+
+@router.get("/shipment-orders/{order_id}.pdf")
+def shipment_order_pdf(
+    order_id: int,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "manager", "chairman")),
+    db: Session = Depends(get_db),
+):
+    order = _order(db, order_id)
+    queue = db.scalar(
+        select(InventoryDispatchQueue)
+        .options(joinedload(InventoryDispatchQueue.warehouse))
+        .where(InventoryDispatchQueue.sales_order_id == order_id)
+    )
+    if queue is None:
+        raise HTTPException(status_code=404, detail="该订单没有发货需求")
+    if order.status not in {"pending_shipment", "shipped", "completed"}:
+        raise HTTPException(status_code=409, detail="财务尚未审批通过，不能生成发货单")
+    return _pdf_response(order, "shipment", queue=queue)
 
 
 @router.get("/production-demands/{demand_id}.pdf")
@@ -228,28 +246,76 @@ def _sync_new_jobs(db: Session, agent: PlacementPrintAgent) -> None:
     # The first registered device is the safe activation boundary: recover every
     # unprinted queue after activation, but never mass-print unknown legacy work.
     activated_at = db.scalar(select(func.min(PlacementPrintAgent.created_at))) or agent.created_at
-    queue_ids = db.scalars(
-        select(InventoryDispatchQueue.id)
-        .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
-        .where(
+    job_specs = (
+        (
+            "placement",
             InventoryDispatchQueue.created_at >= activated_at,
             InventoryDispatchQueue.placement_printed_at.is_(None),
             InventoryDispatchQueue.placement_status == "pending",
             SalesOrder.status.in_(["pending_confirmation", "pending_shipment"]),
-            ~InventoryDispatchQueue.id.in_(select(PlacementPrintJob.queue_id)),
-        )
-        .order_by(InventoryDispatchQueue.id)
-        .limit(100)
-    ).all()
-    for queue_id in queue_ids:
-        try:
-            with db.begin_nested():
-                db.add(PlacementPrintJob(queue_id=queue_id, status="pending"))
-                db.flush()
-        except IntegrityError:
-            # Another polling device created the same durable job first.
-            pass
+        ),
+        (
+            "shipment",
+            SalesOrder.approved_at >= activated_at,
+            InventoryDispatchQueue.shipment_printed_at.is_(None),
+            SalesOrder.status == "pending_shipment",
+        ),
+    )
+    for document_kind, *conditions in job_specs:
+        queue_ids = db.scalars(
+            select(InventoryDispatchQueue.id)
+            .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
+            .where(
+                *conditions,
+                ~InventoryDispatchQueue.id.in_(
+                    select(PlacementPrintJob.queue_id).where(
+                        PlacementPrintJob.document_kind == document_kind
+                    )
+                ),
+            )
+            .order_by(InventoryDispatchQueue.id)
+            .limit(100)
+        ).all()
+        for queue_id in queue_ids:
+            try:
+                with db.begin_nested():
+                    db.add(PlacementPrintJob(
+                        queue_id=queue_id,
+                        document_kind=document_kind,
+                        status="pending",
+                    ))
+                    db.flush()
+            except IntegrityError:
+                # Another polling device created the same durable job first.
+                pass
     db.commit()
+
+
+def _ready_print_job_clause():
+    return or_(
+        and_(
+            PlacementPrintJob.document_kind == "placement",
+            InventoryDispatchQueue.placement_printed_at.is_(None),
+            InventoryDispatchQueue.placement_status == "pending",
+            SalesOrder.status.in_(["pending_confirmation", "pending_shipment"]),
+        ),
+        and_(
+            PlacementPrintJob.document_kind == "shipment",
+            InventoryDispatchQueue.shipment_printed_at.is_(None),
+            SalesOrder.status == "pending_shipment",
+        ),
+    )
+
+
+def _set_queue_print_state(queue: InventoryDispatchQueue, document_kind: str, *, status: str, method: str | None = None, printed_at=None, printed_by_id=None, increment=False):
+    prefix = "shipment" if document_kind == "shipment" else "placement"
+    setattr(queue, f"{prefix}_print_status", status)
+    setattr(queue, f"{prefix}_print_method", method)
+    setattr(queue, f"{prefix}_printed_at", printed_at)
+    setattr(queue, f"{prefix}_printed_by_id", printed_by_id)
+    if increment:
+        count_field = f"{prefix}_print_count"
+        setattr(queue, count_field, int(getattr(queue, count_field) or 0) + 1)
 
 
 @router.post("/agent/jobs/claim")
@@ -260,10 +326,10 @@ def claim_job(payload: JobClaim, request: Request, x_print_agent_token: str | No
         failed_jobs = db.scalars(
             select(PlacementPrintJob)
             .join(InventoryDispatchQueue, InventoryDispatchQueue.id == PlacementPrintJob.queue_id)
+            .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
             .where(
                 PlacementPrintJob.status == "failed",
-                InventoryDispatchQueue.placement_printed_at.is_(None),
-                InventoryDispatchQueue.placement_status == "pending",
+                _ready_print_job_clause(),
             )
         ).all()
         for failed_job in failed_jobs:
@@ -279,8 +345,7 @@ def claim_job(payload: JobClaim, request: Request, x_print_agent_token: str | No
         .join(InventoryDispatchQueue, InventoryDispatchQueue.id == PlacementPrintJob.queue_id)
         .join(SalesOrder, SalesOrder.id == InventoryDispatchQueue.sales_order_id)
         .where(
-            InventoryDispatchQueue.placement_status == "pending",
-            SalesOrder.status.in_(["pending_confirmation", "pending_shipment"]),
+            _ready_print_job_clause(),
             PlacementPrintJob.attempts < 5,
             (PlacementPrintJob.status == "pending") |
             ((PlacementPrintJob.status == "leased") & (PlacementPrintJob.lease_until < now)),
@@ -297,10 +362,16 @@ def claim_job(payload: JobClaim, request: Request, x_print_agent_token: str | No
     job.claimed_by_agent_id = agent.id
     job.lease_token_hash = sha256(lease_token.encode()).hexdigest()
     job.lease_until = now + timedelta(minutes=5)
-    job.queue.placement_print_status = "printing"
+    _set_queue_print_state(job.queue, job.document_kind, status="printing", method="automatic")
     db.commit()
     order_id = db.scalar(select(InventoryDispatchQueue.sales_order_id).where(InventoryDispatchQueue.id == job.queue_id))
-    return api_response(data={"id": job.id, "order_id": order_id, "lease_token": lease_token, "pdf_path": f"/api/printing/agent/jobs/{job.id}/pdf"})
+    return api_response(data={
+        "id": job.id,
+        "order_id": order_id,
+        "document_kind": job.document_kind,
+        "lease_token": lease_token,
+        "pdf_path": f"/api/printing/agent/jobs/{job.id}/pdf",
+    })
 
 
 def _leased_job(db: Session, job_id: int, agent: PlacementPrintAgent, lease_token: str) -> PlacementPrintJob:
@@ -320,7 +391,7 @@ def agent_job_pdf(job_id: int, request: Request, x_print_agent_token: str | None
         .options(joinedload(InventoryDispatchQueue.warehouse))
         .where(InventoryDispatchQueue.id == job.queue_id)
     )
-    return _pdf_response(_order(db, job.queue.sales_order_id), "placement", queue=queue)
+    return _pdf_response(_order(db, job.queue.sales_order_id), job.document_kind, queue=queue)
 
 
 @router.post("/agent/jobs/{job_id}/complete")
@@ -334,19 +405,25 @@ def complete_job(job_id: int, payload: JobResult, request: Request, x_print_agen
     job.lease_token_hash = None
     job.lease_until = None
     if verified:
-        job.queue.placement_printed_at = job.printed_at
-        job.queue.placement_print_status = "printed"
-        job.queue.placement_print_method = "automatic"
-        job.queue.placement_printed_by_id = None
-        job.queue.placement_print_count = int(job.queue.placement_print_count or 0) + 1
+        _set_queue_print_state(
+            job.queue,
+            job.document_kind,
+            status="printed",
+            method="automatic",
+            printed_at=job.printed_at,
+            increment=True,
+        )
     elif payload.success:
         # Some drivers acknowledge spooling but expose no reliable completion state.
         # Never call this "printed" until a human confirms actual paper output.
-        job.queue.placement_print_status = "submitted"
-        job.queue.placement_print_method = "automatic"
+        _set_queue_print_state(job.queue, job.document_kind, status="submitted", method="automatic")
     else:
-        job.queue.placement_print_status = "failed" if job.status == "failed" else "unprinted"
-        job.queue.placement_print_method = "automatic"
+        _set_queue_print_state(
+            job.queue,
+            job.document_kind,
+            status="failed" if job.status == "failed" else "unprinted",
+            method="automatic",
+        )
     db.commit()
     return api_response(data={"id": job.id, "status": job.status})
 
@@ -366,12 +443,16 @@ def mark_placement_order_printed(
     if queue is None:
         raise HTTPException(status_code=404, detail="该订单没有置货需求")
     now = now_local()
-    job = db.scalar(select(PlacementPrintJob).where(PlacementPrintJob.queue_id == queue.id).with_for_update())
+    job = db.scalar(select(PlacementPrintJob).where(
+        PlacementPrintJob.queue_id == queue.id,
+        PlacementPrintJob.document_kind == "placement",
+    ).with_for_update())
     if job and job.status == "leased" and job.lease_until and job.lease_until > now:
         raise HTTPException(status_code=409, detail="自动打印设备正在处理这张置货单，请稍后刷新状态")
     if job is None:
         job = PlacementPrintJob(
             queue_id=queue.id,
+            document_kind="placement",
             status="printed" if payload.source == "automatic_confirmed" else "manual_printed",
             printed_at=now,
         )
@@ -396,10 +477,76 @@ def mark_placement_order_printed(
     }, msg="已确认实际出纸" if payload.source == "automatic_confirmed" else "已记录为手动打印")
 
 
+@router.post("/shipment-orders/{order_id}/mark-printed")
+def mark_shipment_order_printed(
+    order_id: int,
+    payload: PrintMark,
+    current_user: User = Depends(require_roles("inventory", "inventory_super", "manager", "chairman")),
+    db: Session = Depends(get_db),
+):
+    order = db.get(SalesOrder, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="订单不存在")
+    if order.status not in {"pending_shipment", "shipped", "completed"}:
+        raise HTTPException(status_code=409, detail="财务尚未审批通过，不能确认发货单打印")
+    queue = db.scalar(
+        select(InventoryDispatchQueue)
+        .where(InventoryDispatchQueue.sales_order_id == order_id)
+        .with_for_update()
+    )
+    if queue is None:
+        raise HTTPException(status_code=404, detail="该订单没有发货需求")
+    now = now_local()
+    job = db.scalar(select(PlacementPrintJob).where(
+        PlacementPrintJob.queue_id == queue.id,
+        PlacementPrintJob.document_kind == "shipment",
+    ).with_for_update())
+    if job and job.status == "leased" and job.lease_until and job.lease_until > now:
+        raise HTTPException(status_code=409, detail="自动打印设备正在处理这张发货单，请稍后刷新状态")
+    if job is None:
+        job = PlacementPrintJob(
+            queue_id=queue.id,
+            document_kind="shipment",
+            status="printed" if payload.source == "automatic_confirmed" else "manual_printed",
+            printed_at=now,
+        )
+        db.add(job)
+    else:
+        job.status = "printed" if payload.source == "automatic_confirmed" else "manual_printed"
+        job.printed_at = now
+        job.last_error = None
+        job.lease_token_hash = None
+        job.lease_until = None
+    _set_queue_print_state(
+        queue,
+        "shipment",
+        status="printed",
+        method=payload.source,
+        printed_at=now,
+        printed_by_id=current_user.id,
+        increment=True,
+    )
+    db.commit()
+    return api_response(data={
+        "printed": True,
+        "printed_at": now.isoformat(),
+        "print_method": payload.source,
+        "print_count": queue.shipment_print_count,
+    }, msg="已确认发货单实际出纸")
+
+
 @router.get("/jobs")
 def list_jobs(current_user: User = Depends(_system_admin), db: Session = Depends(get_db)):
     rows = db.scalars(select(PlacementPrintJob).order_by(PlacementPrintJob.id.desc()).limit(100)).all()
-    return api_response(data=[{"id": row.id, "order_id": row.queue.sales_order_id, "status": row.status, "attempts": row.attempts, "last_error": row.last_error, "created_at": row.created_at.isoformat()} for row in rows])
+    return api_response(data=[{
+        "id": row.id,
+        "order_id": row.queue.sales_order_id,
+        "document_kind": row.document_kind,
+        "status": row.status,
+        "attempts": row.attempts,
+        "last_error": row.last_error,
+        "created_at": row.created_at.isoformat(),
+    } for row in rows])
 
 
 @router.post("/jobs/{job_id}/retry")
@@ -415,8 +562,7 @@ def retry_job(job_id: int, current_user: User = Depends(_system_admin), db: Sess
     row.attempts = 0
     row.lease_token_hash = None
     row.lease_until = None
-    row.queue.placement_print_status = "unprinted"
-    row.queue.placement_printed_at = None
+    _set_queue_print_state(row.queue, row.document_kind, status="unprinted")
     db.commit()
     return api_response(msg="打印任务已重新排队")
 

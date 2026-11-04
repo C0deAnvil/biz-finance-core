@@ -40,6 +40,12 @@ BARCODE_RE = re.compile(r"^(?:YCP01|YCS01)[A-F0-9]{24}$")
 MAX_PROOF_BYTES = 10 * 1024 * 1024
 
 
+def default_photo_directory() -> Path:
+    """Use a stable user folder rather than PyInstaller's temporary directory."""
+    profile = Path(os.environ.get("USERPROFILE") or Path.home())
+    return profile / "Documents" / "业财系统库房照片"
+
+
 def api_error_message(body: dict, http_status: int) -> str:
     """Display both business errors and FastAPI validation/HTTP errors."""
     detail = body.get("detail")
@@ -111,7 +117,7 @@ class WarehouseScanDesktop(tk.Tk):
             saved, warning = {}, f"读取配置失败：{exc}"
         self.server = tk.StringVar(value=saved.get("server") or DEFAULT_SERVER)
         self.token = tk.StringVar(value=saved.get("token") or "")
-        self.photo_dir = tk.StringVar(value=saved.get("photo_dir") or str(ROOT / "outbound_img"))
+        self.photo_dir = tk.StringVar(value=saved.get("photo_dir") or str(default_photo_directory()))
         self.max_photo_age = tk.StringVar(value=str(saved.get("max_photo_age_minutes", 10)))
         self.autostart = tk.BooleanVar(value=is_autostart_enabled())
         self.scan_value = tk.StringVar()

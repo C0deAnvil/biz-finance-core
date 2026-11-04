@@ -40,7 +40,8 @@ def requested_account_id(selected_id, requested_id, label):
 def account_label(account):
     if account is None:
         return None
-    return f"{account.account_name} - {account.bank_name} - {account.account_number} ({account.currency})"
+    details = [account.account_name, account.bank_name, account.account_number]
+    return " - ".join(str(value) for value in details if value) + f" ({account.currency})"
 
 
 def settlement_account_fields(row):

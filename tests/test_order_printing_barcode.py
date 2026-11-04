@@ -21,20 +21,24 @@ def sample_order():
         customer=None, receipt_account=None, payment_type="全款发货", deposit_amount=None,
         consignee="张三", consignee_phone="13900000000", delivery_address="测试地址",
         order_remark="请轻拿轻放", items=[item], total_amount=Decimal("30.000"),
+        transport_fee=Decimal("5.000"),
     )
 
 
-def test_placement_pdf_has_separate_full_placement_and_shipment_qr_codes():
+def test_placement_and_shipment_are_separate_qr_documents():
     qr_type = __import__("reportlab.graphics.barcode.qr", fromlist=["QrCodeWidget"]).QrCodeWidget
     with patch("services.order_printing.QrCodeWidget", wraps=qr_type) as qr_code:
         pdf = render_order_pdf(
             sample_order(),
             kind="placement",
             placement_token="A" * 24,
-            shipment_token="B" * 24,
             warehouse_name="沧州仓库",
         )
+        shipment_pdf = render_order_pdf(
+            sample_order(), kind="shipment", shipment_token="B" * 24, warehouse_name="沧州仓库"
+        )
     assert pdf.startswith(b"%PDF")
+    assert shipment_pdf.startswith(b"%PDF")
     assert qr_code.call_count == 2
     assert qr_code.call_args_list[0].args[0] == f"YCP01{'A' * 24}"
     assert qr_code.call_args_list[1].args[0] == f"YCS01{'B' * 24}"
@@ -49,10 +53,13 @@ def test_placement_pdf_can_fall_back_to_code128():
             sample_order(),
             kind="placement",
             placement_token="A" * 24,
-            shipment_token="B" * 24,
             warehouse_name="沧州仓库",
         )
+        shipment_pdf = render_order_pdf(
+            sample_order(), kind="shipment", shipment_token="B" * 24, warehouse_name="沧州仓库"
+        )
     assert pdf.startswith(b"%PDF")
+    assert shipment_pdf.startswith(b"%PDF")
     assert barcode.call_count == 2
     assert barcode.call_args_list[0].args[0] == f"YCP01{'A' * 24}"
     assert barcode.call_args_list[1].args[0] == f"YCS01{'B' * 24}"

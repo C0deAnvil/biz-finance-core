@@ -6,8 +6,8 @@ class FinancialAccountCreate(BaseModel):
     customer_id: int | None = None
     supplier_id: int | None = None
     account_name: str = Field(..., min_length=1, max_length=150)
-    bank_name: str = Field(..., min_length=1, max_length=150)
-    account_number: str = Field(..., min_length=1, max_length=80)
+    bank_name: str | None = Field(default=None, max_length=150)
+    account_number: str | None = Field(default=None, max_length=80)
     currency: str = Field(default="CNY", pattern="^[A-Z]{3}$")
     remark: str | None = Field(default=None, max_length=500)
 
@@ -20,11 +20,11 @@ class FinancialAccountCreate(BaseModel):
         }
         if not valid[self.owner_type]:
             raise ValueError("请选择与账户类型对应的客户或供应商")
-        for field in ("account_name", "bank_name", "account_number"):
-            value = getattr(self, field).strip()
-            if not value:
-                raise ValueError("户名、开户行和账号不能为空")
-            setattr(self, field, value)
+        self.account_name = self.account_name.strip()
+        if not self.account_name:
+            raise ValueError("账户名称不能为空")
+        self.bank_name = (self.bank_name or "").strip() or None
+        self.account_number = (self.account_number or "").strip() or None
         return self
 
 
@@ -34,8 +34,8 @@ class FinancialAccountStatusUpdate(BaseModel):
 
 class FinancialAccountUpdate(BaseModel):
     account_name: str = Field(..., min_length=1, max_length=150)
-    bank_name: str = Field(..., min_length=1, max_length=150)
-    account_number: str = Field(..., min_length=1, max_length=80)
+    bank_name: str | None = Field(default=None, max_length=150)
+    account_number: str | None = Field(default=None, max_length=80)
     currency: str = Field(default="CNY", pattern="^[A-Z]{3}$")
     remark: str | None = Field(default=None, max_length=500)
 

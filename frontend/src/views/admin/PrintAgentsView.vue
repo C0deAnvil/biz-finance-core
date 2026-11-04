@@ -1,6 +1,6 @@
 <template>
   <div class="print-admin">
-    <PageSection title="打印设备认证码" description="认证码仅在创建时显示一次；停用后设备立即无法领取或下载置货单。">
+    <PageSection title="打印设备认证码" description="认证码仅在创建时显示一次；停用后设备立即无法领取或下载置货单、发货单。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
         <el-button type="primary" @click="createVisible = true">生成认证码</el-button>
@@ -18,6 +18,7 @@
       <el-table :data="jobs" stripe>
         <el-table-column prop="id" label="任务编号" width="110" />
         <el-table-column prop="order_id" label="订单 ID" width="110" />
+        <el-table-column label="单据类型" width="110"><template #default="scope">{{ scope.row.document_kind === 'shipment' ? '发货单' : '置货单' }}</template></el-table-column>
         <el-table-column label="状态" width="150"><template #default="scope"><el-tag :type="printJobStatus(scope.row.status).type">{{ printJobStatus(scope.row.status).label }}</el-tag></template></el-table-column>
         <el-table-column prop="attempts" label="尝试次数" width="100" />
         <el-table-column prop="last_error" label="错误" min-width="260" show-overflow-tooltip />

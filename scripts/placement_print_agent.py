@@ -318,7 +318,8 @@ def print_job(job):
     if not pdf_bytes.startswith(b"%PDF-"):
         raise RuntimeError("服务器没有返回 PDF")
     with tempfile.TemporaryDirectory(prefix="yecai-print-") as folder:
-        pdf_path = Path(folder) / f"placement-{job['order_id']}.pdf"
+        document_kind = job.get("document_kind") or "placement"
+        pdf_path = Path(folder) / f"{document_kind}-{job['order_id']}.pdf"
         pdf_path.write_bytes(pdf_bytes)
         return submit_pdf_to_printer(pdf_path)
 
@@ -352,7 +353,7 @@ def run_once(*, recover_failed=False):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="置货单本地自动打印客户端")
+    parser = argparse.ArgumentParser(description="仓库置货单/发货单本地自动打印客户端")
     parser.add_argument("--test-print", metavar="PDF", help="只打印本地 PDF，不连接服务器或使用认证码")
     parser.add_argument("--once", action="store_true", help="只领取一次任务，便于本地调试")
     args = parser.parse_args(argv)
@@ -374,7 +375,7 @@ def main(argv=None):
     if args.once:
         try:
             if run_once(recover_failed=True) is None:
-                print("当前没有待自动打印的置货单。", flush=True)
+                print("当前没有待自动打印的置货单或发货单。", flush=True)
         except HTTPError as exc:
             raise SystemExit(f"打印接口错误 HTTP {exc.code}；请检查设备认证码和服务器地址") from exc
         except (URLError, TimeoutError, OSError) as exc:

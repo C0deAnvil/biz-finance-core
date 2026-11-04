@@ -24,9 +24,9 @@
     <template v-if="editable">
       <el-divider content-position="left">新增{{ ownerType === 'supplier' ? '收款' : '付款' }}账户</el-divider>
       <el-row :gutter="12" class="account-form">
-        <el-col :span="12"><label>开户名称 <span>*</span></label><el-input v-model="form.account_name" maxlength="150" /></el-col>
-        <el-col :span="12"><label>开户行 <span>*</span></label><el-input v-model="form.bank_name" maxlength="150" /></el-col>
-        <el-col :span="12"><label>账号 <span>*</span></label><el-input v-model="form.account_number" maxlength="80" /></el-col>
+        <el-col :span="12"><label>账户名称 <span>*</span></label><el-input v-model="form.account_name" maxlength="150" /></el-col>
+        <el-col :span="12"><label>开户行</label><el-input v-model="form.bank_name" maxlength="150" placeholder="选填" /></el-col>
+        <el-col :span="12"><label>账号</label><el-input v-model="form.account_number" maxlength="80" placeholder="选填" /></el-col>
         <el-col :span="12"><label>备注</label><el-input v-model="form.remark" maxlength="500" /></el-col>
       </el-row>
       <div class="form-actions"><el-button type="primary" plain :loading="saving" @click="save">添加账户</el-button></div>
@@ -89,8 +89,8 @@ async function load() {
 }
 
 async function save() {
-  if (!form.account_name.trim() || !form.bank_name.trim() || !form.account_number.trim()) {
-    ElMessage.warning('请填写开户名称、开户行和账号')
+  if (!form.account_name.trim()) {
+    ElMessage.warning('请填写账户名称')
     return
   }
   saving.value = true
@@ -100,8 +100,8 @@ async function save() {
       owner_type: props.ownerType,
       [idKey]: props.ownerId,
       account_name: form.account_name.trim(),
-      bank_name: form.bank_name.trim(),
-      account_number: form.account_number.trim(),
+      bank_name: form.bank_name.trim() || null,
+      account_number: form.account_number.trim() || null,
       currency: 'CNY',
       remark: form.remark.trim() || null
     })

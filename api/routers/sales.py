@@ -447,7 +447,7 @@ def list_orders(
 ):
     query = (
         select(SalesOrder)
-        .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user), joinedload(SalesOrder.parent_order), joinedload(SalesOrder.receipt_account))
+        .options(joinedload(SalesOrder.customer), joinedload(SalesOrder.sales_user), joinedload(SalesOrder.operator_user), joinedload(SalesOrder.approved_by), joinedload(SalesOrder.parent_order), joinedload(SalesOrder.receipt_account))
         .order_by(SalesOrder.created_at.desc())
     )
     scoped_user_ids = get_scoped_user_ids(db, current_user, "sales")
@@ -536,7 +536,7 @@ def list_orders(
                 "customer_name": row.customer.name if row.customer else None,
                 "sales_user": row.sales_user.full_name if row.sales_user else None,
                 "operator_user_id": row.operator_user_id,
-                "operator_name": row.operator_user.full_name if row.operator_user else None,
+                "operator_name": row.approved_by.full_name if row.approved_by else None,
                 "order_remark": row.order_remark,
                 "status": row.status,
                 "status_label": status_label(row.status),
@@ -580,6 +580,7 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             joinedload(SalesOrder.items).joinedload(SalesOrderItem.packaging_config),
             joinedload(SalesOrder.customer),
             joinedload(SalesOrder.operator_user),
+            joinedload(SalesOrder.approved_by),
             joinedload(SalesOrder.parent_order),
             joinedload(SalesOrder.receipt_account),
         )
@@ -642,7 +643,7 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             "customer": {"id": order.customer.id, "name": order.customer.name} if order.customer else None,
             "draft_payload": (order.ext_json or {}).get("draft_payload") if order.status == "draft" else None,
             "operator_user_id": order.operator_user_id,
-            "operator_name": order.operator_user.full_name if order.operator_user else None,
+            "operator_name": order.approved_by.full_name if order.approved_by else None,
             "consignee": order.consignee,
             "consignee_phone": order.consignee_phone,
             "delivery_address": order.delivery_address,

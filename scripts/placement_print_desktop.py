@@ -107,11 +107,13 @@ def filter_printers(names, keyword):
 
 
 def find_sumatra():
-    candidates = [
+    bundled_root = Path(getattr(sys, "_MEIPASS", ROOT))
+    candidates = [bundled_root / "SumatraPDF" / "SumatraPDF.exe"]
+    candidates.extend([
         Path(os.environ[name]) / "SumatraPDF" / "SumatraPDF.exe"
         for name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")
         if os.environ.get(name)
-    ]
+    ])
     installed = next((path for path in candidates if sumatra_is_printable(path)), None)
     if installed:
         return str(installed)
@@ -163,7 +165,7 @@ def agent_environment(sumatra_path, printer_name, server_url="", token="", poll_
 class PlacementPrintDesktop(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("业财系统 · 置货单自动打印")
+        self.title("业财系统 · 仓库作业单自动打印")
         self.geometry("780x620")
         self.minsize(720, 570)
         try:
@@ -252,7 +254,7 @@ class PlacementPrintDesktop(tk.Tk):
         ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
         ttk.Label(
             form,
-            text="先试打匿名示例单。确认 A5 横向出纸后，再连接服务器自动领取置货单。",
+            text="先试打匿名示例单。确认 A5 横向出纸后，再连接服务器自动领取置货单和发货单。",
             wraplength=680,
         ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
@@ -413,7 +415,7 @@ class PlacementPrintDesktop(tk.Tk):
         self.user_stopping = False
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
-        self._append("正在领取一次打印任务……" if once else "自动打印已启动，等待新的置货单……")
+        self._append("正在领取一次打印任务……" if once else "自动打印已启动，等待新的置货单或发货单……")
 
         def monitor():
             if log_path:
@@ -491,7 +493,7 @@ class PlacementPrintDesktop(tk.Tk):
             messagebox.showwarning("请稍候", "当前任务仍在处理，请完成后再关闭窗口。")
             return
         choice = messagebox.askyesnocancel(
-            "关闭置货单打印窗口",
+            "关闭仓库作业单打印窗口",
             "是否继续在后台自动打印？\n\n是：最小化到任务栏，打印继续运行（点击任务栏图标可恢复）。\n否：停止打印并退出程序。\n取消：返回窗口。",
         )
         if choice is None:

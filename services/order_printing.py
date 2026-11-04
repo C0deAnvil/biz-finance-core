@@ -236,39 +236,38 @@ def render_production_demand_pdf(demand: FulfillmentDemand, material_progress: d
     return buffer.getvalue()
 
 
-def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: str, warehouse_name: str | None) -> bytes:
-    """Large-font warehouse sheet with separate full-placement/full-shipment codes."""
+def _warehouse_pdf(order: SalesOrder, *, kind: str, scan_token: str, warehouse_name: str | None) -> bytes:
+    """Render separate placement and shipment sheets so delivery data is released only after placement."""
     buffer = BytesIO()
+    is_placement = kind == "placement"
+    title = "置货作业单" if is_placement else "发货作业单"
+    scan_value = f"YCP01{scan_token}" if is_placement else f"YCS01{scan_token}"
     doc = SimpleDocTemplate(
         buffer, pagesize=PAGE_SIZE,
         leftMargin=7 * mm, rightMargin=7 * mm,
         topMargin=6 * mm, bottomMargin=8 * mm,
-        title=f"销售出库作业单 {order.order_no}", author="业务系统",
+        title=f"{title} {order.order_no}", author="业务系统",
     )
     width = PAGE_SIZE[0] - 14 * mm
     story = []
-
-    placement_barcode = _scan_code(f"YCP01{placement_token}")
-    shipment_barcode = _scan_code(f"YCS01{shipment_token}")
+    barcode = _scan_code(scan_value)
     barcode_table = Table(
         [
-            [_placement_paragraph("销售出库作业单", size=22, align=TA_CENTER), ""],
-            [placement_barcode, shipment_barcode],
-            [_placement_paragraph("置货码", size=13, align=TA_CENTER),
-             _placement_paragraph("发货码", size=13, align=TA_CENTER)],
+            [_placement_paragraph(title, size=22, align=TA_CENTER)],
+            [barcode],
+            [_placement_paragraph("置货码" if is_placement else "发货码", size=13, align=TA_CENTER)],
         ],
-        colWidths=[width / 2, width / 2],
+        colWidths=[width],
     )
     barcode_table.setStyle(TableStyle([
-        ("SPAN", (0, 0), (1, 0)),
         ("BOX", (0, 0), (-1, -1), 1.2, colors.black),
         ("INNERGRID", (0, 0), (-1, -1), 1.0, colors.black),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("TOPPADDING", (0, 0), (1, 0), 1),
-        ("BOTTOMPADDING", (0, 0), (1, 0), 4),
+        ("TOPPADDING", (0, 0), (0, 0), 1),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 4),
     ]))
     story.extend([barcode_table, Spacer(1, 1.2 * mm)])
 
@@ -276,29 +275,36 @@ def _placement_pdf(order: SalesOrder, *, placement_token: str, shipment_token: s
     expected = order.expected_delivery_date
     order_type_color = colors.HexColor("#D40000") if order.order_type == "urgent" else colors.black
     owner = (order.sales_user.full_name or order.sales_user.username) if order.sales_user else "-"
-    meta = Table(
-        [
-            [_placement_paragraph("订单编号"), _placement_paragraph(order.order_no, size=12),
-             _placement_paragraph("作业仓库"), _placement_paragraph(warehouse_name, size=12),
-             _placement_paragraph(style["label"], size=13, align=TA_CENTER, color=order_type_color)],
-            [_placement_paragraph("期望发货"), _placement_paragraph(_date(expected), size=12),
-             _placement_paragraph("销售负责人"), _placement_paragraph(owner), ""],
+    rows = [
+        [_placement_paragraph("订单编号"), _placement_paragraph(order.order_no, size=12),
+         _placement_paragraph("作业仓库"), _placement_paragraph(warehouse_name, size=12),
+         _placement_paragraph(style["label"], size=13, align=TA_CENTER, color=order_type_color)],
+        [_placement_paragraph("期望发货"), _placement_paragraph(_date(expected), size=12),
+         _placement_paragraph("销售负责人"), _placement_paragraph(owner), ""],
+        [_placement_paragraph("运费"), _placement_paragraph(_money(order.transport_fee), size=12),
+         _placement_paragraph("销售备注"), _placement_paragraph(order.order_remark or "-"), ""],
+    ]
+    if not is_placement:
+        rows.extend([
             [_placement_paragraph("收货人/电话"), _placement_paragraph(f"{order.consignee or '-'}  {order.consignee_phone or '-'}"),
              _placement_paragraph("送货地址"), _placement_paragraph(order.delivery_address or "-", size=10.5), ""],
-            [_placement_paragraph("销售备注"), _placement_paragraph(order.order_remark or "-"), "", "", ""],
-        ],
+        ])
+    meta = Table(
+        rows,
         colWidths=[width * 0.10, width * 0.22, width * 0.10, width * 0.43, width * 0.15],
     )
-    meta.setStyle(TableStyle([
+    meta_style = [
         ("SPAN", (3, 2), (4, 2)),
-        ("SPAN", (1, 3), (4, 3)),
         ("GRID", (0, 0), (-1, -1), 1.4, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
+    ]
+    if not is_placement:
+        meta_style.append(("SPAN", (3, 3), (4, 3)))
+    meta.setStyle(TableStyle(meta_style))
     story.extend([meta, Spacer(1, 1.5 * mm)])
 
     headers = ["产品编码", "产品名称 / 产品规格", "包装要求", "数量", "明细备注"]
@@ -347,17 +353,13 @@ def render_order_pdf(
     shipment_token: str | None = None,
     warehouse_name: str | None = None,
 ) -> bytes:
-    if kind not in {"sales", "placement"}:
+    if kind not in {"sales", "placement", "shipment"}:
         raise ValueError("unsupported print template")
-    if kind == "placement":
-        if not placement_token or not shipment_token:
-            raise ValueError("placement and shipment scan tokens are required")
-        return _placement_pdf(
-            order,
-            placement_token=placement_token,
-            shipment_token=shipment_token,
-            warehouse_name=warehouse_name,
-        )
+    if kind in {"placement", "shipment"}:
+        token = placement_token if kind == "placement" else shipment_token
+        if not token:
+            raise ValueError(f"{kind} scan token is required")
+        return _warehouse_pdf(order, kind=kind, scan_token=token, warehouse_name=warehouse_name)
     buffer = BytesIO()
     doc = _base_doc(buffer)
     width = PAGE_SIZE[0] - 14 * mm

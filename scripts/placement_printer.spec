@@ -17,6 +17,8 @@ a = Analysis(
         (str(project_root / "assets" / "fonts" / "NotoSansSC.ttf"), "assets/fonts"),
         (str(project_root / "assets" / "fonts" / "NotoSansSC-Bold.ttf"), "assets/fonts"),
         (str(project_root / "assets" / "fonts" / "OFL.txt"), "assets/fonts"),
+        (str(Path.home() / "AppData" / "Local" / "SumatraPDF" / "SumatraPDF.exe"), "SumatraPDF"),
+        (str(Path.home() / "AppData" / "Local" / "SumatraPDF" / "libmupdf.dll"), "SumatraPDF"),
         *curl_datas,
     ],
     hiddenimports=[*curl_hiddenimports, "scripts.placement_print_agent", "scripts.preview_order_printing"],

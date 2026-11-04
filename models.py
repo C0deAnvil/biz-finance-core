@@ -345,6 +345,9 @@ class Customer(TimestampMixin, Base):
     churn_repurchase_at = Column(DateTime, nullable=True, index=True)
     last_order_at = Column(DateTime, nullable=True)
     archived_at = Column(DateTime, nullable=True)
+    crm_status = Column(String(20), nullable=False, default="active", server_default="active", index=True)
+    lost_at = Column(DateTime, nullable=True, index=True)
+    lost_reason = Column(Text, nullable=True)
     ext_json = Column(JSON, nullable=True)
 
     created_by = relationship("User", foreign_keys=[created_by_id])
@@ -632,8 +635,8 @@ class FinancialAccount(TimestampMixin, Base):
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True, index=True)
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True, index=True)
     account_name = Column(String(150), nullable=False)
-    bank_name = Column(String(150), nullable=False)
-    account_number = Column(String(80), nullable=False)
+    bank_name = Column(String(150), nullable=True)
+    account_number = Column(String(80), nullable=True)
     currency = Column(String(3), nullable=False, default="CNY")
     is_active = Column(Boolean, nullable=False, default=True)
     remark = Column(String(500), nullable=True)
@@ -932,6 +935,8 @@ class SalesOrder(TimestampMixin, Base):
     sales_user = relationship("User", foreign_keys=[sales_user_id])
     operator_user = relationship("User", foreign_keys=[operator_user_id])
     price_approved_by = relationship("User", foreign_keys=[price_approved_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+    assigned_finance_user = relationship("User", foreign_keys=[assigned_finance_user_id])
     parent_order = relationship("SalesOrder", remote_side=[id])
     items = relationship("SalesOrderItem", back_populates="sales_order", cascade="all, delete-orphan")
 
@@ -999,10 +1004,16 @@ class InventoryDispatchQueue(TimestampMixin, Base):
     placement_print_method = Column(String(20), nullable=True)
     placement_printed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     placement_print_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    shipment_printed_at = Column(DateTime, nullable=True, index=True)
+    shipment_print_status = Column(String(20), nullable=False, default="unprinted", server_default="unprinted")
+    shipment_print_method = Column(String(20), nullable=True)
+    shipment_printed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    shipment_print_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
 
     sales_order = relationship("SalesOrder")
     warehouse = relationship("Warehouse")
     placement_printed_by = relationship("User", foreign_keys=[placement_printed_by_id])
+    shipment_printed_by = relationship("User", foreign_keys=[shipment_printed_by_id])
 
 
 class PlacementPrintAgent(TimestampMixin, Base):
@@ -1017,10 +1028,11 @@ class PlacementPrintAgent(TimestampMixin, Base):
 
 class PlacementPrintJob(TimestampMixin, Base):
     __tablename__ = "placement_print_jobs"
-    __table_args__ = (UniqueConstraint("queue_id", name="uq_placement_print_job_queue"),)
+    __table_args__ = (UniqueConstraint("queue_id", "document_kind", name="uq_print_job_queue_kind"),)
 
     id = Column(Integer, primary_key=True)
     queue_id = Column(Integer, ForeignKey("inventory_dispatch_queues.id"), nullable=False)
+    document_kind = Column(String(20), nullable=False, default="placement", server_default="placement")
     status = Column(String(20), nullable=False, default="pending")
     attempts = Column(Integer, nullable=False, default=0)
     claimed_by_agent_id = Column(Integer, ForeignKey("placement_print_agents.id"), nullable=True)

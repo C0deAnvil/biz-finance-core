@@ -113,6 +113,7 @@ def create_account(payload: FinancialAccountCreate, current_user: User = Depends
         FinancialAccount.owner_type == payload.owner_type,
         FinancialAccount.customer_id == payload.customer_id,
         FinancialAccount.supplier_id == payload.supplier_id,
+        FinancialAccount.account_name == payload.account_name,
         FinancialAccount.account_number == payload.account_number,
         FinancialAccount.bank_name == payload.bank_name,
     ))
@@ -149,12 +150,16 @@ def update_account(account_id: int, payload: FinancialAccountUpdate,
     row = db.get(FinancialAccount, account_id)
     if row is None:
         raise HTTPException(status_code=404, detail="账户不存在")
+    account_name = payload.account_name.strip()
+    bank_name = (payload.bank_name or "").strip() or None
+    account_number = (payload.account_number or "").strip() or None
     identity_changed = (row.account_name, row.bank_name, row.account_number, row.currency) != (
-        payload.account_name.strip(), payload.bank_name.strip(), payload.account_number.strip(), payload.currency
+        account_name, bank_name, account_number, payload.currency
     )
     if identity_changed and account_is_referenced(db, account_id):
         raise HTTPException(status_code=409, detail="该账户已有历史单据引用，不能修改开户身份信息；请停用旧账户并新增账户")
-    for key, value in payload.model_dump().items():
+    values = {**payload.model_dump(), "account_name": account_name, "bank_name": bank_name, "account_number": account_number}
+    for key, value in values.items():
         setattr(row, key, value.strip() if isinstance(value, str) else value)
     write_operation_log(db, user_id=current_user.id, module="finance", action="update_financial_account",
                         content=f"修改账户 #{row.id}")

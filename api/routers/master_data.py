@@ -14,6 +14,7 @@ from models import (
     AppSetting,
     Customer,
     CustomerComplaint,
+    CustomerFollowUp,
     CustomerTag,
     CustomerTransferRecord,
     Department,
@@ -40,7 +41,7 @@ from models import (
     Warehouse,
 )
 from responses import api_response
-from schemas.master_data import CustomerComplaintCreate, CustomerComplaintUpdate, CustomerCreate, CustomerTransferCreate, MaterialCreate, PackagingConfigCreate, ProductCreate, StandardPriceUpdate, SupplierCatalogItemInput, SupplierCreate
+from schemas.master_data import CustomerComplaintCreate, CustomerComplaintUpdate, CustomerCreate, CustomerCRMStatusUpdate, CustomerFollowUpCreate, CustomerTransferCreate, MaterialCreate, PackagingConfigCreate, ProductCreate, StandardPriceUpdate, SupplierCatalogItemInput, SupplierCreate
 from services.core import _role_user_ids, create_notification, create_todo, next_business_no, write_operation_log
 from services.inventory_availability import placeable_of, replenishment_available_of, purchase_in_transit_map, stock_key
 from services.display import get_global_packaging_name, packaging_name_needs_repair, packaging_spec_text, product_specification_text, upsert_default_packaging_config
@@ -233,6 +234,10 @@ def _serialize_customer(row: Customer, order_count: int = 0, tags: list[str] | N
         "created_by_id": row.created_by_id,
         "created_by_name": row.created_by.full_name if row.created_by else None,
         "archived_at": row.archived_at.isoformat() if row.archived_at else None,
+        "crm_status": row.crm_status or "active",
+        "crm_status_label": {"lead": "潜在客户", "active": "正常跟进", "lost": "已流失"}.get(row.crm_status or "active", row.crm_status),
+        "lost_at": row.lost_at.isoformat() if row.lost_at else None,
+        "lost_reason": row.lost_reason,
         "order_count": order_count,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -697,6 +702,121 @@ def transfer_customer(
     db.commit()
     db.refresh(customer)
     return api_response(data=_serialize_customer(customer, 0, _load_customer_tag_map(db, [customer.id]).get(customer.id, [])))
+
+
+def _ensure_customer_crm_scope(customer: Customer, current_user: User) -> None:
+    role_code = current_user.role.code if current_user.role else ""
+    if role_code == "sales" and customer.owner_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="销售只能查看和维护本人负责的客户")
+
+
+@router.get("/customer-crm")
+def list_customer_crm(
+    keyword: str | None = None,
+    status: str | None = Query(default=None, pattern="^(lead|active|lost)$"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    query = select(Customer).options(joinedload(Customer.owner_user), joinedload(Customer.created_by)).where(Customer.archived_at.is_(None))
+    if current_user.role.code == "sales":
+        query = query.where(Customer.owner_user_id == current_user.id)
+    if keyword:
+        pattern = f"%{keyword.strip()}%"
+        query = query.where(or_(Customer.name.ilike(pattern), Customer.code.ilike(pattern), Customer.contact_name.ilike(pattern), Customer.phone.ilike(pattern)))
+    if status:
+        query = query.where(Customer.crm_status == status)
+    total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+    customers = db.scalars(query.order_by(Customer.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    customer_ids = [row.id for row in customers]
+    followups = db.scalars(
+        select(CustomerFollowUp).options(joinedload(CustomerFollowUp.followed_by))
+        .where(CustomerFollowUp.customer_id.in_(customer_ids or [-1]))
+        .order_by(CustomerFollowUp.created_at.desc())
+    ).all()
+    latest = {}
+    counts = {}
+    for row in followups:
+        counts[row.customer_id] = counts.get(row.customer_id, 0) + 1
+        latest.setdefault(row.customer_id, row)
+    items = []
+    for customer in customers:
+        row = _serialize_customer(customer)
+        follow = latest.get(customer.id)
+        row.update({
+            "follow_up_count": counts.get(customer.id, 0),
+            "last_follow_at": follow.created_at.isoformat() if follow and follow.created_at else None,
+            "last_follow_content": follow.content if follow else None,
+            "next_follow_at": follow.next_follow_at.isoformat() if follow and follow.next_follow_at else None,
+            "last_followed_by_name": follow.followed_by.full_name if follow and follow.followed_by else None,
+        })
+        items.append(row)
+    scoped = select(Customer.crm_status, func.count(Customer.id)).where(Customer.archived_at.is_(None))
+    if current_user.role.code == "sales":
+        scoped = scoped.where(Customer.owner_user_id == current_user.id)
+    summary_rows = db.execute(scoped.group_by(Customer.crm_status)).all()
+    summary = {key or "active": int(value) for key, value in summary_rows}
+    return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}, "summary": summary})
+
+
+@router.get("/customers/{customer_id}/crm-history")
+def customer_crm_history(
+    customer_id: int,
+    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    _ensure_customer_crm_scope(customer, current_user)
+    followups = db.scalars(select(CustomerFollowUp).options(joinedload(CustomerFollowUp.followed_by)).where(CustomerFollowUp.customer_id == customer_id).order_by(CustomerFollowUp.created_at.desc())).all()
+    transfers = db.scalars(select(CustomerTransferRecord).options(joinedload(CustomerTransferRecord.from_user), joinedload(CustomerTransferRecord.to_user), joinedload(CustomerTransferRecord.transferred_by)).where(CustomerTransferRecord.customer_id == customer_id).order_by(CustomerTransferRecord.transferred_at.desc())).all()
+    return api_response(data={
+        "follow_ups": [{"id": row.id, "follow_type": row.follow_type, "content": row.content, "status": row.status, "next_follow_at": row.next_follow_at, "followed_by_name": row.followed_by.full_name if row.followed_by else None, "created_at": row.created_at} for row in followups],
+        "transfers": [{"id": row.id, "from_user_name": row.from_user.full_name if row.from_user else None, "to_user_name": row.to_user.full_name if row.to_user else None, "transferred_by_name": row.transferred_by.full_name if row.transferred_by else None, "reason": row.reason, "transferred_at": row.transferred_at} for row in transfers],
+    })
+
+
+@router.post("/customers/{customer_id}/follow-ups")
+def create_customer_follow_up(
+    customer_id: int,
+    payload: CustomerFollowUpCreate,
+    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    _ensure_customer_crm_scope(customer, current_user)
+    row = CustomerFollowUp(customer_id=customer.id, followed_by_id=current_user.id, **payload.model_dump())
+    db.add(row)
+    if customer.crm_status == "lost":
+        customer.crm_status, customer.lost_at, customer.lost_reason = "active", None, None
+    write_operation_log(db, user_id=current_user.id, module="crm", action="customer_follow_up", content=f"跟进客户 {customer.name}")
+    db.commit()
+    return api_response(msg="跟进记录已保存", data={"id": row.id})
+
+
+@router.post("/customers/{customer_id}/crm-status")
+def update_customer_crm_status(
+    customer_id: int,
+    payload: CustomerCRMStatusUpdate,
+    current_user: User = Depends(require_roles("sales", "manager", "chairman", "master_data_admin", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    _ensure_customer_crm_scope(customer, current_user)
+    if payload.status == "lost" and not (payload.reason or "").strip():
+        raise HTTPException(status_code=422, detail="标记客户流失时必须填写流失原因")
+    customer.crm_status = payload.status
+    customer.lost_at = now_local() if payload.status == "lost" else None
+    customer.lost_reason = ((payload.reason or "").strip() or None) if payload.status == "lost" else None
+    write_operation_log(db, user_id=current_user.id, module="crm", action="update_customer_status", content=f"客户 {customer.name} 状态改为 {payload.status}")
+    db.commit()
+    return api_response(msg="客户状态已更新")
 
 
 def _customer_has_relations(db: Session, customer_id: int) -> bool:

@@ -18,6 +18,7 @@ const loaderMap = {
   '/packaging-configs': () => import('../views/master/PackagingConfigsView.vue'),
   '/standard-prices': () => import('../views/master/StandardPricesView.vue'),
   '/sales/orders': () => import('../views/sales/SalesOrdersView.vue'),
+  '/sales/crm': () => import('../views/sales/CustomerCRMView.vue'),
   '/sales/my-receivables': () => import('../views/sales/MyReceivablesView.vue'),
   '/sales/order-timeline': () => import('../views/sales/OrderTimelineView.vue'),
   '/sales/settlements': () => import('../views/sales/SalesSettlementsView.vue'),

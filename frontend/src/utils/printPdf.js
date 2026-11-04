@@ -16,6 +16,7 @@ async function loadPdf(path) {
 function printPath(kind, orderId) {
   if (kind === 'sales') return `/api/printing/sales-orders/${orderId}.pdf`
   if (kind === 'placement') return `/api/printing/placement-orders/${orderId}.pdf`
+  if (kind === 'shipment') return `/api/printing/shipment-orders/${orderId}.pdf`
   if (kind === 'production-demand') return `/api/printing/production-demands/${orderId}.pdf`
   throw new Error('不支持的打印单据类型')
 }
@@ -23,6 +24,7 @@ function printPath(kind, orderId) {
 function printLabel(kind) {
   if (kind === 'sales') return '销售单'
   if (kind === 'placement') return '置货单'
+  if (kind === 'shipment') return '发货单'
   if (kind === 'production-demand') return '生产补货需求单'
   return '业务单据'
 }

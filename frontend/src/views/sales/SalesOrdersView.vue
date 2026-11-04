@@ -16,19 +16,24 @@
 
     <el-table :data="pagedRows" stripe :row-class-name="rowClassName" @selection-change="selection = $event">
       <el-table-column type="selection" width="55" />
-      <el-table-column prop="order_no" label="订单号" width="150">
+      <el-table-column prop="order_no" label="客户订单" width="170">
         <template #default="scope">
           <span :style="{ color: orderTypeStyle(scope.row.order_type).color, fontWeight: scope.row.order_type !== 'normal' ? 700 : 500 }">
             {{ scope.row.order_no }}
           </span>
         </template>
       </el-table-column>
-      <el-table-column prop="order_type_label" label="类型" width="90">
+      <el-table-column prop="customer_name" label="客户" min-width="160" />
+      <el-table-column prop="sales_user" label="销售人员" width="120" />
+      <el-table-column prop="order_type_label" label="订单类型" width="100">
         <template #default="scope">
           <el-tag :type="orderTypeStyle(scope.row.order_type).tagType" effect="light" size="small">
             {{ scope.row.order_type_label || orderTypeStyle(scope.row.order_type).label }}
           </el-tag>
         </template>
+      </el-table-column>
+      <el-table-column prop="total_amount" label="金额" width="120">
+        <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
       </el-table-column>
       <el-table-column prop="expected_delivery_date" label="期望发货" width="110">
         <template #default="scope">
@@ -39,15 +44,10 @@
       <el-table-column prop="split_phase" label="批次" width="80">
         <template #default="scope">第{{ scope.row.split_phase || 1 }}批</template>
       </el-table-column>
-      <el-table-column prop="customer_name" label="客户" min-width="160" />
-      <el-table-column prop="sales_user" label="销售员" width="120" />
       <el-table-column prop="operator_name" label="经办人" width="120" />
       <el-table-column prop="payment_type_label" label="收款方式" min-width="180" />
       <el-table-column prop="receipt_account_label" label="收款账户" min-width="240" show-overflow-tooltip>
         <template #default="scope">{{ scope.row.receipt_account_label || '尚未选择' }}</template>
-      </el-table-column>
-      <el-table-column prop="total_amount" label="总金额" width="120">
-        <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
       </el-table-column>
         <el-table-column prop="status" label="状态" width="140">
           <template #default="scope">
@@ -258,8 +258,8 @@
           <el-table-column label="包装规格" width="130">
             <template #default="scope">{{ resolvePackagingRow(scope.row)?.kg_per_bag ? `${formatNumber(resolvePackagingRow(scope.row).kg_per_bag)} kg/袋` : '-' }}</template>
           </el-table-column>
-          <el-table-column label="数量(kg)" width="140">
-            <template #default="scope"><el-input-number v-model="scope.row.quantity" :min="0.0001" :precision="4" style="width: 100%" :disabled="!canEditOrderForm" /></template>
+          <el-table-column label="数量(kg)" width="200">
+            <template #default="scope"><el-input-number v-model="scope.row.quantity" :min="0" :precision="4" style="width: 100%" :disabled="!canEditOrderForm" /></template>
           </el-table-column>
           <el-table-column label="当前库存" width="120">
             <template #default="scope">{{ formatNumber(productAvailableQuantity(scope.row.product_id)) }}</template>
@@ -644,7 +644,7 @@ const emptyForm = () => ({
   deposit_amount: 0,
   transport_fee: 0,
   order_remark: '',
-  items: [{ product_id: null, packaging_config_id: null, quantity: 1, unit_price: 0, remark: '', price_change_remark: '' }]
+  items: [{ product_id: null, packaging_config_id: null, quantity: 0, unit_price: 0, remark: '', price_change_remark: '' }]
 })
 
 const form = reactive(emptyForm())
@@ -860,7 +860,7 @@ function closeCustomerDialog() {
 }
 
 function addItem() {
-  form.items.push({ product_id: null, packaging_config_id: null, quantity: 1, unit_price: 0, remark: '', price_change_remark: '' })
+  form.items.push({ product_id: null, packaging_config_id: null, quantity: 0, unit_price: 0, remark: '', price_change_remark: '' })
 }
 
 function removeItem(index) {
@@ -1216,7 +1216,7 @@ async function editOrder(row) {
   resetForm()
   editingId.value = row.id
   const draft = order.draft_payload || {}
-  const draftItems = draft.items?.length ? draft.items : (order.items?.length ? order.items : [{ product_id: null, packaging_config_id: null, quantity: 1, unit_price: 0 }])
+  const draftItems = draft.items?.length ? draft.items : (order.items?.length ? order.items : [{ product_id: null, packaging_config_id: null, quantity: 0, unit_price: 0 }])
   Object.assign(form, {
     customer_id: draft.customer_id ?? order.customer?.id ?? null,
     operator_user_id: draft.operator_user_id || order.operator_user_id || auth.user?.id,
@@ -1233,7 +1233,7 @@ async function editOrder(row) {
     items: draftItems.map((item) => ({
       product_id: item.product_id,
       packaging_config_id: selectedPackaging(item.product_id, item.packaging_config_id)?.id || null,
-      quantity: item.quantity ?? 1,
+      quantity: item.quantity ?? 0,
       unit_price: item.unit_price ?? 0,
       remark: item.remark || '',
       price_change_remark: item.price_change_remark || ''
@@ -1327,9 +1327,19 @@ function exportTable() {
 
 async function exportExcel() {
   try {
+    const exportRows = []
+    let exportPage = 1
+    while (true) {
+      const data = await get(`/api/sales/orders?tab=${activeStatusTab.value}&page=${exportPage}&page_size=100`, { force: true })
+      exportRows.push(...(data.items || []))
+      if (exportRows.length >= Number(data.pagination?.total || 0) || !(data.items || []).length) break
+      exportPage += 1
+    }
     const columns = [
       { key: 'order_no', title: '订单号' },
       { key: 'customer_name', title: '客户' },
+      { key: 'sales_user', title: '销售人员' },
+      { key: 'operator_name', title: '经办人（审批人）' },
       { key: 'order_type_label', title: '类型' },
       { key: 'total_amount', title: '金额' },
       { key: 'payment_type_label', title: '收款方式' },
@@ -1341,7 +1351,7 @@ async function exportExcel() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ filename: 'sales_orders', sheet_name: '销售订单', columns, rows: rows.value }),
+      body: JSON.stringify({ filename: 'sales_orders', sheet_name: '销售订单', columns, rows: exportRows }),
     })
     if (!response.ok) {
       let msg = '导出失败'

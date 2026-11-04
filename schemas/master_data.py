@@ -1,6 +1,8 @@
 from decimal import Decimal
 from schemas.money import Money
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +25,18 @@ class CustomerCreate(BaseModel):
 class CustomerTransferCreate(BaseModel):
     to_user_id: int
     reason: str | None = Field(default=None, max_length=500)
+
+
+class CustomerFollowUpCreate(BaseModel):
+    follow_type: str = Field(default="call", pattern="^(call|visit|wechat|email|meeting|other)$")
+    content: str = Field(..., min_length=1, max_length=3000)
+    next_follow_at: datetime | None = None
+    status: str = Field(default="open", pattern="^(open|completed|cancelled)$")
+
+
+class CustomerCRMStatusUpdate(BaseModel):
+    status: str = Field(..., pattern="^(lead|active|lost)$")
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class CustomerComplaintCreate(BaseModel):
