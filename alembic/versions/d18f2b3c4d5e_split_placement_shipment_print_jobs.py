@@ -59,8 +59,6 @@ def upgrade():
         constraint.get("name")
         for constraint in inspector.get_unique_constraints("placement_print_jobs")
     }
-    if "uq_placement_print_job_queue" in unique_constraints:
-        op.drop_constraint("uq_placement_print_job_queue", "placement_print_jobs", type_="unique")
     if "document_kind" not in job_columns:
         op.add_column(
             "placement_print_jobs",
@@ -77,14 +75,24 @@ def upgrade():
             "placement_print_jobs",
             ["queue_id", "document_kind"],
         )
+    # The old unique index is also the supporting index for queue_id's MySQL
+    # foreign key. Create the replacement composite index first, then MySQL can
+    # safely release the old one without error 1553.
+    inspector = sa.inspect(connection)
+    unique_constraints = {
+        constraint.get("name")
+        for constraint in inspector.get_unique_constraints("placement_print_jobs")
+    }
+    if "uq_placement_print_job_queue" in unique_constraints:
+        op.drop_constraint("uq_placement_print_job_queue", "placement_print_jobs", type_="unique")
 
 
 def downgrade():
     op.execute("DELETE FROM placement_print_jobs WHERE document_kind = 'shipment'")
     with op.batch_alter_table("placement_print_jobs") as batch:
+        batch.create_unique_constraint("uq_placement_print_job_queue", ["queue_id"])
         batch.drop_constraint("uq_print_job_queue_kind", type_="unique")
         batch.drop_column("document_kind")
-        batch.create_unique_constraint("uq_placement_print_job_queue", ["queue_id"])
     with op.batch_alter_table("inventory_dispatch_queues") as batch:
         batch.drop_constraint("fk_dispatch_queue_shipment_printed_by", type_="foreignkey")
         batch.drop_index("ix_inventory_dispatch_queues_shipment_printed_at")
