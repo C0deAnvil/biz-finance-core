@@ -14,23 +14,69 @@ depends_on = None
 
 
 def upgrade():
-    with op.batch_alter_table("inventory_dispatch_queues") as batch:
-        batch.add_column(sa.Column("shipment_printed_at", sa.DateTime(), nullable=True))
-        batch.add_column(sa.Column("shipment_print_status", sa.String(20), nullable=False, server_default="unprinted"))
-        batch.add_column(sa.Column("shipment_print_method", sa.String(20), nullable=True))
-        batch.add_column(sa.Column("shipment_printed_by_id", sa.Integer(), nullable=True))
-        batch.add_column(sa.Column("shipment_print_count", sa.Integer(), nullable=False, server_default="0"))
-        batch.create_index("ix_inventory_dispatch_queues_shipment_printed_at", ["shipment_printed_at"])
-        batch.create_foreign_key(
+    # MySQL DDL is non-transactional. If deployment is interrupted, part of this
+    # migration may already exist while alembic_version still points to d07.
+    # Inspect every object before creating it so `alembic upgrade head` is safe
+    # to rerun after a partial failure.
+    connection = op.get_bind()
+    inspector = sa.inspect(connection)
+    queue_columns = {column["name"] for column in inspector.get_columns("inventory_dispatch_queues")}
+    queue_additions = (
+        sa.Column("shipment_printed_at", sa.DateTime(), nullable=True),
+        sa.Column("shipment_print_status", sa.String(20), nullable=False, server_default="unprinted"),
+        sa.Column("shipment_print_method", sa.String(20), nullable=True),
+        sa.Column("shipment_printed_by_id", sa.Integer(), nullable=True),
+        sa.Column("shipment_print_count", sa.Integer(), nullable=False, server_default="0"),
+    )
+    for column in queue_additions:
+        if column.name not in queue_columns:
+            op.add_column("inventory_dispatch_queues", column)
+
+    inspector = sa.inspect(connection)
+    queue_indexes = {index["name"] for index in inspector.get_indexes("inventory_dispatch_queues")}
+    if "ix_inventory_dispatch_queues_shipment_printed_at" not in queue_indexes:
+        op.create_index(
+            "ix_inventory_dispatch_queues_shipment_printed_at",
+            "inventory_dispatch_queues",
+            ["shipment_printed_at"],
+        )
+    queue_foreign_keys = {
+        foreign_key.get("name")
+        for foreign_key in inspector.get_foreign_keys("inventory_dispatch_queues")
+    }
+    if "fk_dispatch_queue_shipment_printed_by" not in queue_foreign_keys:
+        op.create_foreign_key(
             "fk_dispatch_queue_shipment_printed_by",
+            "inventory_dispatch_queues",
             "users",
             ["shipment_printed_by_id"],
             ["id"],
         )
-    with op.batch_alter_table("placement_print_jobs") as batch:
-        batch.drop_constraint("uq_placement_print_job_queue", type_="unique")
-        batch.add_column(sa.Column("document_kind", sa.String(20), nullable=False, server_default="placement"))
-        batch.create_unique_constraint("uq_print_job_queue_kind", ["queue_id", "document_kind"])
+
+    inspector = sa.inspect(connection)
+    job_columns = {column["name"] for column in inspector.get_columns("placement_print_jobs")}
+    unique_constraints = {
+        constraint.get("name")
+        for constraint in inspector.get_unique_constraints("placement_print_jobs")
+    }
+    if "uq_placement_print_job_queue" in unique_constraints:
+        op.drop_constraint("uq_placement_print_job_queue", "placement_print_jobs", type_="unique")
+    if "document_kind" not in job_columns:
+        op.add_column(
+            "placement_print_jobs",
+            sa.Column("document_kind", sa.String(20), nullable=False, server_default="placement"),
+        )
+    inspector = sa.inspect(connection)
+    unique_constraints = {
+        constraint.get("name")
+        for constraint in inspector.get_unique_constraints("placement_print_jobs")
+    }
+    if "uq_print_job_queue_kind" not in unique_constraints:
+        op.create_unique_constraint(
+            "uq_print_job_queue_kind",
+            "placement_print_jobs",
+            ["queue_id", "document_kind"],
+        )
 
 
 def downgrade():
