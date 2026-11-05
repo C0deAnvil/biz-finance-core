@@ -1,4 +1,5 @@
-from datetime import date, datetime
+from calendar import monthrange
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +15,7 @@ from models import (
     AppSetting,
     Customer,
     CustomerComplaint,
+    CustomerCRMEvent,
     CustomerFollowUp,
     CustomerTag,
     CustomerTransferRecord,
@@ -710,23 +712,98 @@ def _ensure_customer_crm_scope(customer: Customer, current_user: User) -> None:
         raise HTTPException(status_code=403, detail="销售只能查看和维护本人负责的客户")
 
 
+def _months_before(value: datetime, months: int) -> datetime:
+    month_index = value.year * 12 + value.month - 1 - months
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    return value.replace(year=year, month=month, day=min(value.day, monthrange(year, month)[1]))
+
+
+def _sync_automatic_customer_loss(db: Session) -> None:
+    """Persist a loss event once a customer has had no order for six calendar months."""
+    now = now_local()
+    cutoff = _months_before(now, 6)
+    last_order = (
+        select(SalesOrder.customer_id, func.max(SalesOrder.created_at).label("last_order_at"))
+        .where(SalesOrder.status != "cancelled")
+        .group_by(SalesOrder.customer_id)
+        .subquery()
+    )
+    activity_at = func.coalesce(last_order.c.last_order_at, Customer.last_order_at, Customer.created_at)
+    candidates = db.execute(
+        select(Customer, activity_at.label("activity_at"))
+        .outerjoin(last_order, last_order.c.customer_id == Customer.id)
+        .where(
+            Customer.archived_at.is_(None),
+            Customer.crm_status.in_(["lead", "active"]),
+            activity_at <= cutoff,
+        )
+    ).all()
+    existing_lost_ids = set(db.scalars(
+        select(CustomerCRMEvent.customer_id).where(CustomerCRMEvent.event_type == "lost")
+    ).all())
+    changed = False
+    for customer, actual_activity_at in candidates:
+        if customer.last_order_at is None and actual_activity_at is not None and actual_activity_at != customer.created_at:
+            customer.last_order_at = actual_activity_at
+        customer.crm_status = "lost"
+        customer.lost_at = now
+        customer.lost_reason = "连续6个月未下单，系统自动标记"
+        db.add(CustomerCRMEvent(
+            customer_id=customer.id,
+            event_type="lost",
+            event_at=now,
+            reason=customer.lost_reason,
+            ext_json={"last_activity_at": actual_activity_at.isoformat() if actual_activity_at else None, "automatic": True},
+        ))
+        existing_lost_ids.add(customer.id)
+        changed = True
+    # Backfill a durable event for previously marked lost customers.
+    missing_events = db.scalars(select(Customer).where(
+        Customer.archived_at.is_(None),
+        Customer.crm_status == "lost",
+        ~Customer.id.in_(existing_lost_ids or [-1]),
+    )).all()
+    for customer in missing_events:
+        db.add(CustomerCRMEvent(
+            customer_id=customer.id,
+            event_type="lost",
+            event_at=customer.lost_at or now,
+            reason=customer.lost_reason or "历史流失客户",
+            ext_json={"automatic": True, "backfilled": True},
+        ))
+        changed = True
+    if changed:
+        db.commit()
+
+
 @router.get("/customer-crm")
 def list_customer_crm(
     keyword: str | None = None,
+    customer_name: str | None = None,
     status: str | None = Query(default=None, pattern="^(lead|active|lost)$"),
+    date_from: date | None = None,
+    date_to: date | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
+    _sync_automatic_customer_loss(db)
     query = select(Customer).options(joinedload(Customer.owner_user), joinedload(Customer.created_by)).where(Customer.archived_at.is_(None))
     if current_user.role.code == "sales":
         query = query.where(Customer.owner_user_id == current_user.id)
     if keyword:
         pattern = f"%{keyword.strip()}%"
         query = query.where(or_(Customer.name.ilike(pattern), Customer.code.ilike(pattern), Customer.contact_name.ilike(pattern), Customer.phone.ilike(pattern)))
+    if customer_name:
+        query = query.where(Customer.name.ilike(f"%{customer_name.strip()}%"))
     if status:
         query = query.where(Customer.crm_status == status)
+    if date_from:
+        query = query.where(Customer.created_at >= datetime.combine(date_from, time.min))
+    if date_to:
+        query = query.where(Customer.created_at <= datetime.combine(date_to, time.max))
     total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
     customers = db.scalars(query.order_by(Customer.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
     customer_ids = [row.id for row in customers]
@@ -760,6 +837,117 @@ def list_customer_crm(
     return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}, "summary": summary})
 
 
+@router.get("/customer-crm/records")
+def list_customer_crm_records(
+    record_type: str = Query(pattern="^(follow_up|transfer|created|lost)$"),
+    keyword: str | None = None,
+    customer_name: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=500),
+    current_user: User = Depends(require_roles("sales", "finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    role_code = current_user.role.code if current_user.role else ""
+    start_at = datetime.combine(date_from, time.min) if date_from else None
+    end_at = datetime.combine(date_to, time.max) if date_to else None
+    customer_filters = [Customer.archived_at.is_(None)]
+    if role_code == "sales":
+        customer_filters.append(Customer.owner_user_id == current_user.id)
+    if customer_name:
+        customer_filters.append(Customer.name.ilike(f"%{customer_name.strip()}%"))
+    customer_keyword = None
+    if keyword:
+        pattern = f"%{keyword.strip()}%"
+        customer_keyword = or_(Customer.name.ilike(pattern), Customer.code.ilike(pattern))
+
+    if record_type == "follow_up":
+        query = select(CustomerFollowUp).join(Customer).options(
+            joinedload(CustomerFollowUp.customer).joinedload(Customer.owner_user),
+            joinedload(CustomerFollowUp.followed_by),
+        ).where(*customer_filters)
+        if customer_keyword is not None:
+            query = query.where(or_(customer_keyword, CustomerFollowUp.content.ilike(pattern)))
+        if start_at:
+            query = query.where(CustomerFollowUp.created_at >= start_at)
+        if end_at:
+            query = query.where(CustomerFollowUp.created_at <= end_at)
+        total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+        rows = db.scalars(query.order_by(CustomerFollowUp.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        items = [{
+            "id": row.id, "record_type": "follow_up", "customer_id": row.customer_id,
+            "customer_code": row.customer.code, "customer_name": row.customer.name,
+            "owner_name": row.customer.owner_user.full_name if row.customer.owner_user else None,
+            "occurred_at": row.created_at, "operator_name": row.followed_by.full_name if row.followed_by else None,
+            "summary": row.content, "detail": row.follow_type, "next_follow_at": row.next_follow_at,
+            "status": row.status,
+        } for row in rows]
+    elif record_type == "transfer":
+        query = select(CustomerTransferRecord).join(Customer).options(
+            joinedload(CustomerTransferRecord.customer).joinedload(Customer.owner_user),
+            joinedload(CustomerTransferRecord.from_user), joinedload(CustomerTransferRecord.to_user),
+            joinedload(CustomerTransferRecord.transferred_by),
+        ).where(*customer_filters)
+        if customer_keyword is not None:
+            query = query.where(or_(customer_keyword, CustomerTransferRecord.reason.ilike(pattern)))
+        if start_at:
+            query = query.where(CustomerTransferRecord.transferred_at >= start_at)
+        if end_at:
+            query = query.where(CustomerTransferRecord.transferred_at <= end_at)
+        total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+        rows = db.scalars(query.order_by(CustomerTransferRecord.transferred_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        items = [{
+            "id": row.id, "record_type": "transfer", "customer_id": row.customer_id,
+            "customer_code": row.customer.code, "customer_name": row.customer.name,
+            "owner_name": row.customer.owner_user.full_name if row.customer.owner_user else None,
+            "occurred_at": row.transferred_at,
+            "operator_name": row.transferred_by.full_name if row.transferred_by else None,
+            "summary": f"{row.from_user.full_name if row.from_user else '未分配'} → {row.to_user.full_name if row.to_user else '-'}",
+            "detail": row.reason,
+        } for row in rows]
+    elif record_type == "created":
+        query = select(Customer).options(joinedload(Customer.owner_user), joinedload(Customer.created_by)).where(*customer_filters)
+        if customer_keyword is not None:
+            query = query.where(customer_keyword)
+        if start_at:
+            query = query.where(Customer.created_at >= start_at)
+        if end_at:
+            query = query.where(Customer.created_at <= end_at)
+        total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+        rows = db.scalars(query.order_by(Customer.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        items = [{
+            "id": row.id, "record_type": "created", "customer_id": row.id,
+            "customer_code": row.code, "customer_name": row.name,
+            "owner_name": row.owner_user.full_name if row.owner_user else None,
+            "occurred_at": row.created_at, "operator_name": row.created_by.full_name if row.created_by else None,
+            "summary": "客户建档", "detail": row.source_type,
+        } for row in rows]
+    else:
+        query = select(CustomerCRMEvent).join(Customer).options(
+            joinedload(CustomerCRMEvent.customer).joinedload(Customer.owner_user),
+            joinedload(CustomerCRMEvent.operator_user),
+        ).where(*customer_filters, CustomerCRMEvent.event_type.in_(["lost", "restored"]))
+        if customer_keyword is not None:
+            query = query.where(or_(customer_keyword, CustomerCRMEvent.reason.ilike(pattern)))
+        if start_at:
+            query = query.where(CustomerCRMEvent.event_at >= start_at)
+        if end_at:
+            query = query.where(CustomerCRMEvent.event_at <= end_at)
+        total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+        rows = db.scalars(query.order_by(CustomerCRMEvent.event_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        items = [{
+            "id": row.id, "record_type": row.event_type, "customer_id": row.customer_id,
+            "customer_code": row.customer.code, "customer_name": row.customer.name,
+            "owner_name": row.customer.owner_user.full_name if row.customer.owner_user else None,
+            "occurred_at": row.event_at,
+            "operator_name": row.operator_user.full_name if row.operator_user else "系统",
+            "summary": "标记流失" if row.event_type == "lost" else "恢复正常",
+            "detail": row.reason, "status": row.customer.crm_status,
+        } for row in rows]
+    return api_response(data={"items": items, "pagination": {"page": page, "page_size": page_size, "total": int(total)}})
+
+
 @router.get("/customers/{customer_id}/crm-history")
 def customer_crm_history(
     customer_id: int,
@@ -772,9 +960,11 @@ def customer_crm_history(
     _ensure_customer_crm_scope(customer, current_user)
     followups = db.scalars(select(CustomerFollowUp).options(joinedload(CustomerFollowUp.followed_by)).where(CustomerFollowUp.customer_id == customer_id).order_by(CustomerFollowUp.created_at.desc())).all()
     transfers = db.scalars(select(CustomerTransferRecord).options(joinedload(CustomerTransferRecord.from_user), joinedload(CustomerTransferRecord.to_user), joinedload(CustomerTransferRecord.transferred_by)).where(CustomerTransferRecord.customer_id == customer_id).order_by(CustomerTransferRecord.transferred_at.desc())).all()
+    events = db.scalars(select(CustomerCRMEvent).options(joinedload(CustomerCRMEvent.operator_user)).where(CustomerCRMEvent.customer_id == customer_id).order_by(CustomerCRMEvent.event_at.desc())).all()
     return api_response(data={
         "follow_ups": [{"id": row.id, "follow_type": row.follow_type, "content": row.content, "status": row.status, "next_follow_at": row.next_follow_at, "followed_by_name": row.followed_by.full_name if row.followed_by else None, "created_at": row.created_at} for row in followups],
         "transfers": [{"id": row.id, "from_user_name": row.from_user.full_name if row.from_user else None, "to_user_name": row.to_user.full_name if row.to_user else None, "transferred_by_name": row.transferred_by.full_name if row.transferred_by else None, "reason": row.reason, "transferred_at": row.transferred_at} for row in transfers],
+        "events": [{"id": row.id, "event_type": row.event_type, "event_at": row.event_at, "reason": row.reason, "operator_name": row.operator_user.full_name if row.operator_user else "系统"} for row in events],
     })
 
 
@@ -791,8 +981,6 @@ def create_customer_follow_up(
     _ensure_customer_crm_scope(customer, current_user)
     row = CustomerFollowUp(customer_id=customer.id, followed_by_id=current_user.id, **payload.model_dump())
     db.add(row)
-    if customer.crm_status == "lost":
-        customer.crm_status, customer.lost_at, customer.lost_reason = "active", None, None
     write_operation_log(db, user_id=current_user.id, module="crm", action="customer_follow_up", content=f"跟进客户 {customer.name}")
     db.commit()
     return api_response(msg="跟进记录已保存", data={"id": row.id})
@@ -814,6 +1002,15 @@ def update_customer_crm_status(
     customer.crm_status = payload.status
     customer.lost_at = now_local() if payload.status == "lost" else None
     customer.lost_reason = ((payload.reason or "").strip() or None) if payload.status == "lost" else None
+    if payload.status in {"lost", "active"}:
+        db.add(CustomerCRMEvent(
+            customer_id=customer.id,
+            event_type="lost" if payload.status == "lost" else "restored",
+            event_at=now_local(),
+            reason=customer.lost_reason if payload.status == "lost" else ((payload.reason or "").strip() or "销售跟进后恢复正常"),
+            operator_user_id=current_user.id,
+            ext_json={"automatic": False},
+        ))
     write_operation_log(db, user_id=current_user.id, module="crm", action="update_customer_status", content=f"客户 {customer.name} 状态改为 {payload.status}")
     db.commit()
     return api_response(msg="客户状态已更新")

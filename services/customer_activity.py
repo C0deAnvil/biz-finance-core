@@ -18,7 +18,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from models import Customer, CustomerTag, SalesOrder
+from models import Customer, CustomerCRMEvent, CustomerTag, SalesOrder
 from services.tag_catalog import customer_tag_dimension
 from services.time_utils import now_local
 
@@ -70,6 +70,19 @@ def register_customer_order(
     is_churn_repurchase = False
     gap_days = None
     tagged = False
+
+    if customer.crm_status == "lost":
+        db.add(CustomerCRMEvent(
+            customer_id=customer.id,
+            event_type="restored",
+            event_at=occurred_at,
+            reason="客户重新下单，系统自动恢复正常状态",
+            operator_user_id=created_by_id,
+            ext_json={"automatic": True, "source": "sales_order"},
+        ))
+        customer.crm_status = "active"
+        customer.lost_at = None
+        customer.lost_reason = None
 
     if previous_at is not None:
         gap = occurred_at - previous_at

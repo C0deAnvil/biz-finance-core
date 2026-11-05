@@ -402,6 +402,23 @@ class CustomerTransferRecord(TimestampMixin, Base):
     transferred_by = relationship("User", foreign_keys=[transferred_by_id])
 
 
+class CustomerCRMEvent(TimestampMixin, Base):
+    """System and manual lifecycle events that must remain after status changes."""
+
+    __tablename__ = "customer_crm_events"
+
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True)
+    event_type = Column(String(30), nullable=False, index=True)
+    event_at = Column(DateTime, default=now_local, nullable=False, index=True)
+    reason = Column(Text, nullable=True)
+    operator_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    ext_json = Column(JSON, nullable=True)
+
+    customer = relationship("Customer")
+    operator_user = relationship("User", foreign_keys=[operator_user_id])
+
+
 class CustomerComplaint(TimestampMixin, Base):
     __tablename__ = "customer_complaints"
 

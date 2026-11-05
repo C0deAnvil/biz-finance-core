@@ -22,12 +22,42 @@ def test_sales_customer_crm_follow_up_and_lost_state(client, login):
         "next_follow_at": "2026-11-10T09:00:00",
     })
     assert followed.status_code == 200, followed.text
+    follow_records = client.get("/api/master-data/customer-crm/records", params={
+        "record_type": "follow_up",
+        "customer_name": created.json()["data"]["name"],
+    })
+    assert follow_records.status_code == 200, follow_records.text
+    assert follow_records.json()["data"]["items"][0]["customer_id"] == customer_id
+
+    created_records = client.get("/api/master-data/customer-crm/records", params={
+        "record_type": "created",
+        "customer_name": created.json()["data"]["name"],
+    })
+    assert created_records.status_code == 200, created_records.text
+    assert created_records.json()["data"]["items"][0]["customer_id"] == customer_id
 
     lost = client.post(f"/api/master-data/customers/{customer_id}/crm-status", json={
         "status": "lost",
         "reason": "客户暂时停止采购",
     })
     assert lost.status_code == 200, lost.text
+    lost_records = client.get("/api/master-data/customer-crm/records", params={
+        "record_type": "lost",
+        "customer_name": created.json()["data"]["name"],
+    })
+    assert lost_records.status_code == 200, lost_records.text
+    assert lost_records.json()["data"]["items"][0]["record_type"] == "lost"
+
+    restored = client.post(f"/api/master-data/customers/{customer_id}/crm-status", json={
+        "status": "active",
+        "reason": "跟进后恢复采购意向",
+    })
+    assert restored.status_code == 200, restored.text
+    lost_records = client.get("/api/master-data/customer-crm/records", params={
+        "record_type": "lost",
+        "customer_name": created.json()["data"]["name"],
+    })
+    assert lost_records.json()["data"]["items"][0]["record_type"] == "restored"
     history = client.get(f"/api/master-data/customers/{customer_id}/crm-history")
     assert history.status_code == 200, history.text
     assert history.json()["data"]["follow_ups"][0]["content"] == "电话沟通采购计划"
