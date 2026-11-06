@@ -175,7 +175,7 @@ const tooltipBase = { backgroundColor: 'rgba(8, 25, 39, .96)', borderColor: '#31
 const axisStyle = { axisLine: { lineStyle: { color: gridColor } }, axisTick: { show: false }, axisLabel: { color: mutedColor, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } } }
 
 const mapOption = computed(() => ({
-  tooltip: { ...tooltipBase, trigger: 'item', formatter: ({ data: row, name }) => row ? `<b>${name}</b><br/>订单金额：${money(row.value)}<br/>订单数量：${row.orders} 单<br/>产品数量：${quantity(row.quantity)} kg` : `<b>${name}</b><br/>暂无订单` },
+  tooltip: { ...tooltipBase, trigger: 'item', formatter: ({ data: row, name }) => `<b>${name}</b><br/>订单金额：${money(row?.value || 0)}<br/>订单数量：${number(row?.orders || 0)} 单<br/>产品数量：${quantity(row?.quantity || 0)} kg` },
   visualMap: { min: 0, max: regionMax.value, calculable: true, orient: 'horizontal', left: 'center', bottom: 4, itemWidth: 14, itemHeight: 110, text: ['高', '低'], textStyle: { color: mutedColor, fontSize: 10 }, inRange: { color: ['#172b3c', '#155970', '#168d8a', '#45d8b8'] } },
   series: [{ type: 'map', map: 'china-executive', roam: true, scaleLimit: { min: .85, max: 5 }, zoom: 1.08, top: 12, bottom: 38, label: { show: true, color: '#b9cad7', fontSize: 9, formatter: ({ name }) => name.replace(/省|市|壮族自治区|回族自治区|维吾尔自治区|自治区|特别行政区/g, '') }, itemStyle: { areaColor: '#172b3c', borderColor: '#51758d', borderWidth: .7 }, emphasis: { label: { color: '#fff', fontWeight: 'bold' }, itemStyle: { areaColor: '#f0a654', shadowBlur: 18, shadowColor: 'rgba(240,166,84,.45)' } }, select: { disabled: true }, data: mapRows.value }],
 }))
