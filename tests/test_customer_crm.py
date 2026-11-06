@@ -73,3 +73,23 @@ def test_finance_can_create_account_with_only_display_name(client, login):
     row = response.json()["data"]
     assert row["bank_name"] is None
     assert row["account_number"] is None
+
+
+def test_finance_can_transfer_customer_to_sales(client, login):
+    login("sales01")
+    created = client.post("/api/master-data/customers", json={
+        "name": uniq("财务转交客户"),
+        "contact_name": "联系人",
+        "phone": "13800000001",
+        "address": "测试地址",
+    })
+    assert created.status_code == 200, created.text
+    customer = created.json()["data"]
+
+    login("finance01")
+    transferred = client.post(
+        f"/api/master-data/customers/{customer['id']}/transfer",
+        json={"to_user_id": customer["owner_user_id"], "reason": "财务重新确认客户归属"},
+    )
+    assert transferred.status_code == 200, transferred.text
+    assert transferred.json()["data"]["owner_user_id"] == customer["owner_user_id"]

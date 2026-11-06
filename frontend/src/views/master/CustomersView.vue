@@ -480,7 +480,7 @@ const complaintForm = reactive({
 })
 const canManage = computed(() => ['sales', 'finance', 'finance_super', 'manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code) && pagePermission.can('create'))
 const canManageAccounts = computed(() => ['sales', 'manager', 'chairman', 'master_data_admin', 'finance', 'finance_super', 'system_admin'].includes(auth.user?.role_code))
-const canTransfer = computed(() => ['manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
+const canTransfer = computed(() => ['finance', 'finance_super', 'manager', 'chairman', 'master_data_admin', 'system_admin'].includes(auth.user?.role_code))
 // 销售自建客户默认归属本人，归属与建档来源由经理及以上维护
 const canAssignOwner = computed(() => auth.user?.role_code !== 'sales')
 // 五星/四星由公司统一打标，销售端只读

@@ -668,7 +668,7 @@ def update_customer(
 def transfer_customer(
     customer_id: int,
     payload: CustomerTransferCreate,
-    current_user: User = Depends(require_roles("manager", "chairman", "master_data_admin", "system_admin")),
+    current_user: User = Depends(require_roles("finance", "finance_super", "manager", "chairman", "master_data_admin", "system_admin")),
     db: Session = Depends(get_db),
 ):
     customer = db.execute(select(Customer).where(Customer.id == customer_id)).scalar_one_or_none()
