@@ -8,6 +8,7 @@
       <el-table :data="agents" stripe>
         <el-table-column prop="name" label="设备名称" min-width="180" />
         <el-table-column prop="id" label="设备编号" width="100" />
+        <el-table-column prop="token_fingerprint" label="认证码指纹" width="135" />
         <el-table-column label="状态" width="110"><template #default="scope"><el-tag :type="scope.row.is_active ? 'success' : 'info'">{{ scope.row.is_active ? '启用' : '停用' }}</el-tag></template></el-table-column>
         <el-table-column label="生成时间" width="190"><template #default="scope">{{ formatDateTime(scope.row.created_at) }}</template></el-table-column>
         <el-table-column label="操作" width="120"><template #default="scope"><el-button v-if="scope.row.is_active" type="danger" text @click="revoke(scope.row)">停用</el-button></template></el-table-column>

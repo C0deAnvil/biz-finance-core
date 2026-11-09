@@ -6,6 +6,7 @@ The device token is kept only in memory and passed to the child agent process.
 
 import json
 import ctypes
+import hashlib
 import os
 import queue
 import shutil
@@ -199,6 +200,7 @@ class PlacementPrintDesktop(tk.Tk):
         self.one_shot_running = False
         self.user_stopping = False
         self.busy = False
+        self.auth_error_shown = False
         self._build()
         if load_warning:
             self._append(load_warning)
@@ -333,6 +335,9 @@ class PlacementPrintDesktop(tk.Tk):
             messagebox.showerror("保存失败", str(exc))
             return
         self._append(f"配置已保存到 {path}；开机启动{'已启用' if desired else '未启用'}。")
+        if self.token.get().strip():
+            fingerprint = hashlib.sha256(self.token.get().strip().encode("utf-8")).hexdigest()[:12]
+            self._append(f"当前打印设备认证码指纹：{fingerprint}（可与系统设备管理页核对）。")
         messagebox.showinfo("保存成功", "下次打开会自动读取配置。正在运行的轮询如需应用新配置，请停止后重新开始。")
 
     def _environment(self, require_server):
@@ -411,6 +416,7 @@ class PlacementPrintDesktop(tk.Tk):
             messagebox.showerror("启动失败", str(exc))
             return False
         self.agent_process = process
+        self.auth_error_shown = False
         self.one_shot_running = once
         self.user_stopping = False
         self.start_button.configure(state="disabled")
@@ -459,7 +465,19 @@ class PlacementPrintDesktop(tk.Tk):
             while True:
                 event = self.events.get_nowait()
                 if event[0] == "log":
-                    self._append(event[1])
+                    message = event[1]
+                    is_auth_error = "[AUTH_ERROR]" in message
+                    self._append(message.replace("[AUTH_ERROR]", "").strip())
+                    if is_auth_error and not self.auth_error_shown:
+                        self.auth_error_shown = True
+                        self.deiconify()
+                        messagebox.showerror(
+                            "打印设备认证失败",
+                            "服务器拒绝了当前打印认证码。\n\n"
+                            "请到【系统管理 → 打印设备与记录】的“打印设备认证码”区域生成新码，"
+                            "不要使用下方的“仓库扫码设备”认证码。\n\n"
+                            "填入新码并保存后，点击“停止”，再重新开始自动打印。",
+                        )
                 elif event[0] == "printers":
                     self.printer_names = event[1]
                     self._filter_printer_choices()

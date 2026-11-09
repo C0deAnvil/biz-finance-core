@@ -307,7 +307,7 @@ def _warehouse_pdf(order: SalesOrder, *, kind: str, scan_token: str, warehouse_n
     meta.setStyle(TableStyle(meta_style))
     story.extend([meta, Spacer(1, 1.5 * mm)])
 
-    headers = ["产品编码", "产品名称 / 产品规格", "包装要求", "数量", "明细备注"]
+    headers = ["产品编码", "产品名称 / 产品规格", "包装要求", "数量", "配送要求"]
     rows = []
     for item in order.items:
         product = item.product

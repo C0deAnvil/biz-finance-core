@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal
 from math import ceil
@@ -7,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
@@ -78,6 +80,7 @@ from services.inventory_availability import purchase_in_transit_map, stock_key
 
 router = APIRouter(prefix="/production", tags=["production"])
 BOM_MANAGE_ROLES = ("production", "system_admin", "master_data_admin")
+logger = logging.getLogger("yecai.production")
 
 
 def _raw_warehouse(db: Session) -> Warehouse:
@@ -772,7 +775,40 @@ def create_task(
     current_user: User = Depends(require_roles("production")),
     db: Session = Depends(get_db),
 ):
-    return create_task_service(payload, current_user, db)
+    try:
+        return create_task_service(payload, current_user, db)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception(
+            "Production task database error: demand_id=%s product_id=%s user_id=%s",
+            payload.fulfillment_demand_id,
+            payload.product_id,
+            current_user.id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"生产任务创建失败（补货需求ID：{payload.fulfillment_demand_id or '无'}，产品ID：{payload.product_id}）。"
+                "数据库结构或关联数据不完整，请管理员检查迁移状态及生产模块错误日志"
+            ),
+        ) from exc
+    except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        db.rollback()
+        logger.exception(
+            "Production task data error: demand_id=%s product_id=%s user_id=%s",
+            payload.fulfillment_demand_id,
+            payload.product_id,
+            current_user.id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"生产任务创建失败（补货需求ID：{payload.fulfillment_demand_id or '无'}，产品ID：{payload.product_id}）。"
+                "需求、销售订单或 BOM 中存在无法计算的历史数据，请管理员检查对应单据"
+            ),
+        ) from exc
 
 
 @router.get("/special-requests")
@@ -1324,8 +1360,61 @@ def get_fulfillment_demand_material_progress(
     if demand is None:
         raise HTTPException(status_code=404, detail="生产补货需求不存在")
 
+    bom = db.execute(
+        select(BOM)
+        .options(joinedload(BOM.items))
+        .where(BOM.product_id == demand.product_id, BOM.is_active.is_(True))
+    ).unique().scalar_one_or_none()
+    product_name = demand.product.name if demand.product else f"产品#{demand.product_id}"
+    if bom is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"补货需求 {demand.demand_no} 对应的产品「{product_name}」未配置启用状态的 BOM，暂时不能转生产任务",
+        )
+    if not bom.items:
+        raise HTTPException(
+            status_code=409,
+            detail=f"补货需求 {demand.demand_no} 对应的产品「{product_name}」BOM 没有原料明细，暂时不能转生产任务",
+        )
+    if any(not item.material_id or Decimal(item.standard_quantity or 0) <= 0 for item in bom.items):
+        raise HTTPException(
+            status_code=409,
+            detail=f"产品「{product_name}」的 BOM 存在未选择原料或单耗不大于 0 的明细，请先修正 BOM",
+        )
+
     from services.material_replenishment_service import material_demand_progress
-    return api_response(data=material_demand_progress(db, demand))
+    try:
+        progress = material_demand_progress(db, demand)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception(
+            "Failed to load production material progress: demand_id=%s demand_no=%s product_id=%s",
+            demand.id,
+            demand.demand_no,
+            demand.product_id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"无法读取补货需求 {demand.demand_no} 的原料进度。"
+                "数据库结构或关联数据不完整，请管理员检查迁移状态及生产模块错误日志"
+            ),
+        ) from exc
+    except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        db.rollback()
+        logger.exception(
+            "Invalid production material progress data: demand_id=%s demand_no=%s product_id=%s",
+            demand.id,
+            demand.demand_no,
+            demand.product_id,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"补货需求 {demand.demand_no} 的 BOM、原料补货或入库历史数据异常，请管理员检查对应单据",
+        ) from exc
+    return api_response(data=progress)
 
 
 @router.put("/fulfillment-demands/{demand_id}")

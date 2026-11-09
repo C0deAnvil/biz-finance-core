@@ -3,6 +3,7 @@ import json
 from collections import defaultdict
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -15,6 +16,33 @@ from services.warehouse_lookup import get_raw_warehouse
 SOURCE_TYPE = "production_material_replenishment"
 LEGACY_SOURCE_TYPE = "sales_order_material_replenishment"
 ZERO = Decimal("0")
+
+
+def _material_rows(value, *, document_no: str, field_name: str) -> list[dict]:
+    """Validate historical JSON rows before calculating material progress.
+
+    A few old replenishment records were written before ``items_json`` had a
+    stable structure.  Letting ``None``/dict/string values reach the loops
+    below produces TypeError/AttributeError and the UI can only display a
+    generic HTTP 500.  Treat this as repairable business data instead and tell
+    the operator exactly which document must be checked.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{document_no} 的{field_name}格式异常，请联系管理员修复该单据后重试",
+        )
+    rows: list[dict] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{document_no} 的{field_name}第 {index} 行格式异常，请联系管理员修复该单据后重试",
+            )
+        rows.append(item)
+    return rows
 
 
 def material_stock_availability(db, material_ids, *, lock=False, exclude_fulfillment_demand_id=None):
@@ -54,7 +82,11 @@ def _order_material_totals(db, order_ids):
                InventoryOperationRequest.request_category.in_(["purchase_receipt_inbound", "purchase_quality_inbound"]),
                InventoryOperationRequest.status == "completed")
     ):
-        for item in handled_items or []:
+        for item in _material_rows(
+            handled_items,
+            document_no=f"采购到货记录#{pid}",
+            field_name="入库明细",
+        ):
             inbound[pid, item.get("material_id")] += Decimal(str(item.get("quantity") or 0))
     return received, inbound
 
@@ -87,8 +119,14 @@ def material_demand_progress(db, demand, *, lock_stock=False):
     allocations = {}
     for batch in db.scalars(select(MaterialReplenishmentDemand).where(MaterialReplenishmentDemand.purchase_order_id.in_(list(orders) or [-1]))
                             .order_by(MaterialReplenishmentDemand.id)):
-        for item in batch.items_json:
-            mid, qty = int(item["material_id"]), Decimal(str(item["shortage_quantity"]))
+        for item in _material_rows(batch.items_json, document_no=batch.demand_no, field_name="原料明细"):
+            try:
+                mid, qty = int(item["material_id"]), Decimal(str(item["shortage_quantity"]))
+            except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{batch.demand_no} 的原料编号或数量异常，请联系管理员修复该单据后重试",
+                ) from exc
             key = (batch.purchase_order_id, mid)
             arrival, stocked = min(qty, received[key]), min(qty, inbound[key])
             allocations[batch.id, mid] = (arrival, stocked)
@@ -105,8 +143,14 @@ def material_demand_progress(db, demand, *, lock_stock=False):
             arrived[mid] += min(qty, received[legacy_po.id, mid])
             material_orders[mid].append(legacy_po)
     for batch in batches:
-        for item in batch.items_json:
-            mid, qty = int(item["material_id"]), Decimal(str(item["shortage_quantity"]))
+        for item in _material_rows(batch.items_json, document_no=batch.demand_no, field_name="原料明细"):
+            try:
+                mid, qty = int(item["material_id"]), Decimal(str(item["shortage_quantity"]))
+            except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{batch.demand_no} 的原料编号或数量异常，请联系管理员修复该单据后重试",
+                ) from exc
             explicit_required[mid] = max(
                 explicit_required[mid],
                 Decimal(str(item.get("actual_required_quantity") or 0)),
@@ -155,7 +199,8 @@ def material_demand_progress(db, demand, *, lock_stock=False):
     return {"demand_id": demand.id, "demand_no": demand.demand_no, "status": demand.status,
             "can_produce": bool(requirements) and all(i["stock_available_quantity"] >= i["required_quantity"] for i in items),
             "can_edit_replenishment": demand.status in {"pending", "pending_material"}, "items": items,
-            "replenishment_demands": [{"id": b.id, "demand_no": b.demand_no, "items": b.items_json,
+            "replenishment_demands": [{"id": b.id, "demand_no": b.demand_no,
+                                        "items": _material_rows(b.items_json, document_no=b.demand_no, field_name="原料明细"),
                                         "purchase_order_id": b.purchase_order_id,
                                         "purchase_order_no": orders[b.purchase_order_id].order_no if b.purchase_order_id in orders else None}
                                        for b in batches]}

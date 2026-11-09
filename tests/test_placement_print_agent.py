@@ -44,6 +44,24 @@ def test_agent_request_uses_browser_compatible_tls(monkeypatch):
     )
 
 
+def test_agent_request_preserves_server_authentication_message(monkeypatch):
+    monkeypatch.setattr(agent, "BASE_URL", "https://print.example")
+    monkeypatch.setattr(agent, "TOKEN", "invalid-token")
+    response = SimpleNamespace(
+        status_code=401,
+        reason="Unauthorized",
+        headers={},
+        content='{"code":401,"msg":"打印设备密钥无效、缺失或已停用"}'.encode("utf-8"),
+        json=lambda: {"code": 401, "msg": "打印设备密钥无效、缺失或已停用"},
+    )
+    with patch.object(agent.curl_requests, "request", return_value=response), pytest.raises(
+        agent.PrintAgentHTTPError, match="打印设备密钥无效"
+    ) as exc_info:
+        agent.request("/api/printing/agent/jobs/claim", method="POST", data={})
+
+    assert exc_info.value.status_code == 401
+
+
 def test_local_pdf_submission_uses_configured_printer_without_a_shell(tmp_path, monkeypatch):
     pdf = tmp_path / "试打印.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")

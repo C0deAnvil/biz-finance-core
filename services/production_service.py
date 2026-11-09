@@ -1,11 +1,13 @@
 """production domain service layer."""
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from math import ceil
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from models import (
@@ -47,6 +49,9 @@ from services.quality_workflow import create_production_quality_task, resolve_qu
 from services.time_utils import now_local
 from services.workflow import create_inventory_operation_request
 from services.warehouse_lookup import get_factory_warehouse, get_raw_warehouse
+
+
+logger = logging.getLogger("yecai.production")
 
 
 def repair_material_request_states(db: Session) -> int:
@@ -614,6 +619,8 @@ def create_task(
     product = db.execute(select(Product).where(Product.id == payload.product_id)).scalar_one_or_none()
     if product is None:
         raise HTTPException(status_code=404, detail="产品不存在")
+    if not product.is_active:
+        raise HTTPException(status_code=409, detail=f"产品「{product.name}」已停用，不能创建生产任务")
     demand = None
     if payload.fulfillment_demand_id:
         demand = db.execute(
@@ -628,6 +635,11 @@ def create_task(
             raise HTTPException(status_code=404, detail="生产补货需求不存在")
         if demand.status not in {"pending", "pending_material"}:
             raise HTTPException(status_code=409, detail="当前生产补货需求已处理")
+        if demand.product_id != payload.product_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"补货需求 {demand.demand_no} 的产品与当前选择的产品不一致，请关闭窗口后重新转建任务",
+            )
         if Decimal(payload.planned_quantity) > Decimal(demand.shortage_quantity or 0):
             raise HTTPException(status_code=409, detail="本批生产数量不能超过当前补货需求剩余数量")
 
@@ -658,9 +670,21 @@ def create_task(
             if Decimal(payload.planned_quantity) > Decimal(matched_item.quantity or 0):
                 raise HTTPException(status_code=409, detail="生产计划数量不能大于客户订单数量")
 
-    bom = db.execute(select(BOM).options(joinedload(BOM.items)).where(BOM.product_id == payload.product_id)).unique().scalar_one_or_none()
-    if bom is None or not bom.items:
-        raise HTTPException(status_code=409, detail="当前产品尚未配置 BOM，不能创建生产任务")
+    bom = db.execute(
+        select(BOM)
+        .options(joinedload(BOM.items))
+        .where(BOM.product_id == payload.product_id, BOM.is_active.is_(True))
+    ).unique().scalar_one_or_none()
+    if bom is None:
+        raise HTTPException(status_code=409, detail=f"产品「{product.name}」尚未配置启用状态的 BOM，不能转为生产任务")
+    if not bom.items:
+        raise HTTPException(status_code=409, detail=f"产品「{product.name}」的 BOM 没有原料明细，不能转为生产任务")
+    invalid_bom_items = [item for item in bom.items if not item.material_id or Decimal(item.standard_quantity or 0) <= 0]
+    if invalid_bom_items:
+        raise HTTPException(
+            status_code=409,
+            detail=f"产品「{product.name}」的 BOM 存在未选择原料或单耗不大于 0 的明细，请先修正 BOM",
+        )
 
     # 排产/转任务不等于领料出库；缺料任务仍需先创建，以便后续提交采购需求。
     # 原料可用量在领料审批和实际出库时再次校验。
@@ -766,7 +790,24 @@ def create_task(
             created_by_id=current_user.id,
             category="success",
         )
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception(
+            "Failed to create production task: demand_no=%s product_id=%s product_name=%s planned_quantity=%s",
+            demand.demand_no if demand else None,
+            product.id,
+            product.name,
+            payload.planned_quantity,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"生产任务保存失败（补货需求：{demand.demand_no if demand else '无'}，产品：{product.name}）。"
+                "数据库中的关联单据或字段不完整，请联系管理员查看生产模块错误日志"
+            ),
+        ) from exc
     return api_response(data={"id": task.id, "task_no": task.task_no})
 
 

@@ -74,6 +74,15 @@ JOB_STATUS_NAMES = {
 }
 
 
+class PrintAgentHTTPError(RuntimeError):
+    """HTTP failure that preserves the server's safe, user-facing message."""
+
+    def __init__(self, status_code, message):
+        self.status_code = int(status_code)
+        self.message = str(message or f"HTTP {status_code}")
+        super().__init__(self.message)
+
+
 def server_url_is_safe(url):
     """Never send the device token over remote plain HTTP."""
     parsed = urlsplit(url)
@@ -308,7 +317,12 @@ def request(path, *, method="GET", data=None, lease_token=None):
     except curl_requests.RequestsError as exc:
         raise URLError(f"HTTPS 连接失败：{exc}") from exc
     if response.status_code >= 400:
-        raise HTTPError(url, response.status_code, response.reason, response.headers, None)
+        try:
+            payload = response.json()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        message = payload.get("msg") or payload.get("detail") or response.reason or f"HTTP {response.status_code}"
+        raise PrintAgentHTTPError(response.status_code, message)
     content = response.content
     return content if path.endswith("/pdf") else response.json().get("data")
 
@@ -376,8 +390,13 @@ def main(argv=None):
         try:
             if run_once(recover_failed=True) is None:
                 print("当前没有待自动打印的置货单或发货单。", flush=True)
-        except HTTPError as exc:
-            raise SystemExit(f"打印接口错误 HTTP {exc.code}；请检查设备认证码和服务器地址") from exc
+        except PrintAgentHTTPError as exc:
+            if exc.status_code in {401, 403}:
+                raise SystemExit(
+                    f"设备认证失败：{exc.message}。请在系统的“打印设备认证码”区域生成新认证码，"
+                    "不要使用“仓库扫码设备”认证码"
+                ) from exc
+            raise SystemExit(f"打印接口错误 HTTP {exc.status_code}：{exc.message}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise SystemExit(f"打印服务暂不可用：{exc}") from exc
         return
@@ -388,10 +407,19 @@ def main(argv=None):
             while run_once(recover_failed=recover_failed) is True:
                 recover_failed = False
             recover_failed = False
-        except HTTPError as exc:
-            print(f"打印接口错误 HTTP {exc.code}", file=sys.stderr, flush=True)
-            if exc.code in {401, 403}:
-                raise SystemExit("设备认证失败，请联系系统管理员检查认证码") from exc
+        except PrintAgentHTTPError as exc:
+            if exc.status_code in {401, 403}:
+                # A revoked/replaced token is configuration trouble, not a
+                # process crash.  Keep the worker alive so the desktop window
+                # remains usable and retry after the configured interval.
+                print(
+                    f"[AUTH_ERROR] 设备认证失败：{exc.message}。自动打印仍在运行，将在 {POLL_SECONDS} 秒后重试；"
+                    "请生成新的“打印设备认证码”（不是扫码设备认证码），保存配置后停止并重新开始自动打印。",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(f"打印接口错误 HTTP {exc.status_code}：{exc.message}", file=sys.stderr, flush=True)
         except (URLError, TimeoutError, OSError) as exc:
             print(f"打印服务暂不可用：{exc}", file=sys.stderr, flush=True)
         time.sleep(POLL_SECONDS)

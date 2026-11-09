@@ -424,7 +424,7 @@
         <el-table-column prop="total_amount" label="金额">
           <template #default="scope">{{ formatMoney(scope.row.total_amount) }}</template>
         </el-table-column>
-        <el-table-column prop="remark" label="明细备注" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="remark" label="配送要求" min-width="160" show-overflow-tooltip />
       </el-table>
       <el-table v-if="detail?.price_change_logs?.length" :data="detail.price_change_logs" stripe class="mt-16">
         <el-table-column prop="product_name" label="改价产品" min-width="160" />

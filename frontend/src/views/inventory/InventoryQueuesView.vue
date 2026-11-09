@@ -544,7 +544,7 @@
           <el-table-column prop="remaining_shipment_quantity" label="剩余待发" width="110">
             <template #default="scope">{{ formatNumber(scope.row.remaining_shipment_quantity) }}</template>
           </el-table-column>
-          <el-table-column prop="remark" label="明细备注" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="remark" label="配送要求" min-width="180" show-overflow-tooltip />
         </el-table>
         <el-divider content-position="left">发货照片</el-divider>
         <PhotoAttachments

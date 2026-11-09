@@ -229,7 +229,13 @@ def create_agent(payload: AgentCreate, current_user: User = Depends(_system_admi
 @router.get("/agents")
 def list_agents(current_user: User = Depends(_system_admin), db: Session = Depends(get_db)):
     rows = db.scalars(select(PlacementPrintAgent).order_by(PlacementPrintAgent.id.desc())).all()
-    return api_response(data=[{"id": row.id, "name": row.name, "is_active": row.is_active, "created_at": row.created_at.isoformat()} for row in rows])
+    return api_response(data=[{
+        "id": row.id,
+        "name": row.name,
+        "token_fingerprint": row.token_hash[:12],
+        "is_active": row.is_active,
+        "created_at": row.created_at.isoformat(),
+    } for row in rows])
 
 
 @router.post("/agents/{agent_id}/revoke")

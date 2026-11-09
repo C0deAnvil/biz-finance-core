@@ -24,10 +24,11 @@ if ($pyInstallerMissing) {
 & $python -m PyInstaller --noconfirm --clean $spec
 if ($LASTEXITCODE -ne 0) { throw "Print client build failed" }
 
-$outputs = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot "dist") -Filter "*.exe")
-if ($outputs.Count -ne 1) {
-    throw "Expected exactly one exe under the dist directory"
+$expectedOutput = Join-Path $projectRoot "dist\业财置货自动打印.exe"
+if (-not (Test-Path -LiteralPath $expectedOutput)) {
+    throw "Expected print client was not generated: $expectedOutput"
 }
+$output = Get-Item -LiteralPath $expectedOutput
 
-Write-Host "Build completed: $($outputs[0].FullName)"
+Write-Host "Build completed: $($output.FullName)"
 Write-Host "Copy the exe to the warehouse PC and double-click it. SumatraPDF and the Windows printer driver are still required."
