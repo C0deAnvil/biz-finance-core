@@ -279,7 +279,7 @@
           <el-table-column label="标准价" width="120">
             <template #default="scope">{{ formatNumber(productStandardPrice(scope.row.product_id)) }}</template>
           </el-table-column>
-          <el-table-column label="备注" min-width="160">
+          <el-table-column label="配送要求" min-width="160">
             <template #default="scope"><el-input v-model="scope.row.remark" :disabled="!canEditOrderForm" /></template>
           </el-table-column>
           <el-table-column label="改价备注" min-width="180">
@@ -670,7 +670,7 @@ const orderGoodsAmount = computed(() =>
 const orderPackagingAmount = computed(() =>
   form.items.reduce((sum, item) => sum + packagingFee(item), 0)
 )
-const orderTotalAmount = computed(() => orderGoodsAmount.value + Number(form.transport_fee || 0))
+const orderTotalAmount = computed(() => orderGoodsAmount.value + orderPackagingAmount.value + Number(form.transport_fee || 0))
 const stockShortageWarnings = computed(() => {
   const quantityMap = new Map()
   for (const item of form.items) {
@@ -1179,9 +1179,14 @@ async function submit() {
 }
 
 async function viewOrder(id) {
-  detail.value = await get(`/api/sales/orders/${id}`)
+  const res = await get(`/api/sales/orders/${id}`)
+  if (res.draft_payload && Array.isArray(res.draft_payload.items)) {
+    res.items = res.draft_payload.items
+  }
+  detail.value = res
   detailVisible.value = true
 }
+
 
 function openTimeline(id) {
   router.push({ path: '/sales/order-timeline', query: { id } })
