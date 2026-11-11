@@ -147,6 +147,7 @@ def _store_draft_payload(order: SalesOrder, payload: SalesOrderDraftPayload) -> 
     order.delivery_address = (payload.delivery_address or "").strip()
     order.payment_type = (payload.payment_type or "").strip()
     order.order_type = payload.order_type or "normal"
+    order.account_set = (payload.account_set or "").strip()
     order.expected_delivery_date = payload.expected_delivery_date
     order.deposit_amount = payload.deposit_amount or Decimal("0")
     order.transport_fee = payload.transport_fee or Decimal("0")
@@ -168,6 +169,7 @@ def _draft_payload_for_submit(order: SalesOrder) -> SalesOrderCreate:
             "delivery_address": order.delivery_address,
             "payment_type": order.payment_type,
             "order_type": order.order_type,
+            "account_set": order.account_set,
             "expected_delivery_date": order.expected_delivery_date,
             "deposit_amount": order.deposit_amount,
             "transport_fee": order.transport_fee,
@@ -221,6 +223,7 @@ def _apply_submitted_order_payload(db: Session, *, order: SalesOrder, payload: S
     order.delivery_address = payload.delivery_address
     order.payment_type = payment_type_label(payload.payment_type, deposit_amount=payload.deposit_amount, module="sales")
     order.order_type = payload.order_type or "normal"
+    order.account_set = payload.account_set
     order.expected_delivery_date = payload.expected_delivery_date
     order.deposit_amount = payload.deposit_amount
     order.transport_fee = payload.transport_fee
@@ -260,6 +263,7 @@ def create_order(payload: SalesOrderDraftPayload, current_user: User, db: Sessio
         delivery_address="",
         payment_type="",
         order_type="normal",
+        account_set="",
         status="draft",
         deposit_amount=0,
         transport_fee=0,

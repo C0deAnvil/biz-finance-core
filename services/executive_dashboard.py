@@ -99,7 +99,10 @@ def build_executive_dashboard(db: Session, *, date_from: date, date_to: date) ->
     seller_map: dict[int, dict] = {}
     sales_amount = sum((Decimal(order.total_amount or 0) for order in shipped_sales), ZERO)
     sales_cost = sum((Decimal(order.cost_amount or 0) for order in shipped_sales), ZERO)
-    sales_profit = sum((Decimal(order.profit_amount or 0) for order in shipped_sales if order.cost_status != "unpriced"), ZERO)
+    priced_sales = [order for order in shipped_sales if order.cost_status != "unpriced"]
+    sales_profit = sum((Decimal(order.profit_amount or 0) for order in priced_sales), ZERO)
+    gross_profit = sum((Decimal(order.total_amount or 0) - Decimal(order.cost_amount or 0) for order in priced_sales), ZERO)
+    gross_margin = (gross_profit / sales_amount * Decimal("100")) if sales_amount else ZERO
     for order in sales:
         amount = Decimal(order.total_amount or 0)
 
@@ -279,6 +282,8 @@ def build_executive_dashboard(db: Session, *, date_from: date, date_to: date) ->
             "sales_orders": len(shipped_sales),
             "sales_cost": _number(sales_cost),
             "sales_profit": _number(sales_profit),
+            "gross_profit": _number(gross_profit),
+            "gross_margin": _number(gross_margin, "0.00"),
             "purchase_amount": _number(purchase_amount),
             "purchase_orders": len(purchase_orders),
             "inventory_value": _number(sum((Decimal(row["value"]) for row in warehouses), ZERO)),

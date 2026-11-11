@@ -1,5 +1,5 @@
 <template>
-  <PageSection title="包装基本信息" description="维护全局可选包装类型、每袋含量和包装单价，供销售、BOM、采购等模块统一调用。">
+  <PageSection title="包装基本信息" description="维护全局可选包装类型、每袋含量及采购/销售成本；“无包装”不占用库存。">
     <template #actions>
       <el-button @click="load">刷新</el-button>
       <el-button @click="exportTable">导出</el-button>
@@ -21,8 +21,11 @@
       <el-table-column prop="kg_per_bag" label="kg/袋" width="110">
         <template #default="scope">{{ formatNumber(scope.row.kg_per_bag) }}</template>
       </el-table-column>
-      <el-table-column prop="unit_price" label="包装单价" width="120">
-        <template #default="scope">{{ formatNumber(scope.row.unit_price) }}</template>
+      <el-table-column prop="purchase_cost" label="采购成本" width="120">
+        <template #default="scope">{{ formatNumber(scope.row.purchase_cost) }}</template>
+      </el-table-column>
+      <el-table-column prop="sales_cost" label="销售成本" width="120">
+        <template #default="scope">{{ formatNumber(scope.row.sales_cost) }}</template>
       </el-table-column>
       <el-table-column prop="is_default" label="默认" width="90">
         <template #default="scope">
@@ -66,10 +69,11 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="包装单价">
-              <el-input-number v-model="form.unit_price" :min="0" :precision="4" style="width: 100%" />
+            <el-form-item label="采购成本">
+              <el-input-number v-model="form.purchase_cost" :min="0" :precision="4" style="width: 100%" />
             </el-form-item>
           </el-col>
+          <el-col :span="12"><el-form-item label="销售成本"><el-input-number v-model="form.sales_cost" :min="0" :precision="4" style="width:100%" /></el-form-item></el-col>
           <el-col :span="12">
             <el-form-item label="默认包装">
               <el-switch v-model="form.is_default" />
@@ -143,6 +147,8 @@ const form = reactive({
   packaging_name: '',
   kg_per_bag: 25,
   unit_price: 0,
+  purchase_cost: 0,
+  sales_cost: 0,
   is_default: true,
   is_active: true
 })
@@ -153,6 +159,8 @@ function resetForm() {
     packaging_name: '',
     kg_per_bag: 25,
     unit_price: 0,
+    purchase_cost: 0,
+    sales_cost: 0,
     is_default: true,
     is_active: true
   })
@@ -184,6 +192,8 @@ function openEdit(row) {
     packaging_name: row.packaging_name,
     kg_per_bag: Number(row.kg_per_bag || 0),
     unit_price: Number(row.unit_price || 0),
+    purchase_cost: Number(row.purchase_cost ?? row.unit_price ?? 0),
+    sales_cost: Number(row.sales_cost || 0),
     is_default: Boolean(row.is_default),
     is_active: Boolean(row.is_active)
   })
@@ -201,6 +211,8 @@ async function submit() {
     packaging_name: String(form.packaging_name || '').trim(),
     kg_per_bag: Number(form.kg_per_bag || 0),
     unit_price: Number(form.unit_price || 0),
+    purchase_cost: Number(form.purchase_cost || 0),
+    sales_cost: Number(form.sales_cost || 0),
     is_default: Boolean(form.is_default),
     is_active: Boolean(form.is_active)
   }

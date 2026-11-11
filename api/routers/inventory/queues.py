@@ -438,6 +438,10 @@ def mark_placement(
             )
             continue
         packaging = get_inventory_packaging_config(db, item.packaging_config)
+        if packaging is not None and packaging.is_virtual:
+            item.placed_quantity = placed_after
+            placed_any = True
+            continue
         packaging_inventories = _lock_packaging_inventories(db, packaging.id, warehouse_id) if packaging else []
         target_packaging_units = _sales_item_packaging_units(item, placed_after)
         allocated_packaging_units = Decimal(item.packaging_reserved_quantity or 0) + Decimal(item.packaging_shipped_quantity or 0)
@@ -750,7 +754,8 @@ def mark_shipment(
             warehouse_id=warehouse_id,
             item=order_item,
         )
-        target_packaging_shipped = _sales_item_packaging_units(
+        virtual_packaging = bool(packaging and packaging.is_virtual)
+        target_packaging_shipped = Decimal("0") if virtual_packaging else _sales_item_packaging_units(
             order_item,
             Decimal(order_item.shipped_quantity or 0) + ship_quantity,
         )

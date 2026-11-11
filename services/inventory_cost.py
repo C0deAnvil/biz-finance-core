@@ -9,7 +9,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import InventoryTransaction, SalesOrder
+from models import InventoryTransaction, LogisticsRecord, SalesOrder
 
 
 def sync_sales_order_cost(db: Session, order: SalesOrder) -> None:
@@ -28,11 +28,19 @@ def sync_sales_order_cost(db: Session, order: SalesOrder) -> None:
         order.cost_status = "actual"
 
     # 只有订单全部发货、且每笔发货均有成本，才显示订单级利润。
-    # 包装出库成本已包含在 sales_packaging_outbound 流水中，不能再次扣减。
+    actual_freight = sum(
+        (Decimal(row.delivery_fee or 0) for row in db.execute(select(LogisticsRecord).where(
+            LogisticsRecord.business_type == "sales_order",
+            LogisticsRecord.business_id == order.id,
+            LogisticsRecord.freight_status == "approved",
+        )).scalars().all()),
+        Decimal("0"),
+    )
+    # 包装出库成本已包含在 sales_packaging_outbound 流水中，不能再次扣减；利润仅扣除财务审核过的实际运费。
     if order.status in {"shipped", "completed"} and order.cost_status != "unpriced":
         order.profit_amount = (
             Decimal(order.total_amount or 0) - Decimal(order.cost_amount or 0)
-            - Decimal(order.transport_fee or 0)
+            - actual_freight
         )
     else:
         order.profit_amount = Decimal("0")

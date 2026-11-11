@@ -11,8 +11,9 @@ from database import get_db
 from dependencies import get_current_user, require_roles
 from models import LogisticsRecord, PurchaseOrder, PurchaseOrderItem, SalesOrder, SalesOrderItem, User, Warehouse
 from responses import api_response
-from schemas.logistics import LogisticsRecordCreate, LogisticsRecordUpdate
+from schemas.logistics import FreightReviewRequest, LogisticsRecordCreate, LogisticsRecordUpdate
 from services.core import next_business_no, write_operation_log
+from services.time_utils import now_local
 from services.organization import (
     get_scoped_user_ids,
     is_master_data_admin,
@@ -144,6 +145,8 @@ def _can_view_record(db: Session, current_user: User, row: LogisticsRecord, busi
     role_code = current_user.role.code if current_user.role else ""
     if role_code in {"manager", "chairman"}:
         return True
+    if role_code in {"finance", "finance_super"}:
+        return row.business_type == "sales_order"
     if role_code == "sales":
         return row.business_type == "sales_order" and user_in_scope(
             db, current_user, business_role_code="sales", owner_user_id=_business_owner_id(business_row)
@@ -176,8 +179,8 @@ def _assert_manage_permission(db: Session, current_user: User, *, module: str, b
             raise HTTPException(status_code=403, detail="仅可维护权限范围内的采购订单物流")
         return
     if role_code == "inventory":
-        if module != "inventory":
-            raise HTTPException(status_code=403, detail="库管仅可维护库存物流")
+        if module not in {"inventory", "sales"}:
+            raise HTTPException(status_code=403, detail="库管仅可维护库存或已发货销售物流")
         if not warehouse_in_scope(db, current_user, warehouse_id):
             raise HTTPException(status_code=403, detail="仅可维护所属仓库范围内的物流记录")
         return
@@ -218,6 +221,11 @@ def _serialize_logistics(row: LogisticsRecord, business_row, warehouse: Warehous
         "freight_payment_type": row.freight_payment_type,
         "handover_type": row.handover_type,
         "document_attachment_id": row.document_attachment_id,
+        "freight_status": row.freight_status,
+        "freight_status_label": {"draft": "待上报", "pending_review": "待财务审核", "approved": "已审核", "rejected": "已驳回"}.get(row.freight_status, row.freight_status),
+        "freight_settlement_mode": row.freight_settlement_mode,
+        "freight_reviewed_at": row.freight_reviewed_at.isoformat() if row.freight_reviewed_at else None,
+        "freight_review_remark": row.freight_review_remark,
         "dispatched_at": row.dispatched_at.isoformat() if row.dispatched_at else None,
         "arrived_at": row.arrived_at.isoformat() if row.arrived_at else None,
         "remark": row.remark,
@@ -392,6 +400,7 @@ def create_logistics(
         consignee_address=payload.consignee_address,
         goods_info_json=_business_goods_info(business_row),
         delivery_fee=Decimal(payload.delivery_fee or 0),
+        freight_status="pending_review" if payload.business_type == "sales_order" and payload.dispatched_at else "draft",
         freight_payment_type=payload.freight_payment_type,
         handover_type=payload.handover_type,
         document_attachment_id=payload.document_attachment_id,
@@ -416,6 +425,34 @@ def create_logistics(
     return api_response(data=_serialize_logistics(row, business_row, warehouse, current_user))
 
 
+@router.post("/{record_id}/freight-review")
+def review_sales_freight(
+    record_id: int,
+    payload: FreightReviewRequest,
+    current_user: User = Depends(require_roles("finance", "finance_super", "manager", "chairman", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    row = db.scalar(select(LogisticsRecord).where(LogisticsRecord.id == record_id))
+    if row is None or row.business_type != "sales_order":
+        raise HTTPException(status_code=404, detail="销售运费上报不存在")
+    if row.freight_status != "pending_review":
+        raise HTTPException(status_code=409, detail="该运费不在待审核状态")
+    if payload.decision == "approved" and payload.settlement_mode not in {"paid", "receivable"}:
+        raise HTTPException(status_code=422, detail="审核通过时请选择付款或转入应收")
+    row.freight_status = "approved" if payload.decision == "approved" else "rejected"
+    row.freight_settlement_mode = payload.settlement_mode if payload.decision == "approved" else None
+    row.freight_reviewed_by_id = current_user.id
+    row.freight_reviewed_at = now_local()
+    row.freight_review_remark = payload.remark
+    order = db.scalar(select(SalesOrder).where(SalesOrder.id == row.business_id))
+    if order is not None:
+        from services.inventory_cost import sync_sales_order_cost
+        sync_sales_order_cost(db, order)
+    write_operation_log(db, user_id=current_user.id, module="finance", action="review_sales_freight", content=f"审核销售运费 {row.logistics_no}", after_data={"decision": payload.decision, "settlement_mode": payload.settlement_mode, "fee": float(row.delivery_fee or 0)})
+    db.commit()
+    return api_response(msg="运费审核完成", data={"id": row.id, "freight_status": row.freight_status})
+
+
 @router.put("/{record_id}")
 def update_logistics(
     record_id: int,
@@ -438,6 +475,8 @@ def update_logistics(
 
     for field, value in payload.model_dump().items():
         setattr(row, field, value)
+    if row.business_type == "sales_order" and row.dispatched_at and row.freight_status in {"draft", "rejected"}:
+        row.freight_status = "pending_review"
     row.bill_date = row.bill_date or date.today()
     row.goods_info_json = row.goods_info_json or _business_goods_info(business_row)
 

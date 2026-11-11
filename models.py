@@ -344,6 +344,8 @@ class Customer(TimestampMixin, Base):
     last_transferred_at = Column(DateTime, nullable=True)
     churn_repurchase_at = Column(DateTime, nullable=True, index=True)
     last_order_at = Column(DateTime, nullable=True)
+    # 客户建档(created_at)与业务新增不是同一口径：后者是首笔超过 100 元订单的日期。
+    first_qualified_order_at = Column(DateTime, nullable=True, index=True)
     archived_at = Column(DateTime, nullable=True)
     crm_status = Column(String(20), nullable=False, default="active", server_default="active", index=True)
     lost_at = Column(DateTime, nullable=True, index=True)
@@ -456,7 +458,7 @@ class CustomerInquiry(TimestampMixin, Base):
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     customer = relationship("Customer")
-    created_by = relationship("User")
+    created_by = relationship("User", foreign_keys=[created_by_id])
 
 
 class CustomerAIResult(TimestampMixin, Base):
@@ -723,6 +725,10 @@ class PackagingConfig(TimestampMixin, Base):
     packaging_name = Column(String(100), nullable=False)
     kg_per_bag = Column(Numeric(18, 4), nullable=False)
     unit_price = Column(Numeric(20, 4), nullable=False, default=0)
+    purchase_cost = Column(Numeric(20, 4), nullable=False, default=0)
+    sales_cost = Column(Numeric(20, 4), nullable=False, default=0)
+    # 无包装为虚拟耗材：不占用、也不扣减实物库存。
+    is_virtual = Column(Boolean, nullable=False, default=False, server_default=text("0"))
     is_default = Column(Boolean, nullable=False, default=True)
     is_active = Column(Boolean, nullable=False, default=True)
 
@@ -922,6 +928,7 @@ class SalesOrder(TimestampMixin, Base):
     delivery_address = Column(String(255), nullable=False)
     payment_type = Column(String(50), nullable=False)
     order_type = Column(String(30), nullable=False, default="normal")
+    account_set = Column(String(30), nullable=False, default="", server_default="")
     expected_delivery_date = Column(Date, nullable=True)
     status = Column(String(30), nullable=False, default="draft")
     total_amount = Column(Numeric(20, 4), nullable=False, default=0)
@@ -1933,14 +1940,20 @@ class LogisticsRecord(TimestampMixin, Base):
     freight_payment_type = Column(String(30), nullable=True)
     handover_type = Column(String(30), nullable=True)
     document_attachment_id = Column(Integer, ForeignKey("attachments.id"), nullable=True)
+    freight_status = Column(String(30), nullable=False, default="draft", server_default="draft")
+    freight_reviewed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    freight_reviewed_at = Column(DateTime, nullable=True)
+    freight_review_remark = Column(Text, nullable=True)
+    freight_settlement_mode = Column(String(30), nullable=True)
     dispatched_at = Column(DateTime, nullable=True)
     arrived_at = Column(DateTime, nullable=True)
     remark = Column(String(255), nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     warehouse = relationship("Warehouse")
-    created_by = relationship("User")
+    created_by = relationship("User", foreign_keys=[created_by_id])
     document_attachment = relationship("Attachment", foreign_keys=[document_attachment_id])
+    freight_reviewed_by = relationship("User", foreign_keys=[freight_reviewed_by_id])
 
 
 # ===== 盘点与报表 =====

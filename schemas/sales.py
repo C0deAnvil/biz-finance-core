@@ -36,6 +36,7 @@ class SalesOrderDraftPayload(BaseModel):
     delivery_address: str | None = Field(default=None, max_length=255)
     payment_type: str | None = Field(default=None, max_length=50)
     order_type: str | None = Field(default="normal", max_length=30)
+    account_set: str | None = Field(default=None, pattern="^(尿素|试剂|排水)?$")
     expected_delivery_date: date | None = None
     deposit_amount: Money | None = 0
     transport_fee: Money | None = 0
@@ -54,6 +55,7 @@ class SalesOrderCreate(BaseModel):
     delivery_address: str = Field(..., max_length=255)
     payment_type: str = Field(..., max_length=50)
     order_type: str = Field(default="normal", max_length=30)
+    account_set: str = Field(..., pattern="^(尿素|试剂|排水)$")
     expected_delivery_date: date | None = None
     deposit_amount: Money = 0
     transport_fee: Money = 0
@@ -72,6 +74,7 @@ class SalesOrderUpdate(BaseModel):
     delivery_address: str = Field(..., max_length=255)
     payment_type: str = Field(..., max_length=50)
     order_type: str = Field(default="normal", max_length=30)
+    account_set: str = Field(..., pattern="^(尿素|试剂|排水)$")
     expected_delivery_date: date | None = None
     deposit_amount: Money = 0
     transport_fee: Money = 0

@@ -240,10 +240,12 @@ def _resolve_line_packaging(db: Session, *, product_id: int, packaging_config_id
 def _calculate_packaging_fee(quantity: Decimal, packaging: PackagingConfig | None) -> tuple[Decimal | None, Decimal, Decimal]:
     if packaging is None:
         return None, Decimal("0"), Decimal("0")
+    if packaging.is_virtual:
+        return Decimal("0"), Decimal("0"), Decimal("0")
     bag_count = calculate_bag_count(quantity, packaging.kg_per_bag)
     if bag_count is None:
         return None, Decimal(packaging.unit_price or 0), Decimal("0")
-    unit_price = Decimal(packaging.unit_price or 0)
+    unit_price = Decimal(packaging.purchase_cost or packaging.unit_price or 0)
     packaging_fee = money(Decimal(bag_count) * unit_price)
     return bag_count, unit_price, packaging_fee
 

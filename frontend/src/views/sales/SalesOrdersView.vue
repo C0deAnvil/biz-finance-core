@@ -158,6 +158,7 @@
           <el-col :span="8"><el-form-item label="收货人"><el-input v-model="form.consignee" /></el-form-item></el-col>
           <el-col :span="8"><el-form-item label="联系电话"><el-input v-model="form.consignee_phone" /></el-form-item></el-col>
           <el-col :span="8"><el-form-item label="定金"><el-input-number v-model="form.deposit_amount" :min="0" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="账套" required><el-select v-model="form.account_set" placeholder="请选择账套" style="width:100%"><el-option label="尿素" value="尿素" /><el-option label="试剂" value="试剂" /><el-option label="排水" value="排水" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="收货地址"><el-input v-model="form.delivery_address" /></el-form-item></el-col>
           <el-col :span="6"><el-form-item label="运费"><el-input-number v-model="form.transport_fee" :min="0" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="24"><el-form-item label="整单备注"><el-input v-model="form.order_remark" type="textarea" :rows="2" placeholder="填写整张客户订单的补充说明" /></el-form-item></el-col>
@@ -371,6 +372,7 @@
         <el-descriptions-item label="单据类型">
           <el-tag :type="orderTypeStyle(detail.order_type).tagType" effect="light" size="small">{{ detail.order_type_label || orderTypeStyle(detail.order_type).label }}</el-tag>
         </el-descriptions-item>
+        <el-descriptions-item label="账套">{{ detail.account_set || '-' }}</el-descriptions-item>
         <el-descriptions-item label="期望发货日期">{{ detail.expected_delivery_date || '-' }}</el-descriptions-item>
         <el-descriptions-item label="改价审批">{{ detail.price_approval_status_label || '-' }}</el-descriptions-item>
         <el-descriptions-item label="财务修改确认">{{ financeEditConfirmText(detail) }}</el-descriptions-item>
@@ -640,6 +642,7 @@ const emptyForm = () => ({
   receipt_account_id: null,
   payment_type: '全款发货',
   order_type: 'normal',
+  account_set: '',
   expected_delivery_date: null,
   deposit_amount: 0,
   transport_fee: 0,
@@ -1118,6 +1121,7 @@ function validateOrderPayload() {
     receipt_account_id: form.receipt_account_id || null,
     payment_type: form.payment_type,
     order_type: form.order_type || 'normal',
+    account_set: form.account_set,
     expected_delivery_date: form.expected_delivery_date || null,
     deposit_amount: Number(form.deposit_amount || 0),
     transport_fee: Number(form.transport_fee || 0),
@@ -1138,6 +1142,7 @@ async function submit() {
     receipt_account_id: form.receipt_account_id || null,
     payment_type: form.payment_type || null,
     order_type: form.order_type || 'normal',
+    account_set: form.account_set || null,
     expected_delivery_date: form.expected_delivery_date || null,
     deposit_amount: Number(form.deposit_amount || 0),
     transport_fee: Number(form.transport_fee || 0),
@@ -1231,6 +1236,7 @@ async function editOrder(row) {
     receipt_account_id: draft.receipt_account_id ?? order.receipt_account_id ?? null,
     payment_type: draft.payment_type ?? order.payment_type ?? '全款发货',
     order_type: draft.order_type ?? order.order_type ?? 'normal',
+    account_set: draft.account_set ?? order.account_set ?? '',
     expected_delivery_date: draft.expected_delivery_date ?? order.expected_delivery_date ?? null,
     deposit_amount: draft.deposit_amount ?? order.deposit_amount ?? 0,
     transport_fee: draft.transport_fee ?? order.transport_fee ?? 0,

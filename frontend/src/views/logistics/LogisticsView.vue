@@ -33,11 +33,13 @@
         <el-table-column prop="delivery_fee" label="送货费" width="110">
           <template #default="scope">{{ formatNumber(scope.row.delivery_fee) }}</template>
         </el-table-column>
+        <el-table-column v-if="routeModule === 'sales'" prop="freight_status_label" label="运费审核" width="110" />
         <el-table-column prop="created_by_name" label="开单人" width="120" />
         <el-table-column label="操作" :width="canManage ? 170 : 90" fixed="right">
           <template #default="scope">
             <el-button size="small" text type="primary" @click="openDetail(scope.row)">详情</el-button>
             <el-button v-if="canManage" size="small" text type="primary" @click="openEdit(scope.row)">编辑</el-button>
+            <el-button v-if="canReviewFreight && scope.row.freight_status === 'pending_review'" size="small" text type="success" @click="reviewFreight(scope.row)">审核</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -113,6 +115,8 @@
         <el-descriptions-item label="司机电话">{{ detail.driver_phone || '-' }}</el-descriptions-item>
         <el-descriptions-item label="车牌号">{{ detail.vehicle_no || '-' }}</el-descriptions-item>
         <el-descriptions-item label="送货费">{{ formatNumber(detail.delivery_fee) }}</el-descriptions-item>
+        <el-descriptions-item v-if="detail.business_type === 'sales_order'" label="运费审核">{{ detail.freight_status_label || '-' }}</el-descriptions-item>
+        <el-descriptions-item v-if="detail.business_type === 'sales_order'" label="审核处理">{{ detail.freight_settlement_mode === 'paid' ? '付款' : detail.freight_settlement_mode === 'receivable' ? '转入应收' : '-' }}</el-descriptions-item>
         <el-descriptions-item label="付款方式">{{ detail.freight_payment_type || '-' }}</el-descriptions-item>
         <el-descriptions-item label="交接方式">{{ detail.handover_type || '-' }}</el-descriptions-item>
         <el-descriptions-item label="托运人">{{ detail.consignor_name || '-' }}</el-descriptions-item>
@@ -197,6 +201,7 @@ const pageTitle = computed(() => moduleTitleMap[routeModule.value] || '物流管
 const lockedBusinessType = computed(() => businessTypeLockMap[routeModule.value] || '')
 const businessTypeLocked = computed(() => Boolean(lockedBusinessType.value))
 const canManage = computed(() => ['sales', 'purchase', 'inventory', 'system_admin', 'master_data_admin'].includes(auth.user?.role_code))
+const canReviewFreight = computed(() => ['finance', 'finance_super', 'manager', 'chairman', 'system_admin'].includes(auth.user?.role_code))
 
 const rows = ref([])
 const detail = ref(null)
@@ -364,6 +369,14 @@ async function openEdit(row) {
   dialogVisible.value = true
 }
 async function openDetail(row) { detail.value = await get(`/api/logistics/${row.id}`); detailVisible.value = true }
+async function reviewFreight(row) {
+  const paid = window.confirm('审核通过后，是否直接付款？\n确定：付款；取消：转入应收。')
+  try {
+    await post(`/api/logistics/${row.id}/freight-review`, { decision: 'approved', settlement_mode: paid ? 'paid' : 'receivable', remark: '' })
+    ElMessage.success('实际运费已审核并计入订单利润')
+    await load()
+  } catch (error) { ElMessage.error(error.message || '运费审核失败') }
+}
 function handleDocumentFileChange(event) { selectedDocumentFile.value = event.target.files?.[0] || null }
 function openAttachment(id) { if (id) window.open(`/api/files/${id}`, '_blank') }
 

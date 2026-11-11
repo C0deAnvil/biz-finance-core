@@ -20,7 +20,7 @@
     <section class="metric-strip">
       <article v-for="metric in headlineMetrics" :key="metric.key" class="metric-card">
         <div class="metric-icon" :style="{ '--accent': metric.color }">{{ metric.icon }}</div>
-        <div class="metric-copy"><span>{{ metric.label }}</span><strong>{{ metric.money ? money(metric.value) : number(metric.value) }}</strong><small>{{ metric.note }}</small></div>
+        <div class="metric-copy"><span>{{ metric.label }}</span><strong>{{ metric.display || (metric.money ? money(metric.value) : number(metric.value)) }}</strong><small>{{ metric.note }}</small></div>
         <i class="metric-glow" :style="{ background: metric.color }" />
       </article>
     </section>
@@ -159,7 +159,8 @@ const tabs = [
 const headlineMetrics = computed(() => [
   { key: 'sales_amount', label: '已发货销售额', icon: '¥', note: '按实际发货日期', color: '#37c8ad', value: data.value.headline?.sales_amount, money: true },
   { key: 'sales_orders', label: '已发货订单', icon: '单', note: '所选统计区间', color: '#4f8df7', value: data.value.headline?.sales_orders },
-  { key: 'sales_profit', label: '已定价利润', icon: '利', note: '排除成本未定价', color: '#f0a654', value: data.value.headline?.sales_profit, money: true },
+  { key: 'sales_profit', label: '净利润', icon: '利', note: '已扣审核通过的实际运费', color: '#f0a654', value: data.value.headline?.sales_profit, money: true },
+  { key: 'gross_margin', label: '毛利率', icon: '%', note: '收入减销售成本 / 收入', color: '#e75f75', display: `${Number(data.value.headline?.gross_margin || 0).toFixed(2)}%` },
   { key: 'purchase_amount', label: '采购规模', icon: '采', note: '已提交采购单', color: '#856ee7', value: data.value.headline?.purchase_amount, money: true },
   { key: 'inventory_value', label: '当前库存价值', icon: '库', note: '移动平均成本', color: '#4eb9d8', value: data.value.headline?.inventory_value, money: true },
 ])

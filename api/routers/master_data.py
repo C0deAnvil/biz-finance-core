@@ -228,6 +228,7 @@ def _serialize_customer(row: Customer, order_count: int = 0, tags: list[str] | N
         "last_transferred_at": row.last_transferred_at.isoformat() if row.last_transferred_at else None,
         "churn_repurchase_at": row.churn_repurchase_at.isoformat() if row.churn_repurchase_at else None,
         "last_order_at": row.last_order_at.isoformat() if row.last_order_at else None,
+        "first_qualified_order_at": row.first_qualified_order_at.isoformat() if row.first_qualified_order_at else None,
         "tags": tag_codes,
         "tag_details": tag_details,
         "tag_labels": [item["label"] for item in tag_details],
@@ -357,6 +358,9 @@ def _serialize_packaging(row: PackagingConfig | None) -> dict | None:
         "packaging_name": row.packaging_name,
         "kg_per_bag": float(row.kg_per_bag),
         "unit_price": float(row.unit_price or 0),
+        "purchase_cost": float(row.purchase_cost or row.unit_price or 0),
+        "sales_cost": float(row.sales_cost or 0),
+        "is_virtual": bool(row.is_virtual),
         "specification_text": packaging_spec_text(row.kg_per_bag),
         "is_default": row.is_default,
         "is_active": row.is_active,
@@ -801,9 +805,9 @@ def list_customer_crm(
     if status:
         query = query.where(Customer.crm_status == status)
     if date_from:
-        query = query.where(Customer.created_at >= datetime.combine(date_from, time.min))
+        query = query.where(Customer.first_qualified_order_at >= datetime.combine(date_from, time.min))
     if date_to:
-        query = query.where(Customer.created_at <= datetime.combine(date_to, time.max))
+        query = query.where(Customer.first_qualified_order_at <= datetime.combine(date_to, time.max))
     total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
     customers = db.scalars(query.order_by(Customer.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
     customer_ids = [row.id for row in customers]
@@ -910,18 +914,19 @@ def list_customer_crm_records(
         query = select(Customer).options(joinedload(Customer.owner_user), joinedload(Customer.created_by)).where(*customer_filters)
         if customer_keyword is not None:
             query = query.where(customer_keyword)
+        query = query.where(Customer.first_qualified_order_at.is_not(None))
         if start_at:
-            query = query.where(Customer.created_at >= start_at)
+            query = query.where(Customer.first_qualified_order_at >= start_at)
         if end_at:
-            query = query.where(Customer.created_at <= end_at)
+            query = query.where(Customer.first_qualified_order_at <= end_at)
         total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
-        rows = db.scalars(query.order_by(Customer.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+        rows = db.scalars(query.order_by(Customer.first_qualified_order_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
         items = [{
             "id": row.id, "record_type": "created", "customer_id": row.id,
             "customer_code": row.code, "customer_name": row.name,
             "owner_name": row.owner_user.full_name if row.owner_user else None,
-            "occurred_at": row.created_at, "operator_name": row.created_by.full_name if row.created_by else None,
-            "summary": "客户建档", "detail": row.source_type,
+            "occurred_at": row.first_qualified_order_at, "operator_name": row.created_by.full_name if row.created_by else None,
+            "summary": "首次有效下单（金额超过100元）", "detail": row.source_type,
         } for row in rows]
     else:
         query = select(CustomerCRMEvent).join(Customer).options(
@@ -2000,6 +2005,9 @@ def upsert_packaging_config(
                 packaging_name=payload.packaging_name,
                 kg_per_bag=payload.kg_per_bag,
                 unit_price=payload.unit_price or 0,
+                purchase_cost=payload.purchase_cost if payload.purchase_cost is not None else (payload.unit_price or 0),
+                sales_cost=payload.sales_cost or 0,
+                is_virtual=payload.is_virtual,
                 is_default=payload.is_default,
                 is_active=payload.is_active,
             )
@@ -2008,6 +2016,9 @@ def upsert_packaging_config(
         else:
             row.kg_per_bag = payload.kg_per_bag
             row.unit_price = payload.unit_price if payload.unit_price is not None else row.unit_price
+            row.purchase_cost = payload.purchase_cost if payload.purchase_cost is not None else row.purchase_cost
+            row.sales_cost = payload.sales_cost if payload.sales_cost is not None else row.sales_cost
+            row.is_virtual = payload.is_virtual
             row.is_default = payload.is_default
             row.is_active = payload.is_active
         db.commit()
@@ -2057,6 +2068,10 @@ def update_packaging_config(
     row.kg_per_bag = payload.kg_per_bag
     if payload.unit_price is not None:
         row.unit_price = payload.unit_price
+    if payload.purchase_cost is not None:
+        row.purchase_cost = payload.purchase_cost
+    row.sales_cost = payload.sales_cost or 0
+    row.is_virtual = payload.is_virtual
     row.is_default = payload.is_default
     row.is_active = payload.is_active
     if entity is not None:

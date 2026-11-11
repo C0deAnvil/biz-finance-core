@@ -92,7 +92,13 @@ def register_customer_order(
             customer.churn_repurchase_at = occurred_at
             tagged = _ensure_tag(db, customer.id, CHURN_REPURCHASE_TAG, created_by_id)
 
-    # 末次下单时间只向前推进，避免补录历史单把它拉回过去
+    # 业务新增时间为首笔实际订单金额超过 100 元的日期，和客户建档时间严格分开。
+    if amount > CHURN_MIN_AMOUNT and (
+        customer.first_qualified_order_at is None or occurred_at < customer.first_qualified_order_at
+    ):
+        customer.first_qualified_order_at = occurred_at
+
+    # 最后下单时间只向前推进，避免补录历史单把它拉回过去
     if previous_at is None or occurred_at > previous_at:
         customer.last_order_at = occurred_at
 
@@ -120,12 +126,15 @@ def recalculate_customer_activity(db: Session, customer_id: int, *, created_by_i
     ).all()
 
     last_order_at = None
+    first_qualified_order_at = None
     churn_at = None
     previous_at = None
     for created_at, total_amount in rows:
         if created_at is None:
             continue
         amount = Decimal(str(total_amount or 0))
+        if amount > CHURN_MIN_AMOUNT and first_qualified_order_at is None:
+            first_qualified_order_at = created_at
         if previous_at is not None:
             if created_at - previous_at > timedelta(days=CHURN_GAP_DAYS) and amount > CHURN_MIN_AMOUNT:
                 churn_at = created_at
@@ -133,6 +142,7 @@ def recalculate_customer_activity(db: Session, customer_id: int, *, created_by_i
         last_order_at = created_at
 
     customer.last_order_at = last_order_at
+    customer.first_qualified_order_at = first_qualified_order_at
     customer.churn_repurchase_at = churn_at
     if churn_at is not None:
         _ensure_tag(db, customer.id, CHURN_REPURCHASE_TAG, created_by_id)
@@ -142,6 +152,7 @@ def recalculate_customer_activity(db: Session, customer_id: int, *, created_by_i
         "found": True,
         "order_count": len(rows),
         "last_order_at": last_order_at,
+        "first_qualified_order_at": first_qualified_order_at,
         "churn_repurchase_at": churn_at,
     }
 

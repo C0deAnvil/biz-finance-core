@@ -59,3 +59,9 @@ class LogisticsRecordUpdate(BaseModel):
     dispatched_at: datetime | None = None
     arrived_at: datetime | None = None
     remark: str | None = Field(default=None, max_length=255)
+
+
+class FreightReviewRequest(BaseModel):
+    decision: str = Field(..., pattern="^(approved|rejected)$")
+    settlement_mode: str | None = Field(default=None, pattern="^(paid|receivable)?$")
+    remark: str | None = Field(default=None, max_length=1000)

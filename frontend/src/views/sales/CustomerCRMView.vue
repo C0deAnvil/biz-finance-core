@@ -48,8 +48,9 @@
         <el-table-column label="CRM状态" width="110">
           <template #default="{ row }"><el-tag :type="statusTag(row.crm_status)">{{ row.crm_status_label }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="新增时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
-        <el-table-column label="最后下单" width="170"><template #default="{ row }">{{ formatDateTime(row.last_order_at) }}</template></el-table-column>
+        <el-table-column label="新增时间" width="170"><template #default="{ row }">{{ formatDateTime(row.first_qualified_order_at) }}</template></el-table-column>
+        <el-table-column label="客户建档时间" width="170"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
+        <el-table-column label="最后下单时间" width="170"><template #default="{ row }">{{ formatDateTime(row.last_order_at) }}</template></el-table-column>
         <el-table-column label="最近跟进" width="170"><template #default="{ row }">{{ formatDateTime(row.last_follow_at) }}</template></el-table-column>
         <el-table-column prop="last_follow_content" label="最近跟进内容" min-width="230" show-overflow-tooltip />
         <el-table-column label="下次跟进" width="170"><template #default="{ row }">{{ formatDateTime(row.next_follow_at) }}</template></el-table-column>

@@ -593,6 +593,17 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
     # 不完整草稿只需要回填编辑表单；不要再走已提交订单的结算、关联单据和流程汇总，
     # 否则空客户/空明细会被旧详情逻辑当作完整订单处理而报 500。
     if order.status == "draft" and (order.ext_json or {}).get("draft_payload") is not None:
+        draft_payload = (order.ext_json or {}).get("draft_payload") or {}
+        draft_items = draft_payload.get("items") or []
+        product_ids = [item.get("product_id") for item in draft_items if item.get("product_id")]
+        packaging_ids = [item.get("packaging_config_id") for item in draft_items if item.get("packaging_config_id")]
+        products = {
+            row.id: row for row in db.execute(select(Product).where(Product.id.in_(product_ids or [-1]))).scalars().all()
+        }
+        from models import PackagingConfig
+        packagings = {
+            row.id: row for row in db.execute(select(PackagingConfig).where(PackagingConfig.id.in_(packaging_ids or [-1]))).scalars().all()
+        }
         return api_response(
             data={
                 "id": order.id,
@@ -606,12 +617,27 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
                 "delivery_address": order.delivery_address,
                 "payment_type": order.payment_type,
                 "order_type": order.order_type or "normal",
+                "account_set": order.account_set,
                 "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,
                 "deposit_amount": float(order.deposit_amount or 0),
                 "transport_fee": float(order.transport_fee or 0),
                 "order_remark": order.order_remark,
-                "items": [],
-                "draft_payload": (order.ext_json or {}).get("draft_payload"),
+                "items": [
+                    {
+                        "product_id": item.get("product_id"),
+                        "product_name": products[item["product_id"]].name if item.get("product_id") in products else None,
+                        "display_specification": products[item["product_id"]].specification if item.get("product_id") in products else None,
+                        "packaging_config_id": item.get("packaging_config_id"),
+                        "packaging_name": packagings[item["packaging_config_id"]].packaging_name if item.get("packaging_config_id") in packagings else None,
+                        "kg_per_bag": float(packagings[item["packaging_config_id"]].kg_per_bag) if item.get("packaging_config_id") in packagings else None,
+                        "quantity": float(item.get("quantity") or 0),
+                        "unit_price": float(item.get("unit_price") or 0),
+                        "total_amount": float(Decimal(str(item.get("quantity") or 0)) * Decimal(str(item.get("unit_price") or 0))),
+                        "remark": item.get("remark"),
+                    }
+                    for item in draft_items
+                ],
+                "draft_payload": draft_payload,
             }
         )
     receivables = db.execute(select(ReceivableRecord).where(ReceivableRecord.sales_order_id == order.id)).scalars().all()
@@ -649,6 +675,7 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
             "delivery_address": order.delivery_address,
             "order_remark": order.order_remark,
             "order_type": order.order_type,
+            "account_set": order.account_set,
             "order_type_label": order_type_style(order.order_type)["label"],
             "order_type_color": order_type_style(order.order_type)["color"],
             "expected_delivery_date": order.expected_delivery_date.isoformat() if order.expected_delivery_date else None,

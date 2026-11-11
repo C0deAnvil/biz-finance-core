@@ -102,6 +102,9 @@ class PackagingConfigCreate(BaseModel):
     packaging_name: str = Field(..., max_length=100)
     kg_per_bag: Decimal = Field(..., gt=0)
     unit_price: Money | None = Field(default=None, ge=0)
+    purchase_cost: Money | None = Field(default=None, ge=0)
+    sales_cost: Money | None = Field(default=0, ge=0)
+    is_virtual: bool = False
     is_default: bool = True
     is_active: bool = True
 
