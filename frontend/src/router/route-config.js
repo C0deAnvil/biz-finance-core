@@ -48,6 +48,7 @@ const loaderMap = {
   '/quality/tasks': () => import('../views/quality/QualityTasksView.vue'),
   '/finance/receivables': () => import('../views/finance/ReceivablesView.vue'),
   '/finance/overview': () => import('../views/finance/ExecutiveCockpitView.vue'),
+  '/finance/cockpit': () => import('../views/finance/FinanceCockpitView.vue'),
   '/finance/payables': () => import('../views/finance/PayablesView.vue'),
   '/finance/quality-costs': () => import('../views/finance/QualityCostsView.vue'),
   '/finance/reimbursements': () => import('../views/finance/ReimbursementsView.vue'),

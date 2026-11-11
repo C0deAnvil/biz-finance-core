@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from models import (
     CashFlowRecord, PayableRecord, PurchaseOrder, PurchasePaymentRequest,
-    ReceivablePlan, ReceivableRecord, RefundRecord, Reimbursement, SalesOrder, SalesOrderItem,
+    LogisticsRecord, ReceivablePlan, ReceivableRecord, RefundRecord, Reimbursement, SalesOrder, SalesOrderItem,
     SalesReceiptRequest, SalesReturn, User,
 )
 from services.display import status_label
@@ -47,6 +47,8 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
         .order_by(SalesOrder.shipped_at.desc(), SalesOrder.id.desc())
     ).unique().scalars().all()
     sales_rows = []
+    sales_cost_total = ZERO
+    gross_profit_total = ZERO
     product_map: dict[int, dict] = {}
     for order in sales:
         happened_at = order.shipped_at or order.completed_at
@@ -57,6 +59,9 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
             "items": "、".join(dict.fromkeys(item.product.name for item in order.items if item.product)),
             "route": "/sales/orders", "focus_type": "sales_order",
         })
+        cost = Decimal(order.cost_amount or 0)
+        sales_cost_total += cost
+        gross_profit_total += Decimal(order.total_amount or 0) - cost
         for item in order.items:
             product = item.product
             if product is None:
@@ -154,6 +159,18 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
         "amount": _money(row.amount), "status": status_label(row.status),
         "route": "/finance/reimbursements", "focus_type": "reimbursement",
     } for row in paid_reimbursements]
+
+    freight_rows = db.execute(
+        select(LogisticsRecord).where(
+            LogisticsRecord.business_type == "sales_order",
+            LogisticsRecord.freight_status == "approved",
+            LogisticsRecord.freight_reviewed_at.between(start, end),
+        )
+    ).scalars().all()
+    freight_amount = sum((Decimal(row.delivery_fee or 0) for row in freight_rows), ZERO)
+    # 经营净利润口径：收入 - 已确认销售成本 - 已审核实际运费 - 已支付报销。
+    # 报销按实际支付日确认，避免审批中单据提前影响利润。
+    net_profit_total = gross_profit_total - freight_amount - sum((Decimal(row.amount or 0) for row in paid_reimbursements), ZERO)
 
     refunds = db.execute(
         select(RefundRecord).where(
@@ -274,15 +291,34 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
     def total(rows: list[dict], field: str = "amount") -> str:
         return _money(sum((Decimal(row[field]) for row in rows), ZERO))
 
-    trend = defaultdict(lambda: {"sales": ZERO, "collections": ZERO, "payments": ZERO})
+    trend = defaultdict(lambda: {"sales": ZERO, "cost": ZERO, "collections": ZERO, "payments": ZERO, "expenses": ZERO})
     for rows, field in ((sales_rows, "sales"), (collection_rows, "collections"), (payment_rows, "payments")):
         for row in rows:
             trend[row["date"][:10]][field] += Decimal(row["amount"])
+    for order in sales:
+        day = (order.shipped_at or order.completed_at).date().isoformat()
+        trend[day]["cost"] += Decimal(order.cost_amount or 0)
+    for row in reimbursement_payment_rows:
+        trend[row["date"][:10]]["expenses"] += Decimal(row["amount"])
+    for row in freight_rows:
+        trend[row.freight_reviewed_at.date().isoformat()]["expenses"] += Decimal(row.delivery_fee or 0)
+
+    rejected_count = (
+        db.scalar(select(func.count()).select_from(SalesOrder).where(SalesOrder.status == "rejected", SalesOrder.updated_at.between(start, end))) or 0
+    ) + (
+        db.scalar(select(func.count()).select_from(PurchasePaymentRequest).where(PurchasePaymentRequest.status == "rejected", PurchasePaymentRequest.updated_at.between(start, end))) or 0
+    ) + (
+        db.scalar(select(func.count()).select_from(Reimbursement).where(Reimbursement.status == "rejected", Reimbursement.updated_at.between(start, end))) or 0
+    )
 
     return {
         "period": {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()},
         "summary": {
             "sales_amount": total(sales_rows), "sales_count": len(sales_rows),
+            "sales_cost": _money(sales_cost_total),
+            "gross_profit": _money(gross_profit_total),
+            "net_profit": _money(net_profit_total),
+            "gross_margin": _money((gross_profit_total / sum((Decimal(row["amount"]) for row in sales_rows), ZERO) * 100) if sales_rows else ZERO),
             "product_count": len(product_rows),
             "receivable_amount": total(receivable_rows), "receivable_count": len(receivable_rows),
             "receivable_balance": total(receivable_rows, "balance"),
@@ -290,12 +326,14 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
             "payable_balance": total(payable_rows, "balance"),
             "reimbursement_amount": total(reimbursement_rows), "reimbursement_count": len(reimbursement_rows),
             "reimbursement_paid_amount": total(reimbursement_payment_rows),
+            "freight_amount": _money(freight_amount), "freight_count": len(freight_rows),
             "collection_amount": total(collection_rows), "collection_count": len(collection_rows),
             "sales_refund_amount": total(refund_rows),
             "payment_amount": total(payment_rows), "payment_count": len(payment_rows),
             "cash_in": total([row for row in cash_rows if row["direction"] == "incoming"]),
             "cash_out": total([row for row in cash_rows if row["direction"] == "outgoing"]),
             "finance_task_count": len(finance_tasks),
+            "rejected_count": rejected_count,
         },
         "details": {
             "sales": sales_rows, "products": product_rows, "receivables": receivable_rows,
@@ -304,6 +342,7 @@ def build_finance_overview(db: Session, *, date_from: date, date_to: date, curre
             "collections": collection_rows, "payments": payment_rows,
             "cash_in": [row for row in cash_rows if row["direction"] == "incoming"],
             "cash_out": [row for row in cash_rows if row["direction"] == "outgoing"],
+            "freight": [{"id": row.id, "no": row.logistics_no, "date": row.freight_reviewed_at.isoformat(), "amount": _money(row.delivery_fee), "name": row.carrier_name, "route": "/sales/logistics"} for row in freight_rows],
             "finance_tasks": finance_tasks,
         },
         "trend": [

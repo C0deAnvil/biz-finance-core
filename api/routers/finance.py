@@ -1467,6 +1467,19 @@ def finance_operating_overview(
     ))
 
 
+@router.get("/cockpit")
+def finance_cockpit(
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    current_user: User = Depends(require_roles(*FINANCE_READ_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """财务驾驶舱独立入口；与财务总览共用可核对的数据口径。"""
+    if date_from > date_to:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+    return api_response(data=build_finance_overview(db, date_from=date_from, date_to=date_to, current_user=current_user))
+
+
 @router.get("/executive-dashboard")
 def executive_operating_dashboard(
     date_from: date = Query(...),

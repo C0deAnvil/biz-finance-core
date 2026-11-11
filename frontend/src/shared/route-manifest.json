@@ -1043,6 +1043,15 @@
     "warmers": []
   },
   {
+    "path": "/finance/cockpit",
+    "name": "finance-cockpit",
+    "title": "财务经营驾驶舱",
+    "group": "财务管理",
+    "menu_roles": ["finance", "finance_super", "manager", "chairman", "system_admin"],
+    "preload_roles": ["finance", "finance_super", "manager", "chairman", "system_admin"],
+    "warmers": []
+  },
+  {
     "path": "/finance/receivables",
     "name": "finance-receivables",
     "title": "应收管理",
