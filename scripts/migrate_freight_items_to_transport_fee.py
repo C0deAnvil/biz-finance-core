@@ -71,10 +71,18 @@ def _reference_counts(db, item_id: int, references: list[tuple[str, str]]) -> di
     return counts
 
 
-def _orders_with_freight_items(db, names: set[str], order_nos: set[str]):
-    query = text("""
+def _orders_with_freight_items(db, names: set[str], order_nos: set[str], *, has_queue_warehouse: bool):
+    # warehouse_id 是较新的队列表字段；旧库按系统既有逻辑使用默认成品仓。
+    warehouse_select = (
+        "dispatch_queue.warehouse_id AS warehouse_id"
+        if has_queue_warehouse
+        else "COALESCE((SELECT id FROM warehouses WHERE code IN ('CANGZHOU_FINISHED', 'WH-FG') ORDER BY id LIMIT 1), (SELECT id FROM warehouses WHERE warehouse_type = 'finished' ORDER BY id LIMIT 1)) AS warehouse_id"
+    )
+    queue_join = "LEFT JOIN inventory_dispatch_queues AS dispatch_queue ON dispatch_queue.sales_order_id = so.id" if has_queue_warehouse else ""
+    query = text(f"""
         SELECT so.id AS order_id, so.order_no, so.status, so.total_amount, so.transport_fee,
                soi.id AS item_id, soi.total_amount AS item_amount,
+               soi.product_id, soi.packaging_config_id, {warehouse_select},
                COALESCE(soi.placed_quantity, 0) AS placed_quantity,
                COALESCE(soi.shipped_quantity, 0) AS shipped_quantity,
                COALESCE(soi.reserved_quantity, 0) AS reserved_quantity,
@@ -83,6 +91,7 @@ def _orders_with_freight_items(db, names: set[str], order_nos: set[str]):
         FROM sales_orders AS so
         JOIN sales_order_items AS soi ON soi.sales_order_id = so.id
         JOIN products AS p ON p.id = soi.product_id
+        {queue_join}
         WHERE p.name IN :names
           AND (:filter_orders = 0 OR so.order_no IN :order_nos)
         ORDER BY so.order_no, soi.id
@@ -109,6 +118,51 @@ def _item_totals(db, order_ids: list[int]) -> dict[int, Decimal]:
     }
 
 
+def _release_reservations(db, items: list[dict], *, apply: bool) -> list[str]:
+    """反向释放错误运费行的置货占用；不会恢复任何已发货库存。"""
+    notes: list[str] = []
+    for item in items:
+        warehouse_id = item["warehouse_id"]
+        if warehouse_id is None:
+            raise RuntimeError(f"明细#{item['item_id']} 无法确定置货仓库，不能安全释放")
+        product_reserved = _amount(item["reserved_quantity"])
+        packaging_reserved = _amount(item["packaging_reserved_quantity"])
+        product_rows = []
+        if product_reserved:
+            product_rows = list(db.execute(text("""
+                SELECT id, reserved_quantity FROM inventories
+                WHERE warehouse_id = :warehouse_id AND product_id = :product_id AND material_id IS NULL
+                ORDER BY id FOR UPDATE
+            """), {"warehouse_id": warehouse_id, "product_id": item["product_id"]}).mappings())
+            if sum((_amount(row["reserved_quantity"]) for row in product_rows), ZERO) < product_reserved:
+                raise RuntimeError(f"明细#{item['item_id']} 的成品库存占用余额不足，不能安全释放")
+        packaging_rows = []
+        if packaging_reserved:
+            if item["packaging_config_id"] is None:
+                raise RuntimeError(f"明细#{item['item_id']} 有包装占用但未绑定包装配置，不能安全释放")
+            packaging_rows = list(db.execute(text("""
+                SELECT id, reserved_quantity FROM inventories
+                WHERE warehouse_id = :warehouse_id AND product_id IS NULL AND material_id IS NULL
+                  AND packaging_config_id = :packaging_config_id
+                ORDER BY id FOR UPDATE
+            """), {"warehouse_id": warehouse_id, "packaging_config_id": item["packaging_config_id"]}).mappings())
+            if sum((_amount(row["reserved_quantity"]) for row in packaging_rows), ZERO) < packaging_reserved:
+                raise RuntimeError(f"明细#{item['item_id']} 的包装库存占用余额不足，不能安全释放")
+        if apply:
+            for rows, release in ((product_rows, product_reserved), (packaging_rows, packaging_reserved)):
+                remaining = release
+                for row in rows:
+                    if remaining <= ZERO:
+                        break
+                    amount = min(_amount(row["reserved_quantity"]), remaining)
+                    if amount:
+                        db.execute(text("UPDATE inventories SET reserved_quantity = reserved_quantity - :amount WHERE id = :id"),
+                                   {"amount": amount, "id": row["id"]})
+                        remaining -= amount
+        notes.append(f"释放明细#{item['item_id']} 成品占用 {product_reserved}、包装占用 {packaging_reserved}，撤销置货 {_amount(item['placed_quantity'])}")
+    return notes
+
+
 def _freight_demands(db, item_ids: list[int]) -> list[dict]:
     """读取将随错误运费明细一并清理的补货需求。"""
     query = text("""
@@ -125,6 +179,8 @@ def main() -> int:
                         help="要视为运费的产品名称；可重复传入，默认仅“运费”")
     parser.add_argument("--order-no", action="append", dest="order_nos",
                         help="仅处理指定订单号；可重复传入。省略则扫描全部订单")
+    parser.add_argument("--release-placement-reservation", action="store_true",
+                        help="同时释放未发货运费明细的置货、成品占用和包装占用")
     parser.add_argument("--apply", action="store_true", help="确认写入数据库；默认只预览")
     args = parser.parse_args()
     names = {name.strip() for name in (args.product_names or ["运费"]) if name.strip()}
@@ -141,7 +197,10 @@ def main() -> int:
             if missing_columns:
                 raise RuntimeError(f"sales_order_items 缺少安全检查所需字段：{', '.join(sorted(missing_columns))}")
 
-            rows = _orders_with_freight_items(db, names, order_nos)
+            queue_columns = _table_columns(db, "inventory_dispatch_queues")
+            rows = _orders_with_freight_items(
+                db, names, order_nos, has_queue_warehouse="warehouse_id" in queue_columns
+            )
             if not rows:
                 print("未找到匹配的运费产品明细。")
                 return 0
@@ -158,13 +217,24 @@ def main() -> int:
                 reasons: list[str] = []
                 cleanup_counts: Counter[str] = Counter()
                 freight_item_ids = [item["item_id"] for item in freight_items]
+                release_items: list[dict] = []
                 for item in freight_items:
                     quantities = {
                         "已置货": item["placed_quantity"], "已发货": item["shipped_quantity"],
                         "已占用库存": item["reserved_quantity"], "已占用包装": item["packaging_reserved_quantity"],
                         "已发包装": item["packaging_shipped_quantity"],
                     }
-                    reasons.extend(f"明细#{item['item_id']} {label}={value}" for label, value in quantities.items() if _amount(value) != ZERO)
+                    stock_state = {label: value for label, value in quantities.items() if _amount(value) != ZERO}
+                    if stock_state:
+                        can_release = (
+                            args.release_placement_reservation
+                            and _amount(item["shipped_quantity"]) == ZERO
+                            and _amount(item["packaging_shipped_quantity"]) == ZERO
+                        )
+                        if can_release:
+                            release_items.append(item)
+                        else:
+                            reasons.extend(f"明细#{item['item_id']} {label}={value}" for label, value in stock_state.items())
                     for table_column, count in _reference_counts(db, item["item_id"], item_references).items():
                         table_name = table_column.split(".", 1)[0]
                         if table_name in REMOVABLE_ITEM_REFERENCE_TABLES:
@@ -180,6 +250,14 @@ def main() -> int:
                 expected_total = money(item_totals[order_id] + old_fee)
                 if money(_amount(first["total_amount"])) != expected_total:
                     reasons.append(f"订单总额 {money(_amount(first['total_amount']))} 与明细+原运费 {expected_total} 不一致")
+                if not reasons and release_items:
+                    try:
+                        release_notes = _release_reservations(db, release_items, apply=False)
+                    except RuntimeError as exc:
+                        reasons.append(str(exc))
+                        release_notes = []
+                else:
+                    release_notes = []
                 if reasons:
                     skipped += 1
                     skip_reasons.update(reasons)
@@ -188,8 +266,11 @@ def main() -> int:
 
                 new_fee = money(old_fee + freight_total)
                 cleanup_text = "、".join(f"删除 {table} {count} 条" for table, count in sorted(cleanup_counts.items()))
+                if release_notes:
+                    cleanup_text = "；".join([cleanup_text, *release_notes]) if cleanup_text else "；".join(release_notes)
                 print(f"{'执行' if args.apply else '预览'} {order_no}：{cleanup_text}；删除 {len(freight_items)} 条运费明细（{freight_total}），订单运费 {old_fee} -> {new_fee}，订单总额保持 {expected_total}")
                 if args.apply:
+                    _release_reservations(db, release_items, apply=True)
                     if cleanup_counts.get("sales_order_price_change_logs"):
                         db.execute(text("DELETE FROM sales_order_price_change_logs WHERE sales_order_item_id IN :item_ids")
                                    .bindparams(bindparam("item_ids", expanding=True)), {"item_ids": freight_item_ids})
