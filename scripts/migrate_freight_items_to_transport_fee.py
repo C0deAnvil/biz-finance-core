@@ -26,6 +26,9 @@ from services.money import money
 
 
 ZERO = Decimal("0")
+# 这两类记录完全由错误的“运费产品”明细产生，迁移时应一并清除。
+# 其他任何外键引用仍一律阻止删除。
+REMOVABLE_ITEM_REFERENCE_TABLES = {"fulfillment_demands", "sales_order_price_change_logs"}
 
 
 def _amount(value) -> Decimal:
@@ -46,14 +49,14 @@ def _table_columns(db, table_name: str) -> set[str]:
     return {row["column_name"] for row in rows}
 
 
-def _foreign_key_references(db) -> list[tuple[str, str]]:
-    """找出数据库中实际引用 sales_order_items 的外键，适配不同版本表结构。"""
+def _foreign_key_references(db, referenced_table: str) -> list[tuple[str, str]]:
+    """找出数据库中实际引用指定表的外键，适配不同版本表结构。"""
     rows = db.execute(text("""
         SELECT table_name AS table_name, column_name AS column_name
         FROM information_schema.key_column_usage
         WHERE referenced_table_schema = DATABASE()
-          AND referenced_table_name = 'sales_order_items'
-    """)).mappings()
+          AND referenced_table_name = :referenced_table
+    """), {"referenced_table": referenced_table}).mappings()
     return [(row["table_name"], row["column_name"]) for row in rows]
 
 
@@ -106,6 +109,16 @@ def _item_totals(db, order_ids: list[int]) -> dict[int, Decimal]:
     }
 
 
+def _freight_demands(db, item_ids: list[int]) -> list[dict]:
+    """读取将随错误运费明细一并清理的补货需求。"""
+    query = text("""
+        SELECT id
+        FROM fulfillment_demands
+        WHERE sales_order_item_id IN :item_ids
+    """).bindparams(bindparam("item_ids", expanding=True))
+    return list(db.execute(query, {"item_ids": item_ids}).mappings())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--product-name", action="append", dest="product_names",
@@ -136,12 +149,15 @@ def main() -> int:
             for row in rows:
                 by_order[row["order_id"]].append(row)
             item_totals = _item_totals(db, list(by_order))
-            references = _foreign_key_references(db)
+            item_references = _foreign_key_references(db, "sales_order_items")
+            demand_references = _foreign_key_references(db, "fulfillment_demands")
 
             for order_id, freight_items in by_order.items():
                 first = freight_items[0]
                 order_no = first["order_no"]
                 reasons: list[str] = []
+                cleanup_counts: Counter[str] = Counter()
+                freight_item_ids = [item["item_id"] for item in freight_items]
                 for item in freight_items:
                     quantities = {
                         "已置货": item["placed_quantity"], "已发货": item["shipped_quantity"],
@@ -149,10 +165,16 @@ def main() -> int:
                         "已发包装": item["packaging_shipped_quantity"],
                     }
                     reasons.extend(f"明细#{item['item_id']} {label}={value}" for label, value in quantities.items() if _amount(value) != ZERO)
-                    reasons.extend(
-                        f"明细#{item['item_id']} 关联 {table_column} {count} 条"
-                        for table_column, count in _reference_counts(db, item["item_id"], references).items()
-                    )
+                    for table_column, count in _reference_counts(db, item["item_id"], item_references).items():
+                        table_name = table_column.split(".", 1)[0]
+                        if table_name in REMOVABLE_ITEM_REFERENCE_TABLES:
+                            cleanup_counts[table_name] += count
+                        else:
+                            reasons.append(f"明细#{item['item_id']} 关联 {table_column} {count} 条")
+                demands = _freight_demands(db, freight_item_ids)
+                for demand in demands:
+                    for table_column, count in _reference_counts(db, demand["id"], demand_references).items():
+                        reasons.append(f"补货需求#{demand['id']} 关联 {table_column} {count} 条")
                 old_fee = money(_amount(first["transport_fee"]))
                 freight_total = money(sum((_amount(item["item_amount"]) for item in freight_items), ZERO))
                 expected_total = money(item_totals[order_id] + old_fee)
@@ -165,13 +187,21 @@ def main() -> int:
                     continue
 
                 new_fee = money(old_fee + freight_total)
-                print(f"{'执行' if args.apply else '预览'} {order_no}：删除 {len(freight_items)} 条运费明细（{freight_total}），订单运费 {old_fee} -> {new_fee}，订单总额保持 {expected_total}")
+                cleanup_text = "、".join(f"删除 {table} {count} 条" for table, count in sorted(cleanup_counts.items()))
+                print(f"{'执行' if args.apply else '预览'} {order_no}：{cleanup_text}；删除 {len(freight_items)} 条运费明细（{freight_total}），订单运费 {old_fee} -> {new_fee}，订单总额保持 {expected_total}")
                 if args.apply:
+                    if cleanup_counts.get("sales_order_price_change_logs"):
+                        db.execute(text("DELETE FROM sales_order_price_change_logs WHERE sales_order_item_id IN :item_ids")
+                                   .bindparams(bindparam("item_ids", expanding=True)), {"item_ids": freight_item_ids})
+                    if demands:
+                        db.execute(text("DELETE FROM fulfillment_demands WHERE id IN :demand_ids")
+                                   .bindparams(bindparam("demand_ids", expanding=True)),
+                                   {"demand_ids": [demand["id"] for demand in demands]})
                     db.execute(text("UPDATE sales_orders SET transport_fee = :fee, total_amount = :total WHERE id = :order_id"),
                                {"fee": new_fee, "total": expected_total, "order_id": order_id})
                     db.execute(text("DELETE FROM sales_order_items WHERE id IN :item_ids")
                                .bindparams(bindparam("item_ids", expanding=True)),
-                               {"item_ids": [item["item_id"] for item in freight_items]})
+                               {"item_ids": freight_item_ids})
                 processed += 1
                 deleted += len(freight_items)
 
