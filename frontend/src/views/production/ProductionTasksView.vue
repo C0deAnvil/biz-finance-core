@@ -33,7 +33,8 @@
         <el-table-column prop="sales_order_no" label="来源订单" width="150" />
         <el-table-column prop="parent_task_no" label="来源父任务" width="150" />
         <el-table-column prop="planned_quantity" label="计划数量" width="110"><template #default="scope">{{ formatNumber(scope.row.planned_quantity) }}</template></el-table-column>
-        <el-table-column prop="produced_quantity" label="已产数量" width="110"><template #default="scope">{{ formatNumber(scope.row.produced_quantity) }}</template></el-table-column>
+        <el-table-column prop="reported_quantity" label="报工数量" width="110"><template #default="scope">{{ formatNumber(scope.row.reported_quantity) }}</template></el-table-column>
+        <el-table-column prop="accepted_quantity" label="实际入库" width="110"><template #default="scope">{{ formatNumber(scope.row.accepted_quantity) }}</template></el-table-column>
         <el-table-column prop="scrap_quantity" label="报废数量" width="110"><template #default="scope">{{ formatNumber(scope.row.scrap_quantity) }}</template></el-table-column>
         <el-table-column label="状态" width="140">
           <template #default="scope"><el-tag :type="statusType(scope.row.status)">{{ statusLabel(scope.row.status) }}</el-tag></template>
@@ -444,7 +445,7 @@
           <el-col :span="12"><el-form-item label="报废数量"><el-input-number v-model="completeForm.scrap_quantity" :min="0" style="width: 100%" @change="syncProducedFromScrap" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="直接人工"><el-input-number v-model="completeForm.direct_labor_cost" :min="0" :precision="4" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="制造费用"><el-input-number v-model="completeForm.manufacturing_overhead_cost" :min="0" :precision="4" style="width: 100%" /></el-form-item></el-col>
-          <el-col :span="24"><span class="toolbar-tip">金额不确定可暂填 0；成品成本会标记为暂估，后续可由财务在库存状态中调整。</span></el-col>
+          <el-col :span="24"><span class="toolbar-tip">可按本次实际产出分批报工、申请入库；若该任务还有未完成计划量，系统会自动续建剩余数量的下一批任务。</span></el-col>
           <el-col :span="24"><el-form-item label="完工后质检"><el-switch v-model="completeForm.requires_quality" active-text="需要质检" inactive-text="无需质检" /></el-form-item></el-col>
           <!-- 这里不该指定质检员:质检与入库由目标仓库的质检员/库管接手,
                后端建质检任务时已用建任务时选定的 task.warehouse_id
@@ -734,7 +735,7 @@ function setActiveTaskTabByRow(row) {
 }
 
 function sourceLabel(sourceType) {
-  return sourceType === 'sales_order' ? '销售订单' : sourceType === 'rework' ? '返工任务' : '手工排产'
+  return sourceType === 'sales_order' ? '销售订单' : sourceType === 'routine_plan' ? '日常生产计划' : sourceType === 'rework' ? '返工任务' : '手工排产'
 }
 
 function canCancel(row) {

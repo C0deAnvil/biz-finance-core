@@ -1520,6 +1520,9 @@ class ProductionTask(TimestampMixin, Base):
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     parent_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=True)
     planned_quantity = Column(Numeric(18, 4), nullable=False)
+    # reported 为生产人员报工；accepted 为库管实物验收入库后的最终口径。
+    reported_quantity = Column(Numeric(18, 4), nullable=False, default=0)
+    accepted_quantity = Column(Numeric(18, 4), nullable=False, default=0)
     produced_quantity = Column(Numeric(18, 4), nullable=False, default=0)
     scrap_quantity = Column(Numeric(18, 4), nullable=False, default=0)
     direct_labor_cost = Column(Numeric(20, 4), nullable=False, default=0)
@@ -1610,6 +1613,19 @@ class ProductionPlan(TimestampMixin, Base):
     converted_task = relationship("ProductionTask", foreign_keys=[converted_task_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
     updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+
+class ProductionPlanRun(TimestampMixin, Base):
+    """日常生产计划每日生成任务的执行记录，防止同一天重复排产。"""
+    __tablename__ = "production_plan_runs"
+
+    id = Column(Integer, primary_key=True)
+    production_plan_id = Column(Integer, ForeignKey("production_plans.id"), nullable=False)
+    run_date = Column(Date, nullable=False)
+    production_task_id = Column(Integer, ForeignKey("production_tasks.id"), nullable=False)
+
+    production_plan = relationship("ProductionPlan")
+    production_task = relationship("ProductionTask")
 
 
 class QualityTask(TimestampMixin, Base):

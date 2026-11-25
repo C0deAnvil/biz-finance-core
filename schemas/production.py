@@ -35,7 +35,7 @@ class ProductionTaskCreate(BaseModel):
     sales_order_id: int | None = None
     fulfillment_demand_id: int | None = None
     product_id: int
-    planned_quantity: Decimal = Field(..., gt=0)
+    planned_quantity: Decimal = Field(..., ge=0)
     fluctuation_ratio: Decimal = 0
     notes: str | None = None
     warehouse_id: int | None = None
@@ -52,7 +52,9 @@ class ProductionPlanCreate(BaseModel):
     product_id: int
     sales_order_id: int | None = None
     assigned_user_id: int | None = None
-    planned_quantity: Decimal = Field(..., gt=0)
+    plan_mode: str = Field(default="order", pattern="^(order|routine)$")
+    routine_weekdays: list[int] = Field(default_factory=list)
+    planned_quantity: Decimal = Field(default=0, ge=0)
     scheduled_start_at: str | None = None
     scheduled_end_at: str | None = None
     priority: str = Field(default="normal", pattern="^(low|normal|high|urgent)$")
@@ -69,7 +71,9 @@ class ProductionPlanUpdate(BaseModel):
     product_id: int
     sales_order_id: int | None = None
     assigned_user_id: int | None = None
-    planned_quantity: Decimal = Field(..., gt=0)
+    plan_mode: str = Field(default="order", pattern="^(order|routine)$")
+    routine_weekdays: list[int] = Field(default_factory=list)
+    planned_quantity: Decimal = Field(default=0, ge=0)
     scheduled_start_at: str | None = None
     scheduled_end_at: str | None = None
     priority: str = Field(default="normal", pattern="^(low|normal|high|urgent)$")

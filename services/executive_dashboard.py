@@ -241,7 +241,8 @@ def build_executive_dashboard(db: Session, *, date_from: date, date_to: date) ->
         select(ProductionTask).where(ProductionTask.created_at.between(start, end))
     ).scalars().all()
     planned_quantity = sum((Decimal(row.planned_quantity or 0) for row in production_tasks), ZERO)
-    produced_quantity = sum((Decimal(row.produced_quantity or 0) for row in production_tasks), ZERO)
+    # 驾驶舱仅统计库管实际验收入库数量，生产报工数量不作为经营与绩效口径。
+    produced_quantity = sum((Decimal(row.accepted_quantity or 0) for row in production_tasks), ZERO)
 
     queues = db.execute(
         select(InventoryDispatchQueue)

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from models import (
+    Attachment,
     Inventory,
     InventoryTransaction,
     InventoryDispatchQueue,
@@ -444,6 +445,12 @@ def _sync_inventory_request_source(
         task = db.execute(select(ProductionTask).where(ProductionTask.id == source_id)).scalar_one_or_none()
         if task is None:
             return
+        accepted_quantity = sum(
+            (Decimal(str(item.get("quantity") or 0)) for item in (request.handled_items_json or [])), Decimal("0")
+        )
+        task.accepted_quantity = accepted_quantity
+        # 生产人员的报工数只保留在 reported_quantity；完成实物入库后，通用产量字段以库管实收覆盖。
+        task.produced_quantity = accepted_quantity
         task.status = "completed"
         create_notification(
             db,
@@ -612,6 +619,16 @@ def complete_inventory_operation_request(
         raise HTTPException(status_code=409, detail="当前库存作业已处理")
     if not payload.items:
         raise HTTPException(status_code=409, detail="请至少填写一条库存作业明细")
+
+    # 成品生产入库必须有纸质入库/称重凭证，库管实收才是实际产量及绩效口径。
+    if request.request_category in {"production_finished_inbound", "production_quality_inbound"}:
+        evidence = db.execute(select(Attachment.id).where(
+            Attachment.business_type == "inventory_operation_request",
+            Attachment.business_id == request.id,
+            Attachment.attachment_type.in_(["纸质入库单", "入库称重单"]),
+        ).limit(1)).scalar_one_or_none()
+        if evidence is None:
+            raise HTTPException(status_code=409, detail="生产成品入库必须先上传纸质入库单或入库称重单")
 
     original_items = request.original_items_json or []
     handled_items = [

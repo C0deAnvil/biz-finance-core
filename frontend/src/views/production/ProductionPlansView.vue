@@ -2,20 +2,21 @@
   <div class="page-stack">
     <el-row :gutter="12" class="summary-row">
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">生产计划</div><div class="summary-value">{{ rows.length }}</div></el-card></el-col>
-      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">待转任务</div><div class="summary-value">{{ pendingConvertCount }}</div></el-card></el-col>
+      <el-col :span="6"><el-card shadow="hover"><div class="summary-label">日常生产计划</div><div class="summary-value">{{ routinePlanCount }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">已转任务</div><div class="summary-value">{{ convertedCount }}</div></el-card></el-col>
       <el-col :span="6"><el-card shadow="hover"><div class="summary-label">高优先级</div><div class="summary-value">{{ urgentCount }}</div></el-card></el-col>
     </el-row>
 
-    <PageSection title="生产计划" description="独立维护年度、季度、月度、周度和自定义生产计划，可指派责任人并一键转为生产任务。">
+    <PageSection title="生产计划" description="订单计划可指定数量转任务；日常生产计划不预设数量，按工作日自动生成当天的生产任务。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
-        <el-button v-if="canManage" type="primary" @click="openCreate">新增计划</el-button>
+        <el-button v-if="canManage" @click="generateTodayTasks">生成今日日常任务</el-button><el-button v-if="canManage" type="primary" @click="openCreate">新增计划</el-button>
       </template>
 
       <el-table :data="pagedRows" stripe>
         <el-table-column prop="plan_no" label="计划号" width="150" />
         <el-table-column prop="plan_name" label="计划名称" min-width="180" />
+        <el-table-column label="计划模式" width="110"><template #default="scope"><el-tag :type="scope.row.plan_mode === 'routine' ? 'success' : 'info'">{{ scope.row.plan_mode === 'routine' ? '日常生产' : '订单生产' }}</el-tag></template></el-table-column>
         <el-table-column prop="period_type" label="周期类型" width="120">
           <template #default="scope">{{ periodTypeLabel(scope.row.period_type) }}</template>
         </el-table-column>
@@ -26,8 +27,8 @@
           <template #default="scope">{{ formatDateTime(scope.row.period_end) }}</template>
         </el-table-column>
         <el-table-column prop="product_name" label="产品" min-width="160" />
-        <el-table-column prop="planned_quantity" label="计划数量" width="110">
-          <template #default="scope">{{ formatNumber(scope.row.planned_quantity) }}</template>
+        <el-table-column label="计划数量 / 频率" width="160">
+          <template #default="scope">{{ scope.row.plan_mode === 'routine' ? weekdayText(scope.row.routine_weekdays) : formatNumber(scope.row.planned_quantity) }}</template>
         </el-table-column>
         <el-table-column prop="assigned_user_name" label="责任人" width="120" />
         <el-table-column prop="priority" label="优先级" width="100">
@@ -40,7 +41,7 @@
           <template #default="scope">
             <el-button v-if="!scope.row.converted_task_id" size="small" text type="primary" @click="openEdit(scope.row)">编辑</el-button>
             <el-button size="small" text type="info" @click="exportPlan(scope.row)">导出</el-button>
-            <el-button v-if="canManage && !scope.row.converted_task_id" size="small" text type="success" @click="convertToTask(scope.row)">转生产任务</el-button>
+            <el-button v-if="canManage && scope.row.plan_mode !== 'routine' && !scope.row.converted_task_id" size="small" text type="success" @click="convertToTask(scope.row)">转生产任务</el-button>
             <el-button v-else-if="scope.row.converted_task_id" size="small" text type="primary" @click="goTask(scope.row.converted_task_id)">查看任务</el-button>
           </template>
         </el-table-column>
@@ -56,13 +57,15 @@
     <el-dialog v-model="dialogVisible" :title="dialogMode === 'create' ? '新增生产计划' : '编辑生产计划'" width="980px">
       <el-form :model="form" label-width="100px">
         <el-row :gutter="16">
-          <el-col :span="12"><el-form-item label="计划名称"><el-input v-model="form.plan_name" placeholder="例如：2026年二季度盐酸钙排产计划" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="计划名称"><el-input v-model="form.plan_name" placeholder="例如：尿素日常生产计划" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="计划模式"><el-radio-group v-model="form.plan_mode"><el-radio-button label="routine">日常生产</el-radio-button><el-radio-button label="order">订单生产</el-radio-button></el-radio-group></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="周期类型"><el-select v-model="form.period_type" style="width: 100%"><el-option label="年度计划" value="annual" /><el-option label="季度计划" value="quarterly" /><el-option label="月度计划" value="monthly" /><el-option label="周度计划" value="weekly" /><el-option label="自定义计划" value="custom" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="周期开始"><el-date-picker v-model="form.period_start" type="datetime" format="YYYY-MM-DD HH:00" value-format="YYYY-MM-DDTHH:00:00" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="周期结束"><el-date-picker v-model="form.period_end" type="datetime" format="YYYY-MM-DD HH:00" value-format="YYYY-MM-DDTHH:00:00" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="产品"><el-select v-model="form.product_id" filterable style="width: 100%"><el-option v-for="item in products" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="关联订单"><el-select v-model="form.sales_order_id" clearable filterable style="width: 100%"><el-option v-for="item in salesOrders" :key="item.id" :label="item.order_no" :value="item.id" /></el-select></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="计划数量"><el-input-number v-model="form.planned_quantity" :min="0.01" style="width: 100%" /></el-form-item></el-col>
+          <el-col v-if="form.plan_mode === 'order'" :span="12"><el-form-item label="关联订单"><el-select v-model="form.sales_order_id" clearable filterable style="width: 100%"><el-option v-for="item in salesOrders" :key="item.id" :label="item.order_no" :value="item.id" /></el-select></el-form-item></el-col>
+          <el-col v-if="form.plan_mode === 'order'" :span="12"><el-form-item label="计划数量"><el-input-number v-model="form.planned_quantity" :min="0.01" style="width: 100%" /></el-form-item></el-col>
+          <el-col v-else :span="24"><el-form-item label="生产频率" required><el-checkbox-group v-model="form.routine_weekdays"><el-checkbox v-for="day in weekdays" :key="day.value" :label="day.value">{{ day.label }}</el-checkbox></el-checkbox-group><div class="toolbar-tip">日常计划不填写数量；到选定工作日自动生成一张待领料生产任务，按当天实际领料、实际报工。</div></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="责任人"><el-select v-model="form.assigned_user_id" clearable filterable style="width: 100%"><el-option v-for="item in productionUsers" :key="item.id" :label="item.full_name" :value="item.id" /></el-select></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="计划开工"><el-date-picker v-model="form.scheduled_start_at" type="datetime" format="YYYY-MM-DD HH:00" value-format="YYYY-MM-DDTHH:00:00" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="计划完工"><el-date-picker v-model="form.scheduled_end_at" type="datetime" format="YYYY-MM-DD HH:00" value-format="YYYY-MM-DDTHH:00:00" style="width: 100%" /></el-form-item></el-col>
@@ -89,6 +92,7 @@
 
 <script setup>
 import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/checkbox/style/css'
 import 'element-plus/es/components/card/style/css'
 import 'element-plus/es/components/col/style/css'
 import 'element-plus/es/components/date-picker/style/css'
@@ -98,12 +102,14 @@ import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/row/style/css'
+import 'element-plus/es/components/radio/style/css'
 import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tag/style/css'
 
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
+import ElCheckbox, { ElCheckboxGroup } from 'element-plus/es/components/checkbox/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDatePicker from 'element-plus/es/components/date-picker/index.mjs'
@@ -112,6 +118,7 @@ import ElForm, { ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElInputNumber from 'element-plus/es/components/input-number/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
+import { ElRadioButton, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs'
 import ElSelect, { ElOption } from 'element-plus/es/components/select/index.mjs'
 import ElTable, { ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
@@ -142,9 +149,13 @@ const { pagination, total, pageSizes, pagedItems: pagedRows } = useLocalPaginati
 const pendingConvertCount = computed(() => rows.value.filter((item) => !item.converted_task_id).length)
 const convertedCount = computed(() => rows.value.filter((item) => !!item.converted_task_id).length)
 const urgentCount = computed(() => rows.value.filter((item) => item.priority === 'urgent').length)
+const routinePlanCount = computed(() => rows.value.filter((item) => item.plan_mode === 'routine').length)
+const weekdays = [{ value: 0, label: '周一' }, { value: 1, label: '周二' }, { value: 2, label: '周三' }, { value: 3, label: '周四' }, { value: 4, label: '周五' }, { value: 5, label: '周六' }, { value: 6, label: '周日' }]
 
 const form = reactive({
   plan_name: '',
+  plan_mode: 'routine',
+  routine_weekdays: [0, 1, 2, 3, 4],
   period_type: 'custom',
   period_start: '',
   period_end: '',
@@ -174,11 +185,14 @@ function periodTypeLabel(value) {
 function priorityLabel(value) {
   return ({ low: '低', normal: '普通', high: '高', urgent: '紧急' })[value] || value || '-'
 }
+function weekdayText(values) { const picked = new Set(values || []); return weekdays.filter((day) => picked.has(day.value)).map((day) => day.label).join('、') || '-' }
 
 function resetForm() {
   editingId.value = null
   Object.assign(form, {
     plan_name: '',
+    plan_mode: 'routine',
+    routine_weekdays: [0, 1, 2, 3, 4],
     period_type: 'custom',
     period_start: '',
     period_end: '',
@@ -219,6 +233,8 @@ function openEdit(row) {
   editingId.value = row.id
   Object.assign(form, {
     plan_name: row.plan_name || '',
+    plan_mode: row.plan_mode || 'order',
+    routine_weekdays: row.routine_weekdays || [],
     period_type: row.period_type || 'custom',
     period_start: row.period_start || '',
     period_end: row.period_end || '',
@@ -271,6 +287,8 @@ async function convertToTask(row) {
     ElMessage.error(error?.message || '转生产任务失败')
   }
 }
+
+async function generateTodayTasks() { try { const result = await post('/api/production/plans/generate-routine-tasks', {}); ElMessage.success(result.created_count ? `已生成 ${result.created_count} 张日常生产任务` : '今天没有待生成的日常生产任务'); await load() } catch (error) { ElMessage.error(error?.message || '生成日常生产任务失败') } }
 
 function goTask(taskId) {
   router.push({ path: '/production/tasks', query: { focusId: String(taskId) } })

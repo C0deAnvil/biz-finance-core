@@ -62,6 +62,7 @@ from services.production_service import (
     complete_task as complete_task_service,
     convert_plan_to_task as convert_plan_to_task_service,
     create_plan as create_plan_service,
+    generate_routine_tasks_for_date,
     create_task as create_task_service,
     _inventory_user_ids_for_warehouse,
     can_review_factory_material,
@@ -553,6 +554,8 @@ def list_tasks(
                 "parent_task_id": row.parent_task_id,
                 "parent_task_no": parent_map[row.parent_task_id].task_no if row.parent_task_id in parent_map else None,
                 "planned_quantity": float(row.planned_quantity),
+                "reported_quantity": float(row.reported_quantity or 0),
+                "accepted_quantity": float(row.accepted_quantity or 0),
                 "produced_quantity": float(row.produced_quantity),
                 "scrap_quantity": float(row.scrap_quantity),
                 "direct_labor_cost": float(row.direct_labor_cost or 0),
@@ -640,6 +643,8 @@ def get_task_detail(task_id: int, current_user: User = Depends(get_current_user)
             "parent_task_id": task.parent_task_id,
             "parent_task_no": parent.task_no if parent else None,
             "planned_quantity": float(task.planned_quantity),
+            "reported_quantity": float(task.reported_quantity or 0),
+            "accepted_quantity": float(task.accepted_quantity or 0),
             "produced_quantity": float(task.produced_quantity),
             "scrap_quantity": float(task.scrap_quantity),
             "direct_labor_cost": float(task.direct_labor_cost or 0),
@@ -990,6 +995,8 @@ def finish_inbound(
 
 @router.get("/plans")
 def list_plans(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # 页面刷新即补齐当天尚未生成的日常生产任务；执行记录保证同日不会重复生成。
+    generate_routine_tasks_for_date(db, current_user)
     rows = db.execute(
         select(ProductionPlan)
         .options(
@@ -1007,6 +1014,8 @@ def list_plans(current_user: User = Depends(get_current_user), db: Session = Dep
                 "plan_no": row.plan_no,
                 "plan_name": row.plan_name,
                 "period_type": row.period_type,
+                "plan_mode": (row.detail_json or {}).get("plan_mode", "order"),
+                "routine_weekdays": (row.detail_json or {}).get("routine_weekdays", []),
                 "period_start": row.period_start.isoformat() if row.period_start else None,
                 "period_end": row.period_end.isoformat() if row.period_end else None,
                 "product_id": row.product_id,
@@ -1032,6 +1041,15 @@ def list_plans(current_user: User = Depends(get_current_user), db: Session = Dep
             for row in rows
         ]
     )
+
+
+@router.post("/plans/generate-routine-tasks")
+def generate_routine_plan_tasks(
+    current_user: User = Depends(require_roles("production", "system_admin")),
+    db: Session = Depends(get_db),
+):
+    rows = generate_routine_tasks_for_date(db, current_user)
+    return api_response(data={"created_count": len(rows), "items": rows})
 
 
 @router.get("/plans/{plan_id}/export")

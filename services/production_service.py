@@ -1,7 +1,7 @@
 """production domain service layer."""
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from math import ceil
 
@@ -18,6 +18,7 @@ from models import (
     InventoryOperationRequest,
     Material,
     ProductionPlan,
+    ProductionPlanRun,
     ProductionMaterialUsage,
     ProductionTask,
     Product,
@@ -125,6 +126,9 @@ def can_review_factory_material(db: Session, current_user: User) -> bool:
 
 
 def _allowed_quantity(task: ProductionTask, usage: ProductionMaterialUsage) -> Decimal:
+    # 日常生产在排产时不预估日产量，以现场本次申请的实领数量作为合理上限。
+    if task.source_type == "routine_plan":
+        return max(Decimal(usage.planned_quantity or 0), Decimal(usage.requested_quantity or 0))
     return Decimal(usage.planned_quantity or 0) * (Decimal("1") + Decimal(task.fluctuation_ratio or 0))
 
 
@@ -727,7 +731,7 @@ def create_task(
         requested_quantity = Decimal(request_item.requested_quantity) if request_item else planned_quantity
         # 领料与采购是两个独立口径：默认领料量由本批计划数量 × BOM 单耗决定。
         # 采购阶段为损耗、安全余量等确认的实际需求量只影响采购/库存，不反向覆盖领料。
-        if requested_quantity <= 0:
+        if requested_quantity <= 0 and source_type != "routine_plan":
             raise HTTPException(status_code=409, detail="领料数量必须大于 0")
         db.add(
             ProductionMaterialUsage(
@@ -1214,8 +1218,33 @@ def complete_task(
         raise HTTPException(status_code=409, detail="合格产出数量必须大于 0")
     if scrap_quantity < 0:
         raise HTTPException(status_code=409, detail="报废数量不能小于 0")
-    if planned_quantity > 0 and produced_quantity + scrap_quantity != planned_quantity:
-        raise HTTPException(status_code=409, detail="合格产出数量与报废数量之和必须等于计划数量")
+    total_output = produced_quantity + scrap_quantity
+    if planned_quantity > 0 and total_output > planned_quantity:
+        raise HTTPException(status_code=409, detail="合格产出数量与报废数量之和不能超过计划数量")
+    # 允许计划任务按实际批次完工。当前批次关闭，余量自动生成一个待领料任务，
+    # 从而可以先领 30 的料、先报 30 的工，再在下一批继续生产。
+    if planned_quantity > 0 and total_output < planned_quantity:
+        remaining_quantity = planned_quantity - total_output
+        child = ProductionTask(
+            task_no=next_business_no(db, "SC"), source_type=task.source_type,
+            sales_order_id=task.sales_order_id, fulfillment_demand_id=None,
+            product_id=task.product_id, parent_task_id=task.id,
+            planned_quantity=remaining_quantity, produced_quantity=0, scrap_quantity=0,
+            fluctuation_ratio=task.fluctuation_ratio, requires_quality=task.requires_quality,
+            status="pending_material", warehouse_id=task.warehouse_id,
+            created_by_id=task.created_by_id,
+            notes=f"由任务 {task.task_no} 分批完工后自动续建，剩余计划数量 {remaining_quantity}。",
+        )
+        db.add(child)
+        db.flush()
+        for usage in task.usages:
+            ratio = Decimal(usage.planned_quantity or 0) / planned_quantity
+            db.add(ProductionMaterialUsage(
+                production_task_id=child.id, material_id=usage.material_id,
+                planned_quantity=(remaining_quantity * ratio), requested_quantity=0,
+                approved_quantity=0, issued_quantity=0, actual_quantity=0,
+            ))
+        task.planned_quantity = total_output
 
     raw_warehouse = _raw_warehouse(db)
     material_ids = [usage.material_id for usage in task.usages]
@@ -1257,7 +1286,10 @@ def complete_task(
             usage.special_request_status = "not_required"
             usage.approved_quantity = max(Decimal(usage.approved_quantity or 0), actual_quantity)
 
+    # 报工仅为生产人员申报；库管实际入库后才确认最终实际产量。
+    task.reported_quantity = produced_quantity
     task.produced_quantity = produced_quantity
+    task.accepted_quantity = Decimal("0")
     task.scrap_quantity = scrap_quantity
     task.direct_labor_cost = Decimal(payload.direct_labor_cost or 0)
     task.manufacturing_overhead_cost = Decimal(payload.manufacturing_overhead_cost or 0)
@@ -1372,6 +1404,7 @@ def complete_task(
             "task_no": task.task_no,
             "quality_no": quality_task.quality_no if quality_task else None,
             "requires_quality": task.requires_quality,
+            "reported_quantity": float(task.reported_quantity),
             "produced_quantity": float(task.produced_quantity),
             "scrap_quantity": float(task.scrap_quantity),
             "direct_labor_cost": float(task.direct_labor_cost or 0),
@@ -1477,6 +1510,13 @@ def create_plan(payload: ProductionPlanCreate, current_user: User, db: Session):
     scheduled_end_at = _parse_schedule_datetime(payload.scheduled_end_at)
     _validate_plan_times(period_start, period_end, scheduled_start_at, scheduled_end_at)
 
+    if payload.plan_mode == "routine":
+        if payload.sales_order_id:
+            raise HTTPException(status_code=409, detail="日常生产计划不能关联客户订单")
+        if not payload.routine_weekdays or any(day < 0 or day > 6 for day in payload.routine_weekdays):
+            raise HTTPException(status_code=409, detail="请至少选择一个日常生产日期")
+    detail_json = dict(payload.detail_json or {})
+    detail_json.update({"plan_mode": payload.plan_mode, "routine_weekdays": sorted(set(payload.routine_weekdays or []))})
     plan = ProductionPlan(
         plan_no=next_business_no(db, "PP"),
         plan_name=payload.plan_name,
@@ -1486,13 +1526,13 @@ def create_plan(payload: ProductionPlanCreate, current_user: User, db: Session):
         product_id=payload.product_id,
         sales_order_id=payload.sales_order_id,
         assigned_user_id=payload.assigned_user_id,
-        planned_quantity=payload.planned_quantity,
+        planned_quantity=Decimal("0") if payload.plan_mode == "routine" else payload.planned_quantity,
         scheduled_start_at=scheduled_start_at,
         scheduled_end_at=scheduled_end_at,
         priority=payload.priority,
         line_name=payload.line_name,
         scheduling_note=payload.scheduling_note,
-        detail_json=payload.detail_json or {},
+        detail_json=detail_json,
         status="planned",
         created_by_id=current_user.id,
     )
@@ -1530,6 +1570,13 @@ def update_plan(plan_id: int, payload: ProductionPlanUpdate, current_user: User,
     scheduled_start_at = _parse_schedule_datetime(payload.scheduled_start_at)
     scheduled_end_at = _parse_schedule_datetime(payload.scheduled_end_at)
     _validate_plan_times(period_start, period_end, scheduled_start_at, scheduled_end_at)
+    if payload.plan_mode == "routine":
+        if payload.sales_order_id:
+            raise HTTPException(status_code=409, detail="日常生产计划不能关联客户订单")
+        if not payload.routine_weekdays or any(day < 0 or day > 6 for day in payload.routine_weekdays):
+            raise HTTPException(status_code=409, detail="请至少选择一个日常生产日期")
+    detail_json = dict(payload.detail_json or {})
+    detail_json.update({"plan_mode": payload.plan_mode, "routine_weekdays": sorted(set(payload.routine_weekdays or []))})
     plan.plan_name = payload.plan_name
     plan.period_type = payload.period_type
     plan.period_start = period_start
@@ -1537,13 +1584,13 @@ def update_plan(plan_id: int, payload: ProductionPlanUpdate, current_user: User,
     plan.product_id = payload.product_id
     plan.sales_order_id = payload.sales_order_id
     plan.assigned_user_id = payload.assigned_user_id
-    plan.planned_quantity = payload.planned_quantity
+    plan.planned_quantity = Decimal("0") if payload.plan_mode == "routine" else payload.planned_quantity
     plan.scheduled_start_at = scheduled_start_at
     plan.scheduled_end_at = scheduled_end_at
     plan.priority = payload.priority
     plan.line_name = payload.line_name
     plan.scheduling_note = payload.scheduling_note
-    plan.detail_json = payload.detail_json or {}
+    plan.detail_json = detail_json
     plan.status = payload.status
     plan.updated_by_id = current_user.id
     write_operation_log(
@@ -1567,6 +1614,8 @@ def convert_plan_to_task(plan_id: int, current_user: User, db: Session):
     plan = db.execute(select(ProductionPlan).where(ProductionPlan.id == plan_id)).scalar_one_or_none()
     if plan is None:
         raise HTTPException(status_code=404, detail="生产计划不存在")
+    if (plan.detail_json or {}).get("plan_mode") == "routine":
+        raise HTTPException(status_code=409, detail="日常生产计划按频率自动生成当天任务，无需手动转建")
     if plan.converted_task_id:
         raise HTTPException(status_code=409, detail="当前生产计划已转为生产任务")
     payload = ProductionTaskCreate(
@@ -1596,3 +1645,46 @@ def convert_plan_to_task(plan_id: int, current_user: User, db: Session):
     )
     db.commit()
     return api_response(data={"id": plan.id, "plan_no": plan.plan_no, "production_task_id": task_id, "status": plan.status})
+
+
+def generate_routine_tasks_for_date(db: Session, current_user: User, run_date: date | None = None) -> list[dict]:
+    """将当天符合频率的日常计划转成无预设数量的生产任务。可被定时器或页面刷新调用。"""
+    run_date = run_date or now_local().date()
+    plans = db.execute(
+        select(ProductionPlan).options(joinedload(ProductionPlan.assigned_user)).where(ProductionPlan.status == "planned")
+    ).unique().scalars().all()
+    created: list[dict] = []
+    for plan in plans:
+        detail = plan.detail_json or {}
+        if detail.get("plan_mode") != "routine":
+            continue
+        weekdays = set(detail.get("routine_weekdays") or [])
+        if run_date.weekday() not in weekdays:
+            continue
+        if plan.period_start and run_date < plan.period_start.date():
+            continue
+        if plan.period_end and run_date > plan.period_end.date():
+            continue
+        exists = db.scalar(select(ProductionPlanRun.id).where(
+            ProductionPlanRun.production_plan_id == plan.id, ProductionPlanRun.run_date == run_date,
+        ))
+        if exists:
+            continue
+        # 计划未单独指派时仍归创建人，避免浏览页面的非生产人员成为任务负责人。
+        owner = plan.assigned_user or db.get(User, plan.created_by_id) or current_user
+        payload = ProductionTaskCreate(
+            source_type="routine_plan", product_id=plan.product_id, planned_quantity=Decimal("0"),
+            notes=f"日常生产计划 {plan.plan_no} 于 {run_date.isoformat()} 自动生成。{plan.scheduling_note or ''}".strip(),
+            material_usages=[],
+        )
+        # 缺少 BOM 等配置异常不应让生产计划列表整体不可访问；待配置完成后下次刷新会再尝试生成。
+        try:
+            result = create_task(payload, owner, db)
+        except HTTPException:
+            db.rollback()
+            continue
+        task_id = result["data"]["id"]
+        db.add(ProductionPlanRun(production_plan_id=plan.id, run_date=run_date, production_task_id=task_id))
+        db.commit()
+        created.append({"plan_id": plan.id, "plan_no": plan.plan_no, "production_task_id": task_id})
+    return created

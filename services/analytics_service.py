@@ -1578,7 +1578,8 @@ def _production_output_top_products(ctx: AnalyticsContext, metric: AnalyticsMetr
         if not _date_in_range(row.created_at, ctx.date_from, ctx.date_to):
             continue
         product_name = row.product.name if row.product else "未命名产品"
-        bucket[product_name] += Decimal(row.produced_quantity or 0)
+        # 产量分析以库管最终实收入库数量为准，避免生产报工虚高影响统计。
+        bucket[product_name] += Decimal(row.accepted_quantity or 0)
     rows = _rank_rows(bucket, ctx.top_n)
     return _single_series_result(metric, rows, chart_type=chart_type, summary=[{"label": "累计产出", "value": round(sum(_float(value) for value in bucket.values()), 4), "unit": "数量"}])
 

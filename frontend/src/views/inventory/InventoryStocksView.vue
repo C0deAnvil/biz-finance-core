@@ -340,6 +340,8 @@
         <el-form-item class="mt-16" label="处理备注"><el-input v-model="operationForm.handled_remark" :disabled="operationReadOnly" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="调整原因"><el-input v-model="operationForm.adjust_reason" :disabled="operationReadOnly || operationApprovalMode" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="差异备注"><el-input v-model="operationForm.quantity_difference_remark" :disabled="operationReadOnly || operationApprovalMode" type="textarea" :rows="3" placeholder="应到/实到或应出/实出不一致时必填" /></el-form-item>
+        <el-alert v-if="isProductionInbound" type="warning" :closable="false" show-icon title="库管实收数量将作为最终实际生产量；与报工不一致时必须填写差异备注，并上传纸质入库单或称重单。" />
+        <AttachmentUploader v-if="isProductionInbound && activeOperation" business-type="inventory_operation_request" :business-id="activeOperation.id" :readonly="operationReadOnly" :preset-types="['纸质入库单', '入库称重单', '入库照片']" />
       </el-form>
       <template #footer>
         <el-button @click="operationDialogVisible = false">关闭</el-button>
@@ -482,6 +484,7 @@ import { get, post } from '../../api/client'
 import AppPagination from '../../components/AppPagination.vue'
 import DelayedActionButton from '../../components/DelayedActionButton.vue'
 import PageSection from '../../components/PageSection.vue'
+import AttachmentUploader from '../../components/AttachmentUploader.vue'
 import { useAuthStore } from '../../stores/auth'
 import { exportRowsToCsv } from '../../utils/export'
 import { formatDateTime, formatNumber, transactionTypeLabel } from '../../utils/format'
@@ -528,6 +531,7 @@ const operationReadOnly = ref(true)
 const filters = reactive({ warehouseId: null, itemType: '', keyword: '', alertOnly: false })
 const transactionFilters = reactive({ warehouseId: null, direction: '', itemType: '', dateRange: [], keyword: '' })
 const operationForm = reactive({ items: [], handled_remark: '', adjust_reason: '', quantity_difference_remark: '' })
+const isProductionInbound = computed(() => ['production_finished_inbound', 'production_quality_inbound'].includes(activeOperation.value?.request_category))
 const manualForm = reactive({ warehouse_id: null, source_no: '', remark: '', items: [] })
 const rejectForm = reactive({ reject_reason: '' })
 const canManualOperate = computed(() => auth.isRole('inventory'))
